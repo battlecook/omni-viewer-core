@@ -1,0 +1,38 @@
+name: Publish to npm
+
+# Publishes to npm using OIDC trusted publishing — no long-lived npm token.
+# Triggered when a GitHub Release is published (or manually via the Actions tab).
+# The package version published is whatever is in package.json at that commit,
+# so bump the version before creating the release.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # required for OIDC trusted publishing
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      # Trusted publishing (OIDC) requires npm >= 11.5.1
+      - name: Upgrade npm
+        run: npm install -g npm@latest
+
+      - name: Install dependencies
+        run: npm ci
+
+      # `prepublishOnly` rebuilds dist and runs the test suite before upload.
+      # npm picks up the OIDC credentials automatically; no NODE_AUTH_TOKEN needed.
+      - name: Publish
+        run: npm publish --access public
