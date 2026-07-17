@@ -1,0 +1,8 @@
+export interface SlideTextRun { text:string; fontSizePx?:number; bold?:boolean; italic?:boolean; color?:string; }
+export interface SlideParagraph { text:string; level:number; bullet?:boolean; align?:string; fontSizePx?:number; bold?:boolean; italic?:boolean; color?:string; runs?:SlideTextRun[]; }
+export interface SlideChartSeries { name:string; color:string; values:number[]; valueFormat?:string; dataLabel?:{showValue?:boolean;numFmt?:string;fontSizePx?:number;color?:string}; }
+export interface SlideChartData { kind:'stackedColumn'|'line'; categories:string[]; series:SlideChartSeries[]; gapWidth?:number; overlap?:number; legend?:{position?:string;fontSizePx?:number;color?:string;align?:string}; categoryAxis?:SlideChartAxis; valueAxis?:SlideChartAxis&{gridColor?:string;majorUnit?:number;min?:number;max?:number;crossesAt?:number}; }
+export interface SlideChartAxis { numFmt?:string;fontSizePx?:number;color?:string;lineColor?:string; }
+export interface SlideElement { type:'text'|'image'|'table'|'chart'|'shape'; x:number;y:number;width:number;height:number;rotateDeg?:number;zIndex:number;placeholderKey?:string;isTitle?:boolean;paragraphs?:SlideParagraph[];src?:string;srcRect?:{l:number;t:number;r:number;b:number};vectorFallback?:boolean;tableRows?:string[][];chartKind?:string;chartTitle?:string;chartData?:SlideChartData;fillColor?:string;borderColor?:string;borderWidthPx?:number;customSvgPath?:string;presetGeom?:string;headEnd?:string;tailEnd?:string;flipH?:boolean;flipV?:boolean;textStylePreset?:string; }
+export interface Slide { slideNumber:number;widthPx:number;heightPx:number;backgroundColor:string;elements:SlideElement[]; }
+export interface SlideDeck { slides:Slide[];totalSlides:number;slideSize?:{widthPx:number;heightPx:number}; }

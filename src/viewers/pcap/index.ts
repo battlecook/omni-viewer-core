@@ -1,0 +1,4 @@
+import type { AutomotiveViewerContext } from '../automotive/index.js'; import { mountAutomotiveViewer } from '../automotive/index.js'; import type { MountOptions, ViewerHandle, ViewerInput } from '../types.js';
+export { parsePcap } from '../../parsers/pcap/index.js'; export { automotiveViewerCss as pcapViewerCss } from '../automotive/styles.js'; export type PcapViewerContext = AutomotiveViewerContext;
+export const PCAP_VIEWER_META={id:'pcap',displayNameKey:'pcap.title',extensions:['pcap'],priority:20,requiredServices:[] as const,optionalServices:['clipboard'] as const,inputOwnership:'borrows' as const};
+export const mountPcapViewer=(input:ViewerInput,container:HTMLElement,ctx:PcapViewerContext,options:MountOptions={}):Promise<ViewerHandle>=>mountAutomotiveViewer('pcap',input,container,ctx,options);

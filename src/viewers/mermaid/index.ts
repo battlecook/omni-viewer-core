@@ -1,0 +1,4 @@
+import type { HostContext } from '../../host/index.js';import { parseMermaid } from '../../parsers/mermaid/index.js';import { diagramViewerCss,mountDiagramViewer,type DiagramMountOptions } from '../diagram.js';import type { ViewerHandle,ViewerInput } from '../types.js';
+export {parseMermaid} from '../../parsers/mermaid/index.js';export {diagramViewerCss as mermaidViewerCss};export type MermaidViewerContext=HostContext;export type MermaidMountOptions=DiagramMountOptions;
+export const MERMAID_VIEWER_META={id:'mermaid',displayNameKey:'mermaid.title',extensions:['mmd','mermaid'],priority:20,requiredServices:[] as const,optionalServices:[] as const,inputOwnership:'borrows' as const};
+export function mountMermaidViewer(input:ViewerInput,container:HTMLElement,ctx:MermaidViewerContext,options:MermaidMountOptions={}):Promise<ViewerHandle>{return mountDiagramViewer('mermaid',parseMermaid(input.data),input,container,ctx,options);}

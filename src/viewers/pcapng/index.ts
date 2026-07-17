@@ -1,0 +1,4 @@
+import type { AutomotiveViewerContext } from '../automotive/index.js'; import { mountAutomotiveViewer } from '../automotive/index.js'; import type { MountOptions, ViewerHandle, ViewerInput } from '../types.js';
+export { parsePcapng } from '../../parsers/pcapng/index.js'; export { automotiveViewerCss as pcapngViewerCss } from '../automotive/styles.js'; export type PcapngViewerContext = AutomotiveViewerContext;
+export const PCAPNG_VIEWER_META={id:'pcapng',displayNameKey:'pcapng.title',extensions:['pcapng'],priority:20,requiredServices:[] as const,optionalServices:['clipboard'] as const,inputOwnership:'borrows' as const};
+export const mountPcapngViewer=(input:ViewerInput,container:HTMLElement,ctx:PcapngViewerContext,options:MountOptions={}):Promise<ViewerHandle>=>mountAutomotiveViewer('pcapng',input,container,ctx,options);

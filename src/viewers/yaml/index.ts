@@ -1,0 +1,10 @@
+import type { ClipboardService, FileSaveService, FileWritebackService, HostContext } from '../../host/index.js';
+import type { YamlParserDeps } from '../../parsers/yaml/index.js';
+import type { MountOptions, ViewerHandle, ViewerInput } from '../types.js';
+import { mountStructured } from '../structured.js';
+import { structuredViewerCss } from '../structured-styles.js';
+import { createYamlController } from './controller.js';
+export * from './controller.js'; export { structuredViewerCss as yamlViewerCss } from '../structured-styles.js';
+export const YAML_VIEWER_META = { id: 'yaml', displayNameKey: 'yaml.treeView', extensions: ['yaml', 'yml'], priority: 10, requiredServices: [] as const, optionalServices: ['clipboard', 'save', 'writeback'] as const, inputOwnership: 'borrows' as const };
+function renderYamlSource(target: HTMLElement, text: string): void { target.replaceChildren(); const token = (cls: string, value: string) => { const span = document.createElement('span'); span.className = cls; span.textContent = value; return span; }; for (const line of text.split('\n')) { const commentAt = line.search(/(^|\s)#/); const source = commentAt < 0 ? line : line.slice(0, commentAt); const comment = commentAt < 0 ? '' : line.slice(commentAt); const pair = /^(\s*(?:-\s+)?[^:#][^:]*)(:)(.*)$/.exec(source); if (pair) target.append(token('omni-structured__source-key', pair[1]!), document.createTextNode(':'), token('omni-structured__source-value', pair[3]!)); else target.append(document.createTextNode(source)); if (comment) target.append(token('omni-structured__source-comment', comment)); target.append(document.createTextNode('\n')); } }
+export function mountYamlViewer(input: ViewerInput, container: HTMLElement, ctx: HostContext & { clipboard?: ClipboardService; save?: FileSaveService; writeback?: FileWritebackService }, options: MountOptions & { deps?: YamlParserDeps } = {}): Promise<ViewerHandle> { return Promise.resolve(mountStructured(input, container, ctx, options, 'omni-viewer--yaml', structuredViewerCss, createYamlController(input.data, options.deps), renderYamlSource)); }

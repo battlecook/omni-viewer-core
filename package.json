@@ -1,0 +1,347 @@
+{
+  "name": "omni-viewer-core",
+  "version": "0.1.0",
+  "description": "Shared parsing + rendering core for Omni Viewer (vscode / chrome / obsidian / web)",
+  "type": "module",
+  "license": "MIT",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "dist",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "exports": {
+    "./host": {
+      "types": "./dist/host/index.d.ts",
+      "default": "./dist/host/index.js"
+    },
+    "./i18n": {
+      "types": "./dist/i18n/index.d.ts",
+      "default": "./dist/i18n/index.js"
+    },
+    "./registry": {
+      "types": "./dist/registry/index.d.ts",
+      "default": "./dist/registry/index.js"
+    },
+    "./parsers/automotive": {
+      "types": "./dist/parsers/automotive/index.d.ts",
+      "default": "./dist/parsers/automotive/index.js"
+    },
+    "./parsers/audio": { "types": "./dist/parsers/audio/index.d.ts", "default": "./dist/parsers/audio/index.js" },
+    "./parsers/video": { "types": "./dist/parsers/video/index.d.ts", "default": "./dist/parsers/video/index.js" },
+    "./parsers/dbc": { "types": "./dist/parsers/dbc/index.d.ts", "default": "./dist/parsers/dbc/index.js" },
+    "./parsers/arxml": { "types": "./dist/parsers/arxml/index.d.ts", "default": "./dist/parsers/arxml/index.js" },
+    "./parsers/a2l": { "types": "./dist/parsers/a2l/index.d.ts", "default": "./dist/parsers/a2l/index.js" },
+    "./parsers/asc": { "types": "./dist/parsers/asc/index.d.ts", "default": "./dist/parsers/asc/index.js" },
+    "./parsers/blf": { "types": "./dist/parsers/blf/index.d.ts", "default": "./dist/parsers/blf/index.js" },
+    "./parsers/mf4": { "types": "./dist/parsers/mf4/index.d.ts", "default": "./dist/parsers/mf4/index.js" },
+    "./parsers/pcap": { "types": "./dist/parsers/pcap/index.d.ts", "default": "./dist/parsers/pcap/index.js" },
+    "./parsers/pcapng": { "types": "./dist/parsers/pcapng/index.d.ts", "default": "./dist/parsers/pcapng/index.js" },
+    "./parsers/mermaid": { "types": "./dist/parsers/mermaid/index.d.ts", "default": "./dist/parsers/mermaid/index.js" },
+    "./parsers/plantuml": { "types": "./dist/parsers/plantuml/index.d.ts", "default": "./dist/parsers/plantuml/index.js" },
+    "./parsers/shapefile": { "types": "./dist/parsers/shapefile/index.d.ts", "default": "./dist/parsers/shapefile/index.js" },
+    "./parsers/psd": { "types": "./dist/parsers/psd/index.d.ts", "default": "./dist/parsers/psd/index.js" },
+    "./parsers/types": {
+      "types": "./dist/parsers/types.d.ts",
+      "default": "./dist/parsers/types.js"
+    },
+    "./parsers/csv": {
+      "types": "./dist/parsers/csv/index.d.ts",
+      "default": "./dist/parsers/csv/index.js"
+    },
+    "./parsers/json": {
+      "types": "./dist/parsers/json/index.d.ts",
+      "default": "./dist/parsers/json/index.js"
+    },
+    "./parsers/toml": {
+      "types": "./dist/parsers/toml/index.d.ts",
+      "default": "./dist/parsers/toml/index.js"
+    },
+    "./parsers/jsonl": {
+      "types": "./dist/parsers/jsonl/index.d.ts",
+      "default": "./dist/parsers/jsonl/index.js"
+    },
+    "./parsers/yaml": {
+      "types": "./dist/parsers/yaml/index.d.ts",
+      "default": "./dist/parsers/yaml/index.js"
+    },
+    "./parsers/yaml/self-loading": {
+      "types": "./dist/parsers/yaml/self-loading.d.ts",
+      "default": "./dist/parsers/yaml/self-loading.js"
+    },
+    "./parsers/excel": {
+      "types": "./dist/parsers/excel/index.d.ts",
+      "default": "./dist/parsers/excel/index.js"
+    },
+    "./parsers/markdown": {
+      "types": "./dist/parsers/markdown/index.d.ts",
+      "default": "./dist/parsers/markdown/index.js"
+    },
+    "./parsers/proto": {
+      "types": "./dist/parsers/proto/index.d.ts",
+      "default": "./dist/parsers/proto/index.js"
+    },
+    "./parsers/archive": {
+      "types": "./dist/parsers/archive/index.d.ts",
+      "default": "./dist/parsers/archive/index.js"
+    },
+    "./parsers/parquet": {
+      "types": "./dist/parsers/parquet/index.d.ts",
+      "default": "./dist/parsers/parquet/index.js"
+    },
+    "./parsers/hdf5": {
+      "types": "./dist/parsers/hdf5/index.d.ts",
+      "default": "./dist/parsers/hdf5/index.js"
+    },
+    "./parsers/hdf5/node": {
+      "types": "./dist/parsers/hdf5/node.d.ts",
+      "default": "./dist/parsers/hdf5/node.js"
+    },
+    "./parsers/slide-model": {
+      "types": "./dist/parsers/slide-model.d.ts",
+      "default": "./dist/parsers/slide-model.js"
+    },
+    "./parsers/pptx": {
+      "types": "./dist/parsers/pptx/index.d.ts",
+      "default": "./dist/parsers/pptx/index.js"
+    },
+    "./parsers/ppt-binary": {
+      "types": "./dist/parsers/ppt-binary/index.d.ts",
+      "default": "./dist/parsers/ppt-binary/index.js"
+    },
+    "./parsers/doc-binary": {
+      "types": "./dist/parsers/doc-binary/index.d.ts",
+      "default": "./dist/parsers/doc-binary/index.js"
+    },
+    "./parsers/mat": {
+      "types": "./dist/parsers/mat/index.d.ts",
+      "default": "./dist/parsers/mat/index.js"
+    },
+    "./viewers/types": {
+      "types": "./dist/viewers/types.d.ts",
+      "default": "./dist/viewers/types.js"
+    },
+    "./viewers/avro": {
+      "types": "./dist/viewers/avro/index.d.ts",
+      "default": "./dist/viewers/avro/index.js"
+    },
+    "./viewers/bag": {
+      "types": "./dist/viewers/bag/index.d.ts",
+      "default": "./dist/viewers/bag/index.js"
+    },
+    "./viewers/stp": {
+      "types": "./dist/viewers/stp/index.d.ts",
+      "default": "./dist/viewers/stp/index.js"
+    },
+    "./viewers/db3": {
+      "types": "./dist/viewers/db3/index.d.ts",
+      "default": "./dist/viewers/db3/index.js"
+    },
+    "./viewers/reqif": {
+      "types": "./dist/viewers/reqif/index.d.ts",
+      "default": "./dist/viewers/reqif/index.js"
+    },
+    "./viewers/audio": { "types": "./dist/viewers/audio/index.d.ts", "default": "./dist/viewers/audio/index.js" },
+    "./viewers/audio/self-loading": { "types": "./dist/viewers/audio/self-loading.d.ts", "default": "./dist/viewers/audio/self-loading.js" },
+    "./viewers/video": { "types": "./dist/viewers/video/index.d.ts", "default": "./dist/viewers/video/index.js" },
+    "./viewers/dbc": { "types": "./dist/viewers/dbc/index.d.ts", "default": "./dist/viewers/dbc/index.js" },
+    "./viewers/arxml": { "types": "./dist/viewers/arxml/index.d.ts", "default": "./dist/viewers/arxml/index.js" },
+    "./viewers/a2l": { "types": "./dist/viewers/a2l/index.d.ts", "default": "./dist/viewers/a2l/index.js" },
+    "./viewers/asc": { "types": "./dist/viewers/asc/index.d.ts", "default": "./dist/viewers/asc/index.js" },
+    "./viewers/blf": { "types": "./dist/viewers/blf/index.d.ts", "default": "./dist/viewers/blf/index.js" },
+    "./viewers/mf4": { "types": "./dist/viewers/mf4/index.d.ts", "default": "./dist/viewers/mf4/index.js" },
+    "./viewers/pcap": { "types": "./dist/viewers/pcap/index.d.ts", "default": "./dist/viewers/pcap/index.js" },
+    "./viewers/pcapng": { "types": "./dist/viewers/pcapng/index.d.ts", "default": "./dist/viewers/pcapng/index.js" },
+    "./viewers/mermaid": { "types": "./dist/viewers/mermaid/index.d.ts", "default": "./dist/viewers/mermaid/index.js" },
+    "./viewers/mermaid/self-loading": { "types": "./dist/viewers/mermaid/self-loading.d.ts", "default": "./dist/viewers/mermaid/self-loading.js" },
+    "./viewers/plantuml": { "types": "./dist/viewers/plantuml/index.d.ts", "default": "./dist/viewers/plantuml/index.js" },
+    "./viewers/plantuml/self-loading": { "types": "./dist/viewers/plantuml/self-loading.d.ts", "default": "./dist/viewers/plantuml/self-loading.js" },
+    "./viewers/shapefile": { "types": "./dist/viewers/shapefile/index.d.ts", "default": "./dist/viewers/shapefile/index.js" },
+    "./viewers/psd": { "types": "./dist/viewers/psd/index.d.ts", "default": "./dist/viewers/psd/index.js" },
+    "./viewers/psd/self-loading": { "types": "./dist/viewers/psd/self-loading.d.ts", "default": "./dist/viewers/psd/self-loading.js" },
+    "./viewers/csv": {
+      "types": "./dist/viewers/csv/index.d.ts",
+      "default": "./dist/viewers/csv/index.js"
+    },
+    "./viewers/json": {
+      "types": "./dist/viewers/json/index.d.ts",
+      "default": "./dist/viewers/json/index.js"
+    },
+    "./viewers/toml": {
+      "types": "./dist/viewers/toml/index.d.ts",
+      "default": "./dist/viewers/toml/index.js"
+    },
+    "./viewers/jsonl": {
+      "types": "./dist/viewers/jsonl/index.d.ts",
+      "default": "./dist/viewers/jsonl/index.js"
+    },
+    "./viewers/yaml": {
+      "types": "./dist/viewers/yaml/index.d.ts",
+      "default": "./dist/viewers/yaml/index.js"
+    },
+    "./viewers/fallback": {
+      "types": "./dist/viewers/fallback/index.d.ts",
+      "default": "./dist/viewers/fallback/index.js"
+    },
+    "./viewers/pdf": {
+      "types": "./dist/viewers/pdf/index.d.ts",
+      "default": "./dist/viewers/pdf/index.js"
+    },
+    "./viewers/pdf/self-loading": {
+      "types": "./dist/viewers/pdf/self-loading.d.ts",
+      "default": "./dist/viewers/pdf/self-loading.js"
+    },
+    "./viewers/excel": {
+      "types": "./dist/viewers/excel/index.d.ts",
+      "default": "./dist/viewers/excel/index.js"
+    },
+    "./viewers/excel/self-loading": {
+      "types": "./dist/viewers/excel/self-loading.d.ts",
+      "default": "./dist/viewers/excel/self-loading.js"
+    },
+    "./viewers/image": {
+      "types": "./dist/viewers/image/index.d.ts",
+      "default": "./dist/viewers/image/index.js"
+    },
+    "./viewers/markdown": {
+      "types": "./dist/viewers/markdown/index.d.ts",
+      "default": "./dist/viewers/markdown/index.js"
+    },
+    "./viewers/markdown/self-loading": {
+      "types": "./dist/viewers/markdown/self-loading.d.ts",
+      "default": "./dist/viewers/markdown/self-loading.js"
+    },
+    "./viewers/archive": {
+      "types": "./dist/viewers/archive/index.d.ts",
+      "default": "./dist/viewers/archive/index.js"
+    },
+    "./viewers/parquet": {
+      "types": "./dist/viewers/parquet/index.d.ts",
+      "default": "./dist/viewers/parquet/index.js"
+    },
+    "./viewers/hdf5": {
+      "types": "./dist/viewers/hdf5/index.d.ts",
+      "default": "./dist/viewers/hdf5/index.js"
+    },
+    "./viewers/ppt": {
+      "types": "./dist/viewers/ppt/index.d.ts",
+      "default": "./dist/viewers/ppt/index.js"
+    },
+    "./viewers/ppt/self-loading": {
+      "types": "./dist/viewers/ppt/self-loading.d.ts",
+      "default": "./dist/viewers/ppt/self-loading.js"
+    },
+    "./viewers/word": {
+      "types": "./dist/viewers/word/index.d.ts",
+      "default": "./dist/viewers/word/index.js"
+    },
+    "./viewers/word/self-loading": {
+      "types": "./dist/viewers/word/self-loading.d.ts",
+      "default": "./dist/viewers/word/self-loading.js"
+    },
+    "./viewers/hwp": {
+      "types": "./dist/viewers/hwp/index.d.ts",
+      "default": "./dist/viewers/hwp/index.js"
+    },
+    "./viewers/proto": {
+      "types": "./dist/viewers/proto/index.d.ts",
+      "default": "./dist/viewers/proto/index.js"
+    },
+    "./viewers/mat": {
+      "types": "./dist/viewers/mat/index.d.ts",
+      "default": "./dist/viewers/mat/index.js"
+    },
+    "./styles/*": "./dist/styles/*",
+    "./assets/*": "./dist/assets/*"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && node scripts/build-styles.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@rhwp/core": "0.7.3",
+    "@types/node": "^20.14.0",
+    "buffer": "^6.0.3",
+    "hyparquet": "^1.26.2",
+    "hyparquet-compressors": "^1.1.1",
+    "jsdom": "^24.1.0",
+    "jszip": "^3.10.1",
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^4.10.38",
+    "typescript": "^5.5.0",
+    "vitest": "^2.1.0",
+    "xlsx": "~0.18.5",
+    "yaml": "2.8.3"
+  },
+  "peerDependencies": {
+    "ag-psd": "^30.1.0",
+    "docx-preview": "~0.3.7",
+    "dompurify": "^3.4.9",
+    "highlight.js": "^11.11.1",
+    "hyparquet": "^1.26.2",
+    "hyparquet-compressors": "^1.1.1",
+    "jszip": "^3.10.1",
+    "katex": "^0.16.9",
+    "marked": "^16.4.2",
+    "mermaid": "^11.15.0",
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^4.10.38",
+    "puml-canvas-js": "0.5.0",
+    "wavesurfer.js": "^7.8.0",
+    "xlsx": "~0.18.5",
+    "yaml": "2.8.3"
+  },
+  "peerDependenciesMeta": {
+    "ag-psd": {
+      "optional": true
+    },
+    "pdf-lib": {
+      "optional": true
+    },
+    "pdfjs-dist": {
+      "optional": true
+    },
+    "hyparquet": {
+      "optional": true
+    },
+    "hyparquet-compressors": {
+      "optional": true
+    },
+    "docx-preview": {
+      "optional": true
+    },
+    "jszip": {
+      "optional": true
+    },
+    "xlsx": {
+      "optional": true
+    },
+    "yaml": {
+      "optional": true
+    },
+    "marked": {
+      "optional": true
+    },
+    "dompurify": {
+      "optional": true
+    },
+    "highlight.js": {
+      "optional": true
+    },
+    "mermaid": {
+      "optional": true
+    },
+    "puml-canvas-js": {
+      "optional": true
+    },
+    "katex": {
+      "optional": true
+    },
+    "wavesurfer.js": {
+      "optional": true
+    }
+  }
+}

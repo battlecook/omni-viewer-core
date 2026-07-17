@@ -1,0 +1,21 @@
+node_modules/
+dist/
+docs/
+DESIGN.md
+.claude/settings.local.json
+
+# Test and coverage output
+coverage/
+
+# TypeScript incremental build metadata
+*.tsbuildinfo
+
+# Environment-specific files
+.env
+.env.*
+!.env.example
+
+# OS/editor files
+.DS_Store
+.idea/
+.vscode/

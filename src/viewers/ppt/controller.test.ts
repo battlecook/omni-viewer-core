@@ -1,0 +1,2 @@
+import {describe,expect,it} from 'vitest';import {createPptController,PPT_CONTINUOUS_THRESHOLD} from './controller.js';
+describe('ppt controller',()=>{it('navigates, clamps zoom, and defaults large decks to single mode',()=>{const c=createPptController(PPT_CONTINUOUS_THRESHOLD+1);expect(c.state.mode).toBe('single');c.dispatch({type:'jump',slide:999});expect(c.state.currentSlide).toBe(101);for(let i=0;i<99;i++)c.dispatch({type:'zoom-out'});expect(c.state.zoom).toBe(.25);c.dispatch({type:'set-mode',mode:'continuous'});expect(c.state.mode).toBe('continuous');});});

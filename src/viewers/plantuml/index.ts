@@ -1,0 +1,4 @@
+import type { HostContext } from '../../host/index.js';import { parsePlantUml } from '../../parsers/plantuml/index.js';import { diagramViewerCss,mountDiagramViewer,type DiagramMountOptions } from '../diagram.js';import type { ViewerHandle,ViewerInput } from '../types.js';
+export {parsePlantUml} from '../../parsers/plantuml/index.js';export {diagramViewerCss as plantumlViewerCss};export type PlantUmlViewerContext=HostContext;export type PlantUmlMountOptions=DiagramMountOptions;
+export const PLANTUML_VIEWER_META={id:'plantuml',displayNameKey:'plantuml.title',extensions:['puml','plantuml','iuml'],priority:20,requiredServices:[] as const,optionalServices:[] as const,inputOwnership:'borrows' as const};
+export function mountPlantUmlViewer(input:ViewerInput,container:HTMLElement,ctx:PlantUmlViewerContext,options:PlantUmlMountOptions={}):Promise<ViewerHandle>{return mountDiagramViewer('plantuml',parsePlantUml(input.data),input,container,ctx,options);}

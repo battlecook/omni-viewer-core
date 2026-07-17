@@ -1,0 +1,4 @@
+import type { AutomotiveViewerContext } from '../automotive/index.js'; import { mountAutomotiveViewer } from '../automotive/index.js'; import type { MountOptions, ViewerHandle, ViewerInput } from '../types.js';
+export { parseArxml } from '../../parsers/arxml/index.js'; export { automotiveViewerCss as arxmlViewerCss } from '../automotive/styles.js'; export type ArxmlViewerContext = AutomotiveViewerContext;
+export const ARXML_VIEWER_META = { id:'arxml',displayNameKey:'arxml.title',extensions:['arxml'],priority:20,requiredServices:[] as const,optionalServices:['clipboard'] as const,inputOwnership:'borrows' as const };
+export const mountArxmlViewer=(input:ViewerInput,container:HTMLElement,ctx:ArxmlViewerContext,options:MountOptions={}):Promise<ViewerHandle>=>mountAutomotiveViewer('arxml',input,container,ctx,options);
