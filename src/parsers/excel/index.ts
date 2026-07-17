@@ -19,6 +19,7 @@ import type {
     ParseResult
 } from '../types.js';
 import { DEFAULT_LIMITS, LimitTracker } from '../types.js';
+import { declaredZipUncompressedBytes } from '../zip-scan.js';
 import type { CellStyle, ExcelCell, ExcelCellType, ExcelSheet, ExcelWorkbook } from './model.js';
 
 export type {
@@ -41,6 +42,11 @@ export interface ExcelParseDeps {
 /** Input ownership: the parser consumes the input (DESIGN.md §3-①). */
 export const EXCEL_INPUT_OWNERSHIP = 'consumes' as const;
 
+/** Default cap on the archive's declared uncompressed total (matches
+ *  ARCHIVE_DEFAULT_LIMITS.maxDecompressedBytes); override via
+ *  `options.limits.maxDecompressedBytes`. */
+export const EXCEL_MAX_DECOMPRESSED_BYTES = 1024 * 1024 * 1024;
+
 export function parseExcel(
     input: Uint8Array,
     deps: ExcelParseDeps,
@@ -54,9 +60,11 @@ export function parseExcel(
         result,
         execution: {
             workerUsed: false,
-            // SheetJS decompresses the whole zip internally, so maxDecompressedBytes
-            // is not enforced during read in v1 — only maxInputBytes (pre-load) and
-            // maxEntries (post-read cell cap) are hard here (X4, follow-up: Worker).
+            // maxDecompressedBytes is checked against the ZIP central directory's
+            // declared sizes before read (zip-scan.ts), but SheetJS decompresses
+            // internally, so an archive that lies in its headers is not bounded
+            // during inflate — only maxInputBytes (pre-load) and maxEntries
+            // (post-read cell cap) are hard here (X4, follow-up: Worker).
             hardLimitEnforced: false,
             elapsedMillis: Date.now() - started
         }
@@ -69,6 +77,17 @@ export function parseExcel(
     }
     if (options.signal?.aborted) {
         return finish(fail('aborted', true, 'diag.aborted', diagnostics));
+    }
+
+    // Zip-bomb pre-scan: reject archives whose central directory declares more
+    // uncompressed data than the cap before SheetJS inflates anything. Legacy
+    // .xls (CFB) and other non-ZIP inputs return null and pass through.
+    const maxDecompressed = limits.maxDecompressedBytes ?? EXCEL_MAX_DECOMPRESSED_BYTES;
+    const declared = declaredZipUncompressedBytes(input);
+    if (declared !== null && declared > maxDecompressed) {
+        return finish(fail('limit-exceeded', false, 'diag.limit-exceeded.decompressed', diagnostics, {
+            maxBytes: maxDecompressed
+        }));
     }
 
     let wb: XLSX.WorkBook;
@@ -393,21 +412,22 @@ function borderStyle(style: string | undefined): string {
 
 /**
  * Format a SheetJS date cell to a calendar-preserving ISO string. SheetJS
- * constructs the Date from the serial's parts in local time; reading them back
- * with local getters round-trips the intended calendar date on any host
- * timezone (deterministic), so we never call the timezone-sensitive
- * `toISOString()` (X5, determinism rule).
+ * (>=0.20) constructs the Date from the serial's parts in UTC; reading them
+ * back with UTC getters round-trips the intended calendar date on any host
+ * timezone (deterministic), so we never call local getters (X5, determinism
+ * rule). Requires xlsx >=0.20.2 (the peer range) — 0.18 built these Dates
+ * from local-time parts, which this would misread.
  */
 function dateToIso(d: Date): string {
     if (Number.isNaN(d.getTime())) return '';
     const pad = (n: number, width = 2): string => String(n).padStart(width, '0');
-    const y = pad(d.getFullYear(), 4);
-    const mo = pad(d.getMonth() + 1);
-    const da = pad(d.getDate());
-    const h = d.getHours();
-    const mi = d.getMinutes();
-    const s = d.getSeconds();
-    const ms = d.getMilliseconds();
+    const y = pad(d.getUTCFullYear(), 4);
+    const mo = pad(d.getUTCMonth() + 1);
+    const da = pad(d.getUTCDate());
+    const h = d.getUTCHours();
+    const mi = d.getUTCMinutes();
+    const s = d.getUTCSeconds();
+    const ms = d.getUTCMilliseconds();
     if (h === 0 && mi === 0 && s === 0 && ms === 0) return `${y}-${mo}-${da}`;
     const base = `${y}-${mo}-${da}T${pad(h)}:${pad(mi)}:${pad(s)}`;
     return ms ? `${base}.${pad(ms, 3)}` : base;

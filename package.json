@@ -273,8 +273,8 @@
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^4.10.38",
     "typescript": "^5.5.0",
-    "vitest": "^2.1.0",
-    "xlsx": "~0.18.5",
+    "vitest": "^4.1.10",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
     "yaml": "2.8.3"
   },
   "peerDependencies": {
@@ -293,7 +293,7 @@
     "proj4": "^2.20.9",
     "puml-canvas-js": "0.5.0",
     "wavesurfer.js": "^7.8.0",
-    "xlsx": "~0.18.5",
+    "xlsx": ">=0.20.2",
     "yaml": "2.8.3"
   },
   "peerDependenciesMeta": {

@@ -3,7 +3,7 @@ import { DocBinaryParser } from '../../parsers/doc-binary/index.js';
 import { MountAbortedError, VIEWER_ROOT_CLASS, type MountOptions, type ViewerHandle, type ViewerInput } from '../types.js';
 import { createWordController, type WordController } from './controller.js';
 import { wordViewerCss } from './styles.js';
-import { preprocessDocx, type ChartModel, type DocxPlaceholder, type SheetModule, type ZipModule } from './docx-preprocess.js';
+import { DocxDecompressionLimitError, preprocessDocx, type ChartModel, type DocxPlaceholder, type SheetModule, type ZipModule } from './docx-preprocess.js';
 import { paginateLegacyDocument } from './paginate.js';
 import { normalizeDocxPreviewDom } from './normalize-docx.js';
 
@@ -71,7 +71,7 @@ export async function mountWordViewer(input: ViewerInput, container: HTMLElement
         }
     } catch (error) {
         if (error instanceof MountAbortedError) { off(); disposers.forEach((dispose) => dispose()); frame.remove(); throw error; }
-        content.replaceChildren(el('div', 'omni-word__error', error instanceof Error ? error.message : String(error)));
+        content.replaceChildren(el('div', 'omni-word__error', error instanceof DocxDecompressionLimitError ? ctx.i18n.t('diag.word.decompression-limit') : error instanceof Error ? error.message : String(error)));
     }
     return { controller, dispose() { off(); disposers.forEach((dispose) => dispose()); frame.remove(); } };
 }

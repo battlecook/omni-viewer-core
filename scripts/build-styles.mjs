@@ -70,3 +70,7 @@ await copyFile(
     path.join(root, '..', 'native', 'audio-engine', 'lib', 'COPYING.kissfft'),
     path.join(licenses, 'kissfft.txt')
 );
+await copyFile(
+    path.join(root, '..', 'native', 'audio-engine', 'COPYING.emscripten'),
+    path.join(licenses, 'emscripten.txt')
+);

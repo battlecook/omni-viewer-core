@@ -97,6 +97,17 @@ describe('parseExcel', () => {
         expect(EXCEL_INPUT_OWNERSHIP).toBe('consumes');
     });
 
+    it('rejects archives that declare more uncompressed data than the limit', () => {
+        const bytes = xlsxBytes('S', [['a', 'b'], [1, 2]]);
+        const { result, execution } = parseExcel(bytes, deps, { limits: { maxDecompressedBytes: 1 } });
+        expect(result.status).toBe('failed');
+        if (result.status === 'failed') {
+            expect(result.failure.code).toBe('limit-exceeded');
+            expect(result.failure.messageKey).toBe('diag.limit-exceeded.decompressed');
+        }
+        expect(execution.hardLimitEnforced).toBe(false);
+    });
+
     it('reads merges and column/row sizes for grid mode (X3)', () => {
         const ws = XLSX.utils.aoa_to_sheet([['title', '', ''], ['a', 'b', 'c']]);
         ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 2 } }]; // A1:C1

@@ -19,6 +19,22 @@ if [ -f /tmp/emsdk/emsdk_env.sh ]; then
     source /tmp/emsdk/emsdk_env.sh 2>/dev/null
 fi
 
+# Pin the toolchain: the committed artifacts under assets/audio-engine/ were
+# built with this emsdk release. Refuse to build with anything else so the
+# output stays reproducible and THIRD_PARTY_NOTICES.md stays accurate.
+EMSDK_VERSION="6.0.3"
+
+if ! command -v emcc >/dev/null 2>&1; then
+    echo "emcc not found — install emsdk $EMSDK_VERSION (emsdk install $EMSDK_VERSION && emsdk activate $EMSDK_VERSION)" >&2
+    exit 1
+fi
+ACTUAL_VERSION="$(emcc --version | head -n 1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)"
+if [ "$ACTUAL_VERSION" != "$EMSDK_VERSION" ]; then
+    echo "emcc $ACTUAL_VERSION found, but artifacts are pinned to emsdk $EMSDK_VERSION" >&2
+    echo "run: emsdk install $EMSDK_VERSION && emsdk activate $EMSDK_VERSION" >&2
+    exit 1
+fi
+
 mkdir -p "$OUT_DIR"
 echo "Building WASM audio engine (web,worker / ES6)..."
 

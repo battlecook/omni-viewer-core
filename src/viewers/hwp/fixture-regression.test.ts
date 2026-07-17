@@ -17,8 +17,8 @@ const context = { assets: { resolveAssetUrl: async (path: string) => path }, i18
 
 describe('real HWP document layout regression', () => {
     it.each([
-        ['aligns.hwp', 16, '872b19f5aaba550489a28fe931ebef34203dccaffaa352383a89eb9438e04b0f', false],
-        ['simpletable.hwpx', 1, '4d5acc5459aa6b69d59bcd7d4c54caad087c997bf8b2860c684d28ada6cec901', true]
+        ['text-align.hwp', 1, '133bd570ff76e8b677ccaf50cf38cf10883885515a731f6b700f9342123e5476', false],
+        ['nested-table.hwpx', 1, 'f91ef1aa06b0468e0eed30123fb785251433761662c622462ede186dd76f2f58', true]
     ] as const)('renders %s with stable text and layout geometry', async (name, pages, svgHash, hasTableLines) => {
         vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
         const bytes = fixture(name); const document = new HwpDocument(bytes); expect(document.pageCount()).toBe(pages);

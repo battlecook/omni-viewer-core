@@ -5,10 +5,11 @@
 // everything a text cell (the bug this replaces).
 //
 // Dates: the model stores a calendar-preserving ISO string (model.ts). We
-// rebuild a Date from its numeric components — `new Date(y, m, d, …)`, which is
+// rebuild a Date from its numeric components — `Date.UTC(y, m, d, …)`, which is
 // well-defined (not the impl-defined string parse the parser avoided) — and let
-// SheetJS serialize it. SheetJS's own Date→serial→date round-trip is exact,
-// whereas hand-computed serials pick up a sub-minute read-back rounding error.
+// SheetJS serialize it. SheetJS (>=0.20) maps Dates to serials from their UTC
+// parts, and its own Date→serial→date round-trip is exact, whereas
+// hand-computed serials pick up a sub-minute read-back rounding error.
 // `xlsx` is injected (base entries never import it — ADR 14).
 
 import type * as XLSX from 'xlsx';
@@ -73,8 +74,9 @@ function toCellObject(cell: ExcelCell): XLSX.CellObject {
     }
 }
 
-/** Rebuild a Date from ISO components (local, well-defined) — mirrors the
- *  parser's local-getter formatting so the calendar date round-trips. */
+/** Rebuild a Date from ISO components via `Date.UTC` — mirrors the parser's
+ *  UTC-getter formatting (SheetJS >=0.20 serializes date cells from UTC
+ *  parts) so the calendar date round-trips. */
 function isoToDate(iso: string): Date | null {
     const m = ISO_RE.exec(iso);
     if (!m) return null;
@@ -85,5 +87,5 @@ function isoToDate(iso: string): Date | null {
     const minute = m[5] !== undefined ? Number(m[5]) : 0;
     const second = m[6] !== undefined ? Number(m[6]) : 0;
     const millis = m[7] !== undefined ? Number(m[7].padEnd(3, '0')) : 0;
-    return new Date(year, month - 1, day, hour, minute, second, millis);
+    return new Date(Date.UTC(year, month - 1, day, hour, minute, second, millis));
 }

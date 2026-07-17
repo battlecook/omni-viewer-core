@@ -91,6 +91,10 @@ const FALLBACK_COLUMN_WIDTH = 120;
  *  open the rename editor instead (docs §6). */
 export const SORT_CLICK_DELAY_MS = 250;
 
+/** Raw-view typing settles this long before the text is reparsed into the
+ *  document (docs §6 — the edit only marks dirty; saving stays explicit). */
+export const RAW_EDIT_DEBOUNCE_MS = 400;
+
 const DELIMITER_LABEL_KEYS: Record<CsvDelimiter, string> = {
     ',': 'csv.delimiter.comma',
     ';': 'csv.delimiter.semicolon',
@@ -134,6 +138,8 @@ export async function mountCsvViewer(
     let activeResizeCleanup: (() => void) | null = null;
     let pendingSortTimer: ReturnType<typeof setTimeout> | null = null;
     let contextMenuCleanup: (() => void) | null = null;
+    let rawTextarea: HTMLTextAreaElement | null = null;
+    let rawEditTimer: ReturnType<typeof setTimeout> | null = null;
 
     const el = <K extends keyof HTMLElementTagNameMap>(
         tag: K,
@@ -256,6 +262,15 @@ export async function mountCsvViewer(
         controller.dispatch({ type: 'insert-row', afterRowId: 'end' })
     );
 
+    const addColumnBtn = el('button', undefined, t('csv.addColumn'));
+    addColumnBtn.type = 'button';
+    on(addColumnBtn, 'click', () =>
+        controller.dispatch({
+            type: 'insert-column',
+            columnIndex: controller.state.columnCount
+        })
+    );
+
     const saveBtn = el('button', undefined, t('csv.save'));
     saveBtn.type = 'button';
     const writeback = ctx.writeback;
@@ -370,6 +385,7 @@ export async function mountCsvViewer(
         undoBtn,
         redoBtn,
         addRowBtn,
+        addColumnBtn,
         saveBtn,
         saveAsBtn,
         copyTsvBtn,
@@ -484,6 +500,41 @@ export async function mountCsvViewer(
         };
     }
 
+    const focusedInRoot = (): Element | null =>
+        root instanceof ShadowRoot ? root.activeElement : document.activeElement;
+
+    /** Commit pending raw-view typing into the document (debounce flush). */
+    function commitRawEdit(): void {
+        if (rawEditTimer) {
+            clearTimeout(rawEditTimer);
+            rawEditTimer = null;
+        }
+        if (rawTextarea && rawTextarea.parentNode === body) {
+            controller.dispatch({ type: 'replace-document', text: rawTextarea.value });
+        }
+    }
+
+    function ensureRawTextarea(): HTMLTextAreaElement {
+        if (rawTextarea) return rawTextarea;
+        const ta = el('textarea', 'omni-csv__raw omni-csv__raw-edit');
+        ta.spellcheck = false;
+        ta.setAttribute('aria-label', t('csv.rawView'));
+        // Keep typing out of the sort/undo shortcuts; the browser's own
+        // undo/redo applies inside the textarea.
+        ta.addEventListener('keydown', (e) => e.stopPropagation());
+        ta.addEventListener('input', () => {
+            if (rawEditTimer) clearTimeout(rawEditTimer);
+            rawEditTimer = setTimeout(commitRawEdit, RAW_EDIT_DEBOUNCE_MS);
+        });
+        // Leaving the editor (e.g. clicking Save or Table) commits first, so
+        // the action that took the focus sees the edited document.
+        ta.addEventListener('blur', () => {
+            if (rawEditTimer) commitRawEdit();
+        });
+        rawTextarea = ta;
+        return ta;
+    }
+
     /** Swap a cell's content for a text input; Enter/blur commits, Esc cancels. */
     function startInlineEdit(
         cell: HTMLElement,
@@ -534,12 +585,16 @@ export async function mountCsvViewer(
 
         // Editing controls surface once editing has started (docs §6) — pure
         // readers never see them. "Add row" also shows for empty documents.
+        // "Add column" is the fallback while there is no data column target
+        // from which the column context menu could be opened.
         const editingActive = state.dirty || state.canUndo || state.canRedo;
         for (const btn of [undoBtn, redoBtn, saveBtn]) {
             btn.style.display = editingActive ? '' : 'none';
         }
         addRowBtn.style.display =
             editingActive || (state.rowCount === 0 && state.status === 'ok') ? '' : 'none';
+        addColumnBtn.style.display =
+            state.columnCount === 0 && state.status === 'ok' ? '' : 'none';
         undoBtn.disabled = !state.canUndo;
         redoBtn.disabled = !state.canRedo;
         if (ctx.writeback) saveBtn.disabled = !state.dirty;
@@ -580,22 +635,50 @@ export async function mountCsvViewer(
             );
         }
 
-        body.replaceChildren();
-        if (state.viewMode === 'raw') {
-            body.appendChild(el('pre', 'omni-csv__raw', controller.rawText));
-        } else if (state.rowCount === 0) {
-            body.appendChild(el('div', 'omni-csv__empty', t('csv.empty')));
-        } else if (hasActiveSearch && state.matchedRowCount === 0) {
-            body.appendChild(el('div', 'omni-csv__empty', t('csv.noMatches')));
+        const rawEditable = state.viewMode === 'raw' && state.status === 'ok';
+        if (rawEditable && rawTextarea && rawTextarea.parentNode === body) {
+            // The raw editor is already mounted — this render came from its own
+            // debounced commit or a toolbar action. Keep the node so focus and
+            // caret survive; refresh its content only when the change came from
+            // elsewhere (undo/redo, table edits), never mid-typing.
+            if (focusedInRoot() !== rawTextarea) {
+                rawTextarea.value = controller.toRawText();
+            }
         } else {
-            const table = renderTable(state);
-            body.appendChild(table);
-            if (state.statsVisible) {
-                // The stats row sticks right below the header row; its offset
-                // is the measured header height (0 in JSDOM — harmless).
-                const headRow = table.querySelector('thead tr');
-                const headHeight = (headRow as HTMLElement | null)?.offsetHeight ?? 0;
-                table.style.setProperty('--omni-csv-head-h', `${headHeight}px`);
+            body.replaceChildren();
+            if (state.viewMode === 'raw') {
+                if (rawEditable) {
+                    const ta = ensureRawTextarea();
+                    ta.value = controller.toRawText();
+                    body.appendChild(ta);
+                } else {
+                    // partial/failed documents stay a read-only source view
+                    // (docs §6 — a truncated document must not be editable).
+                    body.appendChild(el('pre', 'omni-csv__raw', controller.rawText));
+                }
+            } else if (state.columnCount === 0) {
+                body.appendChild(el('div', 'omni-csv__empty', t('csv.empty')));
+            } else if (
+                state.rowCount > 0 &&
+                hasActiveSearch &&
+                state.matchedRowCount === 0
+            ) {
+                body.appendChild(el('div', 'omni-csv__empty', t('csv.noMatches')));
+            } else {
+                const table = renderTable(state);
+                body.appendChild(table);
+                // A header-only document is still editable: keep the headers visible
+                // so rename and column context-menu actions remain reachable.
+                if (state.rowCount === 0) {
+                    body.appendChild(el('div', 'omni-csv__empty', t('csv.empty')));
+                }
+                if (state.statsVisible) {
+                    // The stats row sticks right below the header row; its offset
+                    // is the measured header height (0 in JSDOM — harmless).
+                    const headRow = table.querySelector('thead tr');
+                    const headHeight = (headRow as HTMLElement | null)?.offsetHeight ?? 0;
+                    table.style.setProperty('--omni-csv-head-h', `${headHeight}px`);
+                }
             }
         }
 
@@ -906,6 +989,7 @@ export async function mountCsvViewer(
         activeResizeCleanup?.();
         closeContextMenu();
         if (pendingSortTimer) clearTimeout(pendingSortTimer);
+        if (rawEditTimer) clearTimeout(rawEditTimer);
         if (toastTimer) clearTimeout(toastTimer);
         if (root instanceof ShadowRoot) {
             root.replaceChildren();

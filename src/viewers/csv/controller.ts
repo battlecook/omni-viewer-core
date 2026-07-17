@@ -88,6 +88,10 @@ export type CsvAction =
     | { type: 'delete-row'; rowId: RowId }
     | { type: 'insert-column'; columnIndex: number }
     | { type: 'delete-column'; columnIndex: number }
+    // Raw-view editing: reparse the edited text (active delimiter forced) and
+    // swap the whole in-memory document as one undoable edit. Never touches
+    // the file — saving stays behind the explicit Save actions (docs §6).
+    | { type: 'replace-document'; text: string }
     | { type: 'undo' }
     | { type: 'redo' };
 
@@ -120,6 +124,9 @@ export interface CsvController {
     markSaved(): void;
     /** Decoded source text (raw view). */
     readonly rawText: string;
+    /** Raw-view text: the verbatim source while the document is unedited,
+     *  the normalized document serialization once edits exist. */
+    toRawText(): string;
 }
 
 // Inverse-operation stack entries (docs §6: undo/redo).
@@ -130,7 +137,19 @@ type EditOp =
     | { kind: 'insert-col'; columnIndex: number; header: string }
     // delete-col snapshots the removed cells by RowId so undo can restore
     // them; rows created after the delete never appear in the map.
-    | { kind: 'delete-col'; columnIndex: number; header: string; cells: Map<RowId, string> };
+    | { kind: 'delete-col'; columnIndex: number; header: string; cells: Map<RowId, string> }
+    // Whole-document swap (raw-view edit). Snapshots share row objects with
+    // the live document — safe because the LIFO stack reverts any op above
+    // this one before it can be crossed.
+    | { kind: 'document'; prev: DocumentSnapshot; next: DocumentSnapshot };
+
+interface DocumentSnapshot {
+    headers: string[];
+    rows: EditableRow[];
+    columnCount: number;
+    parse: ParseResult<CsvDocument>;
+    document: CsvDocument;
+}
 
 interface RowPositions {
     order: number;
@@ -176,6 +195,9 @@ export function createCsvController(
     let redoStack: EditOp[] = [];
     let savedDepth = 0;
     let savedUnreachable = false;
+    /** True once the stack overflowed — an empty undo stack then no longer
+     *  proves the document equals the original source text. */
+    let opsDropped = false;
 
     function isDirty(): boolean {
         return savedUnreachable || undoStack.length !== savedDepth;
@@ -248,6 +270,7 @@ export function createCsvController(
         redoStack = [];
         savedDepth = 0;
         savedUnreachable = false;
+        opsDropped = false;
     }
 
     // ------------------------------------------------------------- edit ops
@@ -345,6 +368,23 @@ export function createCsvController(
                 else insertColumnAt(op.columnIndex, op.header, op.cells);
                 break;
             }
+            case 'document': {
+                const target = direction === 'forward' ? op.next : op.prev;
+                headers = target.headers;
+                rowOrder = target.rows.slice();
+                byId = new Map(rowOrder.map((r) => [r.id, r]));
+                rebuildOrderPos();
+                columnCount = target.columnCount;
+                parse = target.parse;
+                document = target.document;
+                // The sorted column may not exist in the swapped-in document.
+                if (sort.columnIndex !== null && sort.columnIndex >= columnCount) {
+                    sort = { columnIndex: null, direction: null };
+                    sortedColumnType = null;
+                }
+                resort();
+                break;
+            }
         }
         statsCache = null;
     }
@@ -359,9 +399,24 @@ export function createCsvController(
         undoStack.push(op);
         if (undoStack.length > UNDO_STACK_LIMIT) {
             undoStack.shift();
+            opsDropped = true;
             if (savedDepth > 0) savedDepth--;
             else savedUnreachable = true;
         }
+    }
+
+    function documentCsv(): string {
+        return serializeRowsToCsv(
+            rowOrder.map((r) => r.cells),
+            headers,
+            document.delimiter
+        );
+    }
+
+    /** Verbatim source while provably unedited (original quoting and line
+     *  endings preserved); normalized serialization once edits exist. */
+    function toRawText(): string {
+        return undoStack.length === 0 && !opsDropped ? text : documentCsv();
     }
 
     // -------------------------------------------------------------- state
@@ -571,6 +626,44 @@ export function createCsvController(
                 });
                 break;
             }
+            case 'replace-document': {
+                if (parse.status !== 'ok') return;
+                if (action.text === toRawText()) return;
+                // The active delimiter is forced so mid-edit text never flips
+                // the document to a surprise delimiter; switching stays with
+                // the delimiter select (and its dirty guard).
+                const parseOptions: CsvParseOptions = { delimiter: document.delimiter };
+                if (options.fileName !== undefined) parseOptions.fileName = options.fileName;
+                if (options.limits !== undefined) parseOptions.limits = options.limits;
+                const next = parseCsv(action.text, parseOptions).result;
+                // A swap that cannot represent the full text (partial/failed,
+                // e.g. over the row limit) is refused; the good document stays.
+                // Emptied text parses 'ok' and legitimately empties the document.
+                if (next.status !== 'ok') return;
+                const nextRows = next.document.rows.map((cells) => ({
+                    id: nextRowId++,
+                    cells: [...cells]
+                }));
+                pushOp({
+                    kind: 'document',
+                    prev: {
+                        headers,
+                        rows: rowOrder.slice(),
+                        columnCount,
+                        parse,
+                        document
+                    },
+                    next: {
+                        headers: [...next.document.headers],
+                        rows: nextRows,
+                        columnCount: next.document.columnCount,
+                        parse: next,
+                        document: next.document
+                    }
+                });
+                page = 0;
+                break;
+            }
             case 'undo': {
                 const op = undoStack.pop();
                 if (!op) return;
@@ -640,18 +733,15 @@ export function createCsvController(
             );
         },
         toDocumentCsv() {
-            return serializeRowsToCsv(
-                rowOrder.map((r) => r.cells),
-                headers,
-                document.delimiter
-            );
+            return documentCsv();
         },
         markSaved() {
             savedDepth = undoStack.length;
             savedUnreachable = false;
             commit();
         },
-        rawText: text
+        rawText: text,
+        toRawText
     };
 }
 

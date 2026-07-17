@@ -204,6 +204,21 @@ export const csvViewerCss = `
     font-family: var(--omni-font-mono, "SF Mono", Monaco, Menlo, Consolas, monospace);
     white-space: pre;
 }
+.omni-csv__raw-edit {
+    display: block;
+    width: 100%;
+    min-height: 100%;
+    box-sizing: border-box;
+    border: 0;
+    resize: none;
+    font-size: inherit;
+    line-height: inherit;
+    color: var(--omni-fg, #d4d4d4);
+    background: transparent;
+}
+.omni-csv__raw-edit:focus {
+    outline: none;
+}
 .omni-csv__table thead .omni-csv__stats-row th {
     top: var(--omni-csv-head-h, 24px);
     cursor: default;

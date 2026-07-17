@@ -74,6 +74,7 @@ export const CATALOG_EN: Record<string, string> = {
     'diag.word.invalid-format': 'This file could not be read as a Word document.',
     'diag.word.missing-dependency': 'DOCX rendering is not installed on this platform.',
     'diag.word.limit-exceeded': 'This Word document exceeds the 50 MB limit.',
+    'diag.word.decompression-limit': 'This Word document declares more uncompressed data than can be safely opened.',
     'diag.word.legacy-partial': 'Some legacy Word formatting could not be displayed.',
     'diag.word.embedded-partial': 'Some embedded Word objects could not be displayed.', 'word.image': 'Embedded image',
     'hwp.title': 'HWP document', 'hwp.zoomIn': 'Zoom in', 'hwp.zoomOut': 'Zoom out',
@@ -155,6 +156,7 @@ export const CATALOG_EN: Record<string, string> = {
     // Generic diagnostics
     'diag.limit-exceeded.rows': 'Only the first {count} rows were parsed (row limit reached).',
     'diag.limit-exceeded.input': 'The file exceeds the maximum supported size ({maxBytes} bytes).',
+    'diag.limit-exceeded.decompressed': 'The archive declares more uncompressed data than the supported limit ({maxBytes} bytes).',
     'diag.aborted': 'Parsing was cancelled.',
     'diag.csv.ragged-rows': '{count} row(s) had a different number of columns and were padded or truncated.',
 
@@ -208,6 +210,7 @@ export const CATALOG_EN: Record<string, string> = {
     'csv.exportFile.hint': 'Save the current search and sorted results as a new file',
     'csv.editUnavailable': 'Editing requires a fully parsed file',
     'csv.addRow': 'Add row',
+    'csv.addColumn': 'Add column',
     'csv.insertRowBelow': 'Insert row below',
     'csv.deleteRow': 'Delete row',
     'csv.insertColumnLeft': 'Insert column left',

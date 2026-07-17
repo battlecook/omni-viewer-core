@@ -306,6 +306,28 @@ describe('CsvController', () => {
         expect(c.state.headers).toEqual(['name', 'Column3', 'score', 'Column4']);
     });
 
+    it('insert-column creates the first column in a completely empty document', () => {
+        const c = createCsvController('');
+        expect(c.state.columnCount).toBe(0);
+        expect(c.state.rowCount).toBe(0);
+
+        c.dispatch({ type: 'insert-column', columnIndex: 0 });
+        expect(c.state.headers).toEqual(['Column1']);
+        expect(c.state.columnCount).toBe(1);
+        expect(c.toDocumentCsv()).toBe('Column1');
+        expect(c.state.dirty).toBe(true);
+
+        c.dispatch({ type: 'undo' });
+        expect(c.state.headers).toEqual([]);
+        expect(c.state.columnCount).toBe(0);
+        expect(c.toDocumentCsv()).toBe('');
+        expect(c.state.dirty).toBe(false);
+
+        c.dispatch({ type: 'redo' });
+        expect(c.state.headers).toEqual(['Column1']);
+        expect(c.state.columnCount).toBe(1);
+    });
+
     it('delete-column snapshots values for undo and refuses to delete the last column', () => {
         const c = createCsvController('name,score\nkim,1\nlee,2\n');
         c.dispatch({ type: 'delete-column', columnIndex: 0 });
@@ -354,6 +376,69 @@ describe('CsvController', () => {
         c.dispatch({ type: 'delete-column', columnIndex: 0 });
         expect(c.state.columnCount).toBe(2);
         expect(c.state.dirty).toBe(false);
+    });
+
+    it('replace-document swaps the document as one undoable edit; raw text tracks it', () => {
+        const c = createCsvController('a,b\n1,2\n');
+        expect(c.toRawText()).toBe('a,b\n1,2\n'); // verbatim while unedited
+
+        c.dispatch({ type: 'replace-document', text: 'a,b,c\nx,y,z\nq,w,e' });
+        expect(c.state.headers).toEqual(['a', 'b', 'c']);
+        expect(c.state.columnCount).toBe(3);
+        expect(c.state.rowCount).toBe(2);
+        expect(c.state.dirty).toBe(true);
+        expect(c.toRawText()).toBe('a,b,c\nx,y,z\nq,w,e');
+        expect(c.toDocumentCsv()).toBe('a,b,c\nx,y,z\nq,w,e');
+
+        // Cell edits keep working against the swapped-in rows.
+        const rowId = c.state.visibleRowIds[0] as number;
+        c.dispatch({ type: 'edit-cell', rowId, columnIndex: 2, value: 'Z' });
+        expect(c.getRowById(rowId)).toEqual(['x', 'y', 'Z']);
+
+        c.dispatch({ type: 'undo' }); // cell edit
+        c.dispatch({ type: 'undo' }); // document swap
+        expect(c.state.headers).toEqual(['a', 'b']);
+        expect(c.toRawText()).toBe('a,b\n1,2\n'); // original text restored verbatim
+        expect(c.state.dirty).toBe(false);
+
+        c.dispatch({ type: 'redo' });
+        expect(c.state.headers).toEqual(['a', 'b', 'c']);
+        expect(c.state.dirty).toBe(true);
+    });
+
+    it('replace-document keeps the active delimiter, clears out-of-range sort, ignores no-ops', () => {
+        const c = createCsvController('a;b\n1;2\n');
+        // Comma text parsed with the forced semicolon delimiter → one column.
+        c.dispatch({ type: 'replace-document', text: 'x,y\n1,2' });
+        expect(c.state.columnCount).toBe(1);
+        expect(c.state.delimiter).toBe(';');
+        c.dispatch({ type: 'undo' });
+
+        c.dispatch({ type: 'sort-column', columnIndex: 1 });
+        c.dispatch({ type: 'replace-document', text: 'only\n1\n2' });
+        expect(c.state.sort).toEqual({ columnIndex: null, direction: null });
+
+        // Dispatching the current text is a no-op (no undo entry).
+        const depth = { undo: c.state.canUndo, rows: c.state.rowCount };
+        c.dispatch({ type: 'replace-document', text: c.toRawText() });
+        expect(c.state.canUndo).toBe(depth.undo);
+        expect(c.state.rowCount).toBe(depth.rows);
+    });
+
+    it('replace-document refuses partial sources and over-limit replacements', () => {
+        const lines = ['h'];
+        for (let i = 0; i < 20; i++) lines.push(String(i));
+        const partial = createCsvController(lines.join('\n'), { limits: { maxEntries: 5 } });
+        expect(partial.state.status).toBe('partial');
+        partial.dispatch({ type: 'replace-document', text: 'h\n1\n' });
+        expect(partial.state.dirty).toBe(false);
+        expect(partial.state.rowCount).toBe(5);
+
+        const c = createCsvController('a\n1\n', { limits: { maxEntries: 5 } });
+        expect(c.state.status).toBe('ok');
+        c.dispatch({ type: 'replace-document', text: ['a', ...Array(20).fill('1')].join('\n') });
+        expect(c.state.dirty).toBe(false); // over-limit replacement refused
+        expect(c.state.rowCount).toBe(1);
     });
 
     it('rejects edit actions on partial parses and delimiter changes while dirty', () => {

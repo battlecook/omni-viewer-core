@@ -28,3 +28,22 @@ sources under `native/audio-engine/` and includes the following software:
 - stb_vorbis, copyright (c) 2017 Sean Barrett, used under the MIT license
   option. The complete upstream license statement remains embedded in
   `native/audio-engine/lib/stb_vorbis.c`.
+- Emscripten runtime, copyright the Emscripten authors, MIT license. The
+  generated `audio_engine.mjs` embeds Emscripten's JavaScript runtime
+  support code, produced by emsdk 6.0.3 (the version `build.sh` pins).
+  The complete license text from that release is distributed at
+  `native/audio-engine/COPYING.emscripten` and copied to
+  `dist/licenses/emscripten.txt` by the package build.
+  Source: https://github.com/emscripten-core/emscripten/blob/6.0.3/LICENSE
+
+## HWP test fixtures
+
+The HWP/HWPX regression fixtures under `src/viewers/hwp/fixtures/`
+(`text-align.hwp.b64`, `nested-table.hwpx.b64`) are sample documents from the
+rhwp project, used only for tests and never published to the npm package.
+
+- Project: rhwp
+- Copyright: (c) 2025-2026 Edward Kim
+- License: MIT
+- Source: https://github.com/edwardkim/rhwp (`rhwp-studio/public/samples/`,
+  `samples/valign_fixtures/`)

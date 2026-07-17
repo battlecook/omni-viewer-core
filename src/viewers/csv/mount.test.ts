@@ -403,6 +403,113 @@ describe('mountCsvViewer', () => {
         handle.dispose();
     });
 
+    it('creates the first column from a completely empty document', async () => {
+        const container = document.createElement('div');
+        const handle = await mountCsvViewer(csvInput(''), container, stubCtx());
+        const root = shadow(container);
+        const toolbarButton = (label: string) =>
+            [...root.querySelectorAll('.omni-csv__toolbar button')].find(
+                (button) =>
+                    button.textContent === label ||
+                    button.getAttribute('aria-label') === label
+            ) as HTMLButtonElement;
+
+        const addColumn = toolbarButton('Add column');
+        expect(addColumn.style.display).not.toBe('none');
+        addColumn.click();
+
+        expect(root.querySelector('thead th')?.textContent).toContain('Column1');
+        expect(root.querySelectorAll('tbody tr')).toHaveLength(0);
+        expect(root.querySelector('.omni-csv__empty')?.textContent).toContain('no rows');
+
+        // Undo back to zero columns, then verify the escape hatch remains even
+        // if a zero-cell row is inserted first.
+        toolbarButton('Undo').click();
+        toolbarButton('Add row').click();
+        expect(toolbarButton('Add column').style.display).not.toBe('none');
+        toolbarButton('Add column').click();
+        expect(root.querySelector('thead th')?.textContent).toContain('Column1');
+        expect(root.querySelectorAll('tbody td')).toHaveLength(1);
+        handle.dispose();
+    });
+
+    it('raw view is an editable textarea; debounced edits flow back to the table as dirty', async () => {
+        const container = document.createElement('div');
+        const handle = await mountCsvViewer(csvInput('n\n1\n'), container, stubCtx());
+        const root = shadow(container);
+        const btn = (label: string) =>
+            [...root.querySelectorAll('button')].find(
+                (b) => b.textContent === label
+            ) as HTMLButtonElement;
+
+        btn('Raw').click();
+        const ta = root.querySelector('textarea.omni-csv__raw') as HTMLTextAreaElement;
+        expect(ta).not.toBeNull();
+        expect(ta.value).toBe('n\n1\n'); // verbatim source while unedited
+        expect(root.querySelector('pre')).toBeNull();
+
+        vi.useFakeTimers();
+        try {
+            ta.value = 'n,m\n1,2\n3,4';
+            ta.dispatchEvent(new Event('input'));
+            expect(handle.isDirty()).toBe(false); // nothing committed yet
+            vi.runAllTimers(); // debounce fires -> replace-document
+        } finally {
+            vi.useRealTimers();
+        }
+        expect(handle.isDirty()).toBe(true);
+        expect(root.querySelector('.omni-csv__dirty')?.textContent).toContain('Unsaved');
+        // The textarea node survived its own commit's re-render.
+        expect(root.querySelector('textarea.omni-csv__raw')).toBe(ta);
+
+        btn('Table').click();
+        const headers = [...root.querySelectorAll('thead th')].map((th) =>
+            th.textContent?.replace(/[▲▼]/g, '').trim()
+        );
+        expect(headers).toEqual(['n', 'm']);
+        expect(root.querySelectorAll('tbody tr').length).toBe(2);
+        handle.dispose();
+    });
+
+    it('raw view reflects table edits and undo; partial documents stay a read-only pre', async () => {
+        const container = document.createElement('div');
+        const handle = await mountCsvViewer(csvInput('n\nold\n'), container, stubCtx());
+        const root = shadow(container);
+        const btn = (label: string) =>
+            [...root.querySelectorAll('button')].find(
+                (b) => b.textContent === label
+            ) as HTMLButtonElement;
+
+        const td = root.querySelector('tbody td') as HTMLElement;
+        td.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+        const input = td.querySelector('input') as HTMLInputElement;
+        input.value = 'new';
+        input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+
+        btn('Raw').click();
+        const ta = root.querySelector('textarea.omni-csv__raw') as HTMLTextAreaElement;
+        expect(ta.value).toBe('n\nnew'); // normalized serialization once edited
+
+        const lines = ['h'];
+        for (let i = 0; i < 20; i++) lines.push(String(i));
+        const partialContainer = document.createElement('div');
+        const partialHandle = await mountCsvViewer(
+            csvInput(lines.join('\n')),
+            partialContainer,
+            stubCtx(),
+            { limits: { maxEntries: 5 } }
+        );
+        const partialRoot = shadow(partialContainer);
+        ([...partialRoot.querySelectorAll('button')].find(
+            (b) => b.textContent === 'Raw'
+        ) as HTMLButtonElement).click();
+        expect(partialRoot.querySelector('textarea')).toBeNull();
+        expect(partialRoot.querySelector('pre.omni-csv__raw')).not.toBeNull();
+
+        handle.dispose();
+        partialHandle.dispose();
+    });
+
     it('partial documents are not editable: no row ops, dblclick shows a notice', async () => {
         const lines = ['h'];
         for (let i = 0; i < 20; i++) lines.push(String(i));
