@@ -412,8 +412,15 @@ export async function mountCsvViewer(
         contextMenuCleanup = null;
     }
 
-    /** Right-click row menu: insert below / delete (docs §6). */
-    function openRowContextMenu(event: MouseEvent, rowId: number): void {
+    /** Right-click cell menu: row insert/delete on body rows, column
+     *  insert/delete wherever a data column was hit — headers included
+     *  (docs §6). Either half is omitted when its target is absent
+     *  (header cell → no row ops, row-number cell → no column ops). */
+    function openCellContextMenu(
+        event: MouseEvent,
+        rowId: number | null,
+        columnIndex: number | null
+    ): void {
         closeContextMenu();
         const menu = el('div', 'omni-csv__menu');
         menu.setAttribute('role', 'menu');
@@ -428,12 +435,30 @@ export async function mountCsvViewer(
             });
             menu.appendChild(btn);
         };
-        item(t('csv.insertRowBelow'), () =>
-            controller.dispatch({ type: 'insert-row', afterRowId: rowId })
-        );
-        item(t('csv.deleteRow'), () =>
-            controller.dispatch({ type: 'delete-row', rowId })
-        );
+        if (rowId !== null) {
+            item(t('csv.insertRowBelow'), () =>
+                controller.dispatch({ type: 'insert-row', afterRowId: rowId })
+            );
+            item(t('csv.deleteRow'), () =>
+                controller.dispatch({ type: 'delete-row', rowId })
+            );
+        }
+        if (columnIndex !== null) {
+            const atColumn = columnIndex;
+            item(t('csv.insertColumnLeft'), () =>
+                controller.dispatch({ type: 'insert-column', columnIndex: atColumn })
+            );
+            item(t('csv.insertColumnRight'), () =>
+                controller.dispatch({ type: 'insert-column', columnIndex: atColumn + 1 })
+            );
+            // The controller refuses to delete the last column; don't offer it.
+            if (controller.state.columnCount > 1) {
+                item(t('csv.deleteColumn'), () =>
+                    controller.dispatch({ type: 'delete-column', columnIndex: atColumn })
+                );
+            }
+        }
+        if (menu.childElementCount === 0) return;
 
         const frameRect = frame.getBoundingClientRect();
         menu.style.left = `${event.clientX - frameRect.left}px`;
@@ -745,6 +770,12 @@ export async function mountCsvViewer(
                     controller.dispatch({ type: 'edit-header', columnIndex, value })
                 );
             });
+            if (editable) {
+                th.addEventListener('contextmenu', (e) => {
+                    e.preventDefault();
+                    openCellContextMenu(e as MouseEvent, null, columnIndex);
+                });
+            }
             headRow.appendChild(th);
         });
         thead.appendChild(headRow);
@@ -757,11 +788,18 @@ export async function mountCsvViewer(
         for (const rowId of state.visibleRowIds) {
             const tr = el('tr');
             if (editable) {
-                // Row insert/delete live in a right-click menu (docs §6) —
+                // Row and column ops live in a right-click menu (docs §6) —
                 // no permanent ops column cluttering the table.
                 tr.addEventListener('contextmenu', (e) => {
                     e.preventDefault();
-                    openRowContextMenu(e as MouseEvent, rowId);
+                    const cell = (e.target as HTMLElement | null)?.closest?.('td');
+                    // Hitting the row-number gutter (or the tr itself in
+                    // synthetic events) offers row ops only.
+                    const columnIndex =
+                        cell && !cell.classList.contains('omni-csv__rownum')
+                            ? cell.cellIndex - (state.showRowNumbers ? 1 : 0)
+                            : null;
+                    openCellContextMenu(e as MouseEvent, rowId, columnIndex);
                 });
             }
             if (state.showRowNumbers) {

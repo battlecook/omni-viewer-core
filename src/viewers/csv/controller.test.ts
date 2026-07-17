@@ -276,6 +276,86 @@ describe('CsvController', () => {
         expect(c.state.visibleRowIds[1]).toBe(ids[1]);
     });
 
+    it('insert-column adds an empty named column at the index; undo/redo round-trips', () => {
+        const c = createCsvController('name,score\nkim,1\nlee,2\n');
+        c.dispatch({ type: 'insert-column', columnIndex: 1 }); // between name and score
+        expect(c.state.headers).toEqual(['name', 'Column3', 'score']);
+        expect(c.state.columnCount).toBe(3);
+        expect(c.getRowById(0)).toEqual(['kim', '', '1']);
+        expect(c.state.dirty).toBe(true);
+
+        // The new column is editable immediately (columnCount validation moved).
+        c.dispatch({ type: 'edit-cell', rowId: 0, columnIndex: 1, value: 'x' });
+        expect(c.getRowById(0)).toEqual(['kim', 'x', '1']);
+
+        c.dispatch({ type: 'undo' }); // cell edit
+        c.dispatch({ type: 'undo' }); // column insert
+        expect(c.state.headers).toEqual(['name', 'score']);
+        expect(c.state.columnCount).toBe(2);
+        expect(c.getRowById(0)).toEqual(['kim', '1']);
+        expect(c.state.dirty).toBe(false);
+
+        c.dispatch({ type: 'redo' });
+        c.dispatch({ type: 'redo' });
+        expect(c.getRowById(0)).toEqual(['kim', 'x', '1']);
+
+        // Out-of-range indexes are ignored; end insertion is allowed.
+        c.dispatch({ type: 'insert-column', columnIndex: 99 });
+        expect(c.state.columnCount).toBe(3);
+        c.dispatch({ type: 'insert-column', columnIndex: 3 });
+        expect(c.state.headers).toEqual(['name', 'Column3', 'score', 'Column4']);
+    });
+
+    it('delete-column snapshots values for undo and refuses to delete the last column', () => {
+        const c = createCsvController('name,score\nkim,1\nlee,2\n');
+        c.dispatch({ type: 'delete-column', columnIndex: 0 });
+        expect(c.state.headers).toEqual(['score']);
+        expect(c.getRowById(0)).toEqual(['1']);
+        expect(c.toDocumentCsv()).toBe('score\n1\n2');
+
+        // Last remaining column cannot be deleted.
+        c.dispatch({ type: 'delete-column', columnIndex: 0 });
+        expect(c.state.columnCount).toBe(1);
+
+        c.dispatch({ type: 'undo' });
+        expect(c.state.headers).toEqual(['name', 'score']);
+        expect(c.getRowById(0)).toEqual(['kim', '1']);
+        expect(c.getRowById(1)).toEqual(['lee', '2']);
+        expect(c.state.dirty).toBe(false);
+    });
+
+    it('column ops shift the sorted column index; deleting it clears the sort in place', () => {
+        const c = createCsvController('name,score\ncarol,10\nalice,2\ndave,9\n');
+        c.dispatch({ type: 'sort-column', columnIndex: 1 }); // by score asc
+        expect(c.state.visibleRowIds).toEqual([1, 2, 0]);
+
+        // Insert before the sorted column: index shifts, order untouched.
+        c.dispatch({ type: 'insert-column', columnIndex: 0 });
+        expect(c.state.sort).toEqual({ columnIndex: 2, direction: 'asc' });
+        expect(c.state.visibleRowIds).toEqual([1, 2, 0]);
+
+        // Delete an unrelated column: index shifts back.
+        c.dispatch({ type: 'delete-column', columnIndex: 0 });
+        expect(c.state.sort).toEqual({ columnIndex: 1, direction: 'asc' });
+
+        // Delete the sorted column: sort marker clears, display order stays.
+        c.dispatch({ type: 'delete-column', columnIndex: 1 });
+        expect(c.state.sort).toEqual({ columnIndex: null, direction: null });
+        expect(c.state.sortedColumnType).toBeNull();
+        expect(c.state.visibleRowIds).toEqual([1, 2, 0]);
+    });
+
+    it('rejects column edits on partial parses', () => {
+        const lines = ['h,g'];
+        for (let i = 0; i < 20; i++) lines.push(`${i},${i}`);
+        const c = createCsvController(lines.join('\n'), { limits: { maxEntries: 5 } });
+        expect(c.state.status).toBe('partial');
+        c.dispatch({ type: 'insert-column', columnIndex: 0 });
+        c.dispatch({ type: 'delete-column', columnIndex: 0 });
+        expect(c.state.columnCount).toBe(2);
+        expect(c.state.dirty).toBe(false);
+    });
+
     it('rejects edit actions on partial parses and delimiter changes while dirty', () => {
         const lines = ['h'];
         for (let i = 0; i < 20; i++) lines.push(String(i));

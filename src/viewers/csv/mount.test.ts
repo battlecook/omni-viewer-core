@@ -348,6 +348,61 @@ describe('mountCsvViewer', () => {
         handle.dispose();
     });
 
+    it('column insert/delete via right-click on body cells and headers', async () => {
+        const container = document.createElement('div');
+        const handle = await mountCsvViewer(csvInput('a,b\n1,2\n'), container, stubCtx());
+        const root = shadow(container);
+
+        const rightClick = (target: Element) =>
+            target.dispatchEvent(
+                new MouseEvent('contextmenu', { bubbles: true, cancelable: true })
+            );
+        const menuItem = (label: string) =>
+            [...root.querySelectorAll('.omni-csv__menu button')].find(
+                (b) => b.textContent === label
+            ) as HTMLElement;
+        const headerText = () =>
+            [...root.querySelectorAll('thead th')].map((th) =>
+                th.textContent?.replace(/[▲▼]/g, '').trim()
+            );
+
+        // Right-click on a body cell offers row and column ops together.
+        rightClick(root.querySelectorAll('tbody td')[1] as Element);
+        expect(menuItem('Insert row below')).toBeDefined();
+        menuItem('Insert column left').click();
+        expect(root.querySelector('.omni-csv__menu')).toBeNull(); // menu closes
+        expect(headerText()).toEqual(['a', 'Column3', 'b']);
+        expect(
+            [...root.querySelectorAll('tbody tr')][0]?.querySelectorAll('td').length
+        ).toBe(3);
+
+        // Right-click on a header offers column ops only.
+        rightClick(root.querySelectorAll('thead th')[1] as Element);
+        expect(menuItem('Insert row below')).toBeUndefined();
+        menuItem('Delete column').click();
+        expect(headerText()).toEqual(['a', 'b']);
+
+        // Insert right from a header lands after the clicked column.
+        rightClick(root.querySelectorAll('thead th')[0] as Element);
+        menuItem('Insert column right').click();
+        expect(headerText()).toEqual(['a', 'Column3', 'b']);
+        handle.dispose();
+    });
+
+    it('single-column documents do not offer Delete column', async () => {
+        const container = document.createElement('div');
+        const handle = await mountCsvViewer(csvInput('n\n1\n'), container, stubCtx());
+        const root = shadow(container);
+        (root.querySelector('thead th') as Element).dispatchEvent(
+            new MouseEvent('contextmenu', { bubbles: true, cancelable: true })
+        );
+        const labels = [...root.querySelectorAll('.omni-csv__menu button')].map(
+            (b) => b.textContent
+        );
+        expect(labels).toEqual(['Insert column left', 'Insert column right']);
+        handle.dispose();
+    });
+
     it('partial documents are not editable: no row ops, dblclick shows a notice', async () => {
         const lines = ['h'];
         for (let i = 0; i < 20; i++) lines.push(String(i));

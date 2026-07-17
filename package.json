@@ -159,6 +159,7 @@
     "./viewers/plantuml": { "types": "./dist/viewers/plantuml/index.d.ts", "default": "./dist/viewers/plantuml/index.js" },
     "./viewers/plantuml/self-loading": { "types": "./dist/viewers/plantuml/self-loading.d.ts", "default": "./dist/viewers/plantuml/self-loading.js" },
     "./viewers/shapefile": { "types": "./dist/viewers/shapefile/index.d.ts", "default": "./dist/viewers/shapefile/index.js" },
+    "./viewers/shapefile/self-loading": { "types": "./dist/viewers/shapefile/self-loading.d.ts", "default": "./dist/viewers/shapefile/self-loading.js" },
     "./viewers/psd": { "types": "./dist/viewers/psd/index.d.ts", "default": "./dist/viewers/psd/index.js" },
     "./viewers/psd/self-loading": { "types": "./dist/viewers/psd/self-loading.d.ts", "default": "./dist/viewers/psd/self-loading.js" },
     "./viewers/csv": {
@@ -289,6 +290,7 @@
     "mermaid": "^11.15.0",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^4.10.38",
+    "proj4": "^2.20.9",
     "puml-canvas-js": "0.5.0",
     "wavesurfer.js": "^7.8.0",
     "xlsx": "~0.18.5",
@@ -341,6 +343,9 @@
       "optional": true
     },
     "wavesurfer.js": {
+      "optional": true
+    },
+    "proj4": {
       "optional": true
     }
   }

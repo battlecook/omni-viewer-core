@@ -152,6 +152,8 @@ export function createCsvController(
     let document: CsvDocument = emptyDocument();
     let parse: ParseResult<CsvDocument>;
     let headers: string[] = [];
+    /** Live column count — column insert/delete moves it off the parsed value. */
+    let columnCount = 0;
     let rowOrder: EditableRow[] = [];
     let byId = new Map<RowId, EditableRow>();
     let orderPos = new Map<RowId, number>();
@@ -231,6 +233,7 @@ export function createCsvController(
         parse = parseCsv(text, parseOptions).result;
         document = parse.status === 'failed' ? emptyDocument() : parse.document;
         headers = [...document.headers];
+        columnCount = document.columnCount;
         nextRowId = 0;
         rowOrder = document.rows.map((cells) => ({ id: nextRowId++, cells: [...cells] }));
         byId = new Map(rowOrder.map((r) => [r.id, r]));
@@ -272,6 +275,42 @@ export function createCsvController(
         rebuildOrderPos();
     }
 
+    // Column ops mutate the shared row objects, so rowOrder / sortedRows /
+    // displayRows all see the change without re-deriving. Display order is
+    // deliberately untouched (docs §6: edits never reshuffle the view) — the
+    // sort column index just shifts with the columns, and deleting the sorted
+    // column clears the sort marker while keeping the current order on screen.
+    function insertColumnAt(
+        columnIndex: number,
+        header: string,
+        cells?: Map<RowId, string>
+    ): void {
+        headers.splice(columnIndex, 0, header);
+        for (const row of rowOrder) {
+            row.cells.splice(columnIndex, 0, cells?.get(row.id) ?? '');
+        }
+        columnCount++;
+        if (sort.columnIndex !== null && sort.columnIndex >= columnIndex) {
+            sort = { ...sort, columnIndex: sort.columnIndex + 1 };
+        }
+    }
+
+    function removeColumnAt(columnIndex: number): void {
+        headers.splice(columnIndex, 1);
+        for (const row of rowOrder) {
+            row.cells.splice(columnIndex, 1);
+        }
+        columnCount--;
+        if (sort.columnIndex !== null) {
+            if (sort.columnIndex === columnIndex) {
+                sort = { columnIndex: null, direction: null };
+                sortedColumnType = null;
+            } else if (sort.columnIndex > columnIndex) {
+                sort = { ...sort, columnIndex: sort.columnIndex - 1 };
+            }
+        }
+    }
+
     function applyOp(op: EditOp, direction: 'forward' | 'backward'): void {
         switch (op.kind) {
             case 'cell': {
@@ -294,6 +333,16 @@ export function createCsvController(
             case 'delete': {
                 if (direction === 'forward') removeRow(op.row);
                 else addRowAt(op.row, op.positions);
+                break;
+            }
+            case 'insert-col': {
+                if (direction === 'forward') insertColumnAt(op.columnIndex, op.header);
+                else removeColumnAt(op.columnIndex);
+                break;
+            }
+            case 'delete-col': {
+                if (direction === 'forward') removeColumnAt(op.columnIndex);
+                else insertColumnAt(op.columnIndex, op.header, op.cells);
                 break;
             }
         }
@@ -328,7 +377,7 @@ export function createCsvController(
             failure: parse.status === 'failed' ? parse.failure : null,
             diagnostics: parse.diagnostics,
             headers: [...headers],
-            columnCount: document.columnCount,
+            columnCount,
             rowCount: rowOrder.length,
             delimiter: document.delimiter,
             detectionSource: document.detection.source,
@@ -362,7 +411,7 @@ export function createCsvController(
     function dispatch(action: CsvAction): void {
         switch (action.type) {
             case 'sort-column': {
-                if (action.columnIndex < 0 || action.columnIndex >= document.columnCount) {
+                if (action.columnIndex < 0 || action.columnIndex >= columnCount) {
                     return;
                 }
                 sort = nextSortState(sort, action.columnIndex);
@@ -421,7 +470,7 @@ export function createCsvController(
                 if (parse.status !== 'ok') return; // docs §6 결정 2
                 const row = byId.get(action.rowId);
                 if (!row) return;
-                if (action.columnIndex < 0 || action.columnIndex >= document.columnCount) {
+                if (action.columnIndex < 0 || action.columnIndex >= columnCount) {
                     return;
                 }
                 const prev = row.cells[action.columnIndex] ?? '';
@@ -454,7 +503,7 @@ export function createCsvController(
                 if (parse.status !== 'ok') return;
                 const row: EditableRow = {
                     id: nextRowId++,
-                    cells: Array.from({ length: document.columnCount }, () => '')
+                    cells: Array.from({ length: columnCount }, () => '')
                 };
                 let positions: RowPositions;
                 if (action.afterRowId === 'end') {
@@ -489,6 +538,36 @@ export function createCsvController(
                         sorted: sortedRows.indexOf(row),
                         display: displayRows.indexOf(row)
                     }
+                });
+                break;
+            }
+            case 'insert-column': {
+                if (parse.status !== 'ok') return;
+                if (action.columnIndex < 0 || action.columnIndex > columnCount) {
+                    return;
+                }
+                pushOp({
+                    kind: 'insert-col',
+                    columnIndex: action.columnIndex,
+                    header: `Column${columnCount + 1}`
+                });
+                break;
+            }
+            case 'delete-column': {
+                if (parse.status !== 'ok') return;
+                // Deleting the last column would leave an unrepresentable
+                // zero-column document.
+                if (columnCount <= 1) return;
+                if (action.columnIndex < 0 || action.columnIndex >= columnCount) {
+                    return;
+                }
+                pushOp({
+                    kind: 'delete-col',
+                    columnIndex: action.columnIndex,
+                    header: headers[action.columnIndex] ?? '',
+                    cells: new Map(
+                        rowOrder.map((r) => [r.id, r.cells[action.columnIndex] ?? ''])
+                    )
                 });
                 break;
             }
