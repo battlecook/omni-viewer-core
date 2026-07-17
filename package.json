@@ -4,6 +4,28 @@
   "description": "Shared parsing + rendering core for Omni Viewer (vscode / chrome / obsidian / web)",
   "type": "module",
   "license": "MIT",
+  "author": "battlecook <battlecookoss@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/battlecook/omni-viewer-core.git"
+  },
+  "homepage": "https://github.com/battlecook/omni-viewer-core#readme",
+  "bugs": {
+    "url": "https://github.com/battlecook/omni-viewer-core/issues"
+  },
+  "keywords": [
+    "viewer",
+    "parser",
+    "file-viewer",
+    "document",
+    "pdf",
+    "docx",
+    "hwp",
+    "excel",
+    "csv",
+    "markdown",
+    "shapefile"
+  ],
   "sideEffects": false,
   "engines": {
     "node": ">=18"
@@ -260,7 +282,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json && node scripts/build-styles.mjs",
     "test": "vitest run",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prepublishOnly": "npm run build && npm test"
   },
   "devDependencies": {
     "@rhwp/core": "0.7.3",
