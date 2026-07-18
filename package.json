@@ -1,6 +1,6 @@
 {
   "name": "omni-viewer-core",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Shared parsing + rendering core for Omni Viewer (vscode / chrome / obsidian / web)",
   "type": "module",
   "license": "MIT",
