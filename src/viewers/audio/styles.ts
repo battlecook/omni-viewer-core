@@ -63,6 +63,14 @@ export const audioViewerCss = mediaViewerCss + `
 .omni-audio__spectrogram { min-height: 0; }
 .omni-audio__spectrogram--active { min-height: 200px; }
 
+/* Keep the WaveSurfer playhead (cursor + played-region overlay) pinned to the
+   waveform strip. Some wavesurfer spectrogram builds render the spectrogram
+   inside the main wrapper instead of our dedicated container; without this the
+   full-height playhead sweeps down across the spectrogram ("progress bar"
+   running along the bottom) rather than staying with the waveform at the top. */
+.omni-audio__waveform ::part(cursor),
+.omni-audio__waveform ::part(progress) { height: 128px !important; }
+
 .omni-audio__status { color: var(--omni-muted, #9d9d9d); font-size: 12px; min-height: 16px; }
 
 .omni-audio__loading { display: flex; justify-content: center; align-items: center; min-height: 120px; color: var(--omni-muted, #9d9d9d); }
