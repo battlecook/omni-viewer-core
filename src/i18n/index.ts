@@ -1,9 +1,37 @@
 import type { I18nService } from '../host/index.js';
 import { CATALOG_EN } from './catalog.en.js';
+import { CATALOG_JA } from './catalog.ja.js';
 import { CATALOG_KO } from './catalog.ko.js';
+import { CATALOG_FR } from './catalog.fr.js';
+import { CATALOG_DE } from './catalog.de.js';
+import { CATALOG_TH } from './catalog.th.js';
+import { CATALOG_IT } from './catalog.it.js';
+import { CATALOG_ZH_CN } from './catalog.zh-cn.js';
+import { CATALOG_ZH_TW } from './catalog.zh-tw.js';
 
 export { CATALOG_EN } from './catalog.en.js';
+export { CATALOG_JA } from './catalog.ja.js';
 export { CATALOG_KO } from './catalog.ko.js';
+export { CATALOG_FR } from './catalog.fr.js';
+export { CATALOG_DE } from './catalog.de.js';
+export { CATALOG_TH } from './catalog.th.js';
+export { CATALOG_IT } from './catalog.it.js';
+export { CATALOG_ZH_CN } from './catalog.zh-cn.js';
+export { CATALOG_ZH_TW } from './catalog.zh-tw.js';
+
+/**
+ * Language subtag → catalog for locales without region-specific variants.
+ * Chinese is resolved separately below because it needs script/region
+ * detection (Hant vs Hans). Each catalog falls back to CATALOG_EN per key.
+ */
+const SIMPLE_CATALOGS: Record<string, Record<string, string>> = {
+    ko: CATALOG_KO,
+    ja: CATALOG_JA,
+    fr: CATALOG_FR,
+    de: CATALOG_DE,
+    th: CATALOG_TH,
+    it: CATALOG_IT
+};
 
 /**
  * Render a catalog template with `{name}` substitutions. Unknown placeholders
@@ -36,8 +64,14 @@ export function resolveCatalogMessage(
 }
 
 export function resolveLocalizedCatalogMessage(locale: string, key: string, args?: Record<string, string | number>): string {
-    const language = locale.toLowerCase().split(/[-_]/, 1)[0];
-    const template = language === 'ko' ? CATALOG_KO[key] ?? CATALOG_EN[key] : CATALOG_EN[key];
+    const normalizedLocale = locale.trim().toLowerCase().replace(/_/g, '-');
+    const language = normalizedLocale.split('-', 1)[0] ?? '';
+    const catalog = language === 'zh'
+        ? /(?:^|-)hant(?:-|$)/.test(normalizedLocale) || /^zh-(?:tw|hk|mo)(?:-|$)/.test(normalizedLocale)
+            ? CATALOG_ZH_TW
+            : CATALOG_ZH_CN
+        : SIMPLE_CATALOGS[language] ?? CATALOG_EN;
+    const template = catalog[key] ?? CATALOG_EN[key];
     if (template === undefined) return key;
     return formatMessage(template, args);
 }
