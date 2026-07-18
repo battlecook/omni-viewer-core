@@ -56,6 +56,63 @@ describe('mountArchiveViewer', () => {
         expect(saveFile).toHaveBeenCalledWith('report.txt', bytes, 'text/plain');
     });
 
+    it('mounts a streaming source lazily without any file bytes and closes its handle', async () => {
+        const close = vi.fn();
+        const extract = vi.fn(async () => new TextEncoder().encode('stream body'));
+        const openArchive = vi.fn(async () => ({ entries: [{ entryId: 0, path: 'notes.txt', isDirectory: false, uncompressedSize: 11 }], extract, close }));
+        const container = document.createElement('div');
+        const mounted = await mountArchiveViewer({ fileName: 'huge.tar', totalSize: 9_000_000_000, openArchive }, container, context);
+        const root = container.shadowRoot!;
+        expect(root.querySelector('h1')?.textContent).toBe('huge.tar');
+        expect(openArchive).toHaveBeenCalledOnce();
+        root.querySelector<HTMLElement>('[data-entry-id="0"]')!.click();
+        await Promise.resolve(); await Promise.resolve();
+        expect(root.querySelector('.omni-archive__preview')?.textContent).toBe('stream body');
+        mounted.dispose(); expect(close).toHaveBeenCalledOnce();
+    });
+
+    it('prefers the streaming save hook over buffered extraction', async () => {
+        const saveEntry = vi.fn(async () => 'report.txt');
+        const extract = vi.fn(async () => new Uint8Array([1]));
+        const container = document.createElement('div');
+        await mountArchiveViewer({ fileName: 'a.tar', totalSize: 100, openArchive: async () => ({ entries: [{ entryId: 7, path: 'report.txt', isDirectory: false, uncompressedSize: 5 }], extract, close() {} }) }, container, { ...context, saveEntry: { saveEntry } });
+        const root = container.shadowRoot!;
+        root.querySelector<HTMLElement>('[data-entry-id="7"]')!.click(); await Promise.resolve();
+        extract.mockClear();
+        root.querySelector<HTMLButtonElement>('.omni-archive__save')!.click();
+        await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+        expect(saveEntry).toHaveBeenCalledOnce();
+        expect(extract).not.toHaveBeenCalled();
+    });
+
+    it('renders an inline image preview for an image entry (magic-byte confirmed)', async () => {
+        const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+        const container = document.createElement('div');
+        await mountArchiveViewer({ fileName: 'a.zip', data: new Uint8Array(1) }, container, context, { openArchive: async () => ({ entries: [{ entryId: 0, path: 'pic.png', isDirectory: false, uncompressedSize: png.length }], extract: async () => png, close() {} }) }, { createObjectUrl: () => 'blob:img', revokeObjectUrl: () => undefined });
+        const root = container.shadowRoot!;
+        root.querySelector<HTMLElement>('[data-entry-id="0"]')!.click();
+        await Promise.resolve(); await Promise.resolve();
+        expect(root.querySelector<HTMLImageElement>('.omni-archive__image')?.getAttribute('src')).toBe('blob:img');
+    });
+
+    it('renders an inline audio player for an audio entry', async () => {
+        const container = document.createElement('div');
+        await mountArchiveViewer({ fileName: 'a.zip', data: new Uint8Array(1) }, container, context, { openArchive: async () => ({ entries: [{ entryId: 0, path: 'song.mp3', isDirectory: false, uncompressedSize: 4 }], extract: async () => new Uint8Array([1, 2, 3, 4]), close() {} }) }, { createObjectUrl: () => 'blob:audio', revokeObjectUrl: () => undefined });
+        const root = container.shadowRoot!;
+        root.querySelector<HTMLElement>('[data-entry-id="0"]')!.click();
+        await Promise.resolve(); await Promise.resolve();
+        expect(root.querySelector<HTMLAudioElement>('.omni-archive__audio')?.getAttribute('src')).toBe('blob:audio');
+    });
+
+    it('renders an inline video player for a video entry', async () => {
+        const container = document.createElement('div');
+        await mountArchiveViewer({ fileName: 'a.zip', data: new Uint8Array(1) }, container, context, { openArchive: async () => ({ entries: [{ entryId: 0, path: 'clip.mp4', isDirectory: false, uncompressedSize: 4 }], extract: async () => new Uint8Array([1, 2, 3, 4]), close() {} }) }, { createObjectUrl: () => 'blob:video', revokeObjectUrl: () => undefined });
+        const root = container.shadowRoot!;
+        root.querySelector<HTMLElement>('[data-entry-id="0"]')!.click();
+        await Promise.resolve(); await Promise.resolve();
+        expect(root.querySelector<HTMLVideoElement>('.omni-archive__video')?.getAttribute('src')).toBe('blob:video');
+    });
+
     it('does not let a late file extraction overwrite a subsequently selected directory', async () => {
         let finish!: (bytes: Uint8Array) => void;
         const delayed = new Promise<Uint8Array>(resolve => { finish = resolve; });

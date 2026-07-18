@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseArchive, type ArchiveDecoder } from './index.js';
+import { openArchiveStream, parseArchive, type ArchiveDecoder, type ArchiveStreamDecoder } from './index.js';
 
 describe('parseArchive', () => {
     it('normalizes decoder entries and retains its closeable handle', async () => {
@@ -43,5 +43,35 @@ describe('parseArchive', () => {
         const decoder: ArchiveDecoder = { openArchive: async () => { throw new Error('must not open'); } };
         const parsed = await parseArchive(new Uint8Array(512), decoder, { fileName: 'bad.dmg' });
         expect(parsed.outcome.result).toMatchObject({ status: 'failed', failure: { code: 'invalid-format' } });
+    });
+});
+
+describe('openArchiveStream', () => {
+    it('opens a path-based decoder without any file bytes and keeps its lazy handle', async () => {
+        const source: ArchiveStreamDecoder = { openArchive: async () => ({ entries: [{ entryId: 0, path: 'a.txt', isDirectory: false }], extract: async () => new TextEncoder().encode('hi'), close() {} }) };
+        const parsed = await openArchiveStream(source, { fileName: 'big.tar', totalSize: 5_000_000_000 });
+        expect(parsed.outcome.result.status).toBe('ok');
+        expect(parsed.handle?.entries[0]?.path).toBe('a.txt');
+    });
+
+    it('does not reject a multi-GB declared size unless maxInputBytes is set explicitly', async () => {
+        const source: ArchiveStreamDecoder = { openArchive: async () => ({ entries: [], extract: async () => new Uint8Array(), close() {} }) };
+        expect((await openArchiveStream(source, { totalSize: 8_000_000_000 })).outcome.result.status).toBe('ok');
+        expect((await openArchiveStream(source, { totalSize: 8_000_000_000, limits: { maxInputBytes: 1_000 } })).outcome.result.status).toBe('failed');
+    });
+
+    it('still enforces the decompressed-bytes budget on the streaming handle (zip-bomb guard)', async () => {
+        const source: ArchiveStreamDecoder = { openArchive: async () => ({ entries: [], extract: async () => new Uint8Array(6), close() {} }) };
+        const parsed = await openArchiveStream(source, { limits: { maxDecompressedBytes: 10 } });
+        if (!parsed.handle) throw new Error('missing handle');
+        await parsed.handle.extract(0, { maxBytes: 8 });
+        await expect(parsed.handle.extract(0, { maxBytes: 8 })).rejects.toMatchObject({ code: 'limit-exceeded' });
+    });
+
+    it('rejects when already aborted before opening', async () => {
+        const controller = new AbortController(); controller.abort();
+        const source: ArchiveStreamDecoder = { openArchive: async () => { throw new Error('must not open'); } };
+        const parsed = await openArchiveStream(source, { signal: controller.signal });
+        expect(parsed.outcome.result).toMatchObject({ status: 'failed', failure: { code: 'aborted' } });
     });
 });

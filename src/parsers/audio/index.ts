@@ -1,5 +1,10 @@
 export interface AudioInfo { format: string; mimeType: string; sampleRate?: number; channels?: number; bitsPerSample?: number; warnings: string[]; }
 const MIME: Record<string,string> = { mp3:'audio/mpeg',wav:'audio/wav',pcm:'audio/L16',aiff:'audio/aiff',aif:'audio/aiff',aifc:'audio/aiff',amr:'audio/amr',awb:'audio/amr-wb',ogg:'audio/ogg',flac:'audio/flac',ac3:'audio/ac3',aac:'audio/aac',m4a:'audio/mp4' };
+/** Returns the audio MIME type for a file name's extension, or undefined when
+ *  the extension is not a recognized audio format. */
+export function audioMimeType(fileName: string): string | undefined {
+    return MIME[fileName.toLowerCase().split('.').pop() ?? ''];
+}
 export function parseAudioInfo(fileName: string, data: Uint8Array): AudioInfo {
     const ext = fileName.toLowerCase().split('.').pop() ?? ''; const info: AudioInfo = { format: ext.toUpperCase() || 'AUDIO', mimeType: MIME[ext] ?? 'application/octet-stream', warnings: [] };
     if (ext === 'wav') parseWaveChunks(data, info);
