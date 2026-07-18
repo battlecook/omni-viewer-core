@@ -30,7 +30,9 @@ jobs:
         run: npm install -g npm@latest
 
       - name: Install dependencies
-        run: npm ci
+        # npm 12 blocks remote tarballs by default. Allow only URL dependencies
+        # declared directly by this package (currently the pinned SheetJS build).
+        run: npm ci --allow-remote=root
 
       # `prepublishOnly` rebuilds dist and runs the test suite before upload.
       # npm picks up the OIDC credentials automatically; no NODE_AUTH_TOKEN needed.
