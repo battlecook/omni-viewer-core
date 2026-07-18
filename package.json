@@ -314,7 +314,7 @@
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^4.10.38",
     "proj4": "^2.20.9",
-    "puml-canvas-js": "0.5.0",
+    "puml-canvas-js": ">=0.2.0",
     "wavesurfer.js": "^7.8.0",
     "xlsx": ">=0.20.2",
     "yaml": "2.8.3"
