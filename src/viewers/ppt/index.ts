@@ -1,6 +1,6 @@
 import type {HostContext} from '../../host/index.js';
 import {parsePptBinaryVscode} from '../../parsers/ppt-binary/index.js';
-import {openPptxZip,parsePptx,parsePptxVscode,type PptxParserDeps} from '../../parsers/pptx/index.js';
+import {openPptxZip,parsePptxLegacy,parsePptxVscode,type PptxParserDeps} from '../../parsers/pptx/index.js';
 import type {SlideDeck} from '../../parsers/slide-model.js';
 import type {ParseOptions,ParseOutcome,ResourceLimits} from '../../parsers/types.js';
 import {mountPdfViewer,type PdfJsModule,type PdfViewerHandle} from '../pdf/index.js';
@@ -42,7 +42,7 @@ export async function mountPptViewer(input:ViewerInput,container:HTMLElement,ctx
     let deck:SlideDeck=outcome.result.document;
     if(deck.totalSlides===0||deck.slides.length===0)return mountPdfFallback(input,container,ctx,deps,options,'diag.ppt.empty');
     if(!deck.slides.some(slide=>slide.elements.length>0)){
-        if(isPptx){const legacy=await (deps.parseLegacyPptx?.(input.data,options)??parsePptx(input.data,{openZip:openPptxZip},options));if(legacy.result.status!=='failed'&&legacy.result.document.slides.some(slide=>slide.elements.length>0))deck=legacy.result.document;else return mountPdfFallback(input,container,ctx,deps,options,'diag.ppt.empty');}
+        if(isPptx){const legacy=await (deps.parseLegacyPptx?.(input.data,options)??parsePptxLegacy(input.data,{openZip:deps.openZip??openPptxZip},options));if(legacy.result.status!=='failed'&&legacy.result.document.slides.some(slide=>slide.elements.length>0))deck=legacy.result.document;else return mountPdfFallback(input,container,ctx,deps,options,'diag.ppt.empty');}
         else return mountPdfFallback(input,container,ctx,deps,options,'diag.ppt.empty');
     }
 
@@ -51,7 +51,7 @@ export async function mountPptViewer(input:ViewerInput,container:HTMLElement,ctx
     const frame=el('section','omni-ppt'),toolbar=el('div','omni-ppt__toolbar'),prev=el('button',undefined,'‹'),next=el('button',undefined,'›'),jump=el('select') as HTMLSelectElement,count=el('span'),minus=el('button',undefined,'−'),plus=el('button',undefined,'+'),reset=el('button',undefined,'100%'),mode=el('button');
     prev.setAttribute('aria-label',ctx.i18n.t('ppt.previous'));next.setAttribute('aria-label',ctx.i18n.t('ppt.next'));jump.setAttribute('aria-label',ctx.i18n.t('ppt.jump'));
     deck.slides.forEach(slide=>{const option=el('option') as HTMLOptionElement;option.value=String(slide.slideNumber);const title=slide.elements.find(element=>element.isTitle)?.paragraphs?.map(paragraph=>paragraph.text).join(' ');option.textContent=`Slide ${slide.slideNumber}${title?`: ${title}`:''}`;jump.append(option);});
-    toolbar.append(prev,next,jump,count,minus,plus,reset,mode);const viewport=el('div','omni-ppt__viewport'),slides=el('div','omni-ppt__slides');viewport.append(slides);frame.append(toolbar,viewport);root.append(frame);
+    toolbar.append(prev,next,jump,count,minus,reset,plus,mode);const viewport=el('div','omni-ppt__viewport'),slides=el('div','omni-ppt__slides');viewport.append(slides);frame.append(toolbar,viewport);root.append(frame);
     const controller=createPptController(deck.totalSlides);const render=(state=controller.state)=>{count.textContent=`${state.currentSlide} / ${state.slideCount}`;reset.textContent=`${Math.round(state.zoom*100)}%`;mode.textContent=ctx.i18n.t(state.mode==='continuous'?'ppt.mode.single':'ppt.mode.continuous');jump.value=String(state.currentSlide);slides.replaceChildren();const shown=state.mode==='single'?deck.slides.filter(slide=>slide.slideNumber===state.currentSlide):deck.slides;shown.forEach(slide=>slides.append(renderSlide(slide,state.zoom)));};
     const scrollCurrent=()=>{if(controller.state.mode!=='continuous')return;slides.querySelector<HTMLElement>(`[aria-label="Slide ${controller.state.currentSlide}"]`)?.scrollIntoView({block:'start'});};
     const navigate=(action:{type:'previous'}|{type:'next'}|{type:'jump';slide:number})=>{controller.dispatch(action);scrollCurrent();};
