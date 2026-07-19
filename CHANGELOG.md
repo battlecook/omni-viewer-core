@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.3.0] - 2026-07-19
+
+### Changed
+
+- **PDF saved-file format (sidecar v2, breaking).** Saved PDFs now embed only
+  the kept pages as the re-editable base — deleted pages are no longer
+  recoverable from the attachment — and drawn signatures are permanently
+  flattened into that base instead of staying editable on reopen. Text and
+  markup overlays remain removable via the layer JSON, with page references
+  remapped onto the kept-page base. Files saved by the previous v1 format are
+  no longer rehydrated for re-editing (they still open as flattened PDFs).
+- Changed the main PPTX parser to prefer the full-fidelity parser for real
+  presentation archives, while retaining the legacy parser as an invalid-file
+  fallback for custom host adapters.
+- Improved PowerPoint rendering fidelity for line-chart bounds and axes, plot
+  borders, point and connector markers, table frames, chart placeholders, and
+  slide and text styling.
+- Changed tag-triggered GitHub Releases to use the matching version section
+  from this changelog as the release body.
+
+### Fixed
+
+- Fixed npm trusted publishing with npm 12 by allowing the package's pinned,
+  root-level SheetJS remote dependency during clean installation.
+
 ## [0.2.0] - 2026-07-19
 
 ### Added

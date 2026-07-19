@@ -2,7 +2,8 @@ name: Release npm package
 
 # Triggered when a `v*` tag is pushed (e.g. `v0.1.0`). The job verifies that
 # the tag matches package.json, validates and builds the package, attaches the
-# npm tarball to a GitHub Release, and generates release notes automatically.
+# npm tarball to a GitHub Release, and uses the matching CHANGELOG section as
+# the release notes.
 #
 # To cut a release locally:
 #   1. Bump `version` in package.json and package-lock.json.
@@ -68,6 +69,33 @@ jobs:
           echo "path=$PACKAGE_PATH" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
+      - name: Extract release notes from changelog
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          if ! awk -v version="$VERSION" '
+            index($0, "## [" version "]") == 1 {
+              in_section = 1
+              print
+              next
+            }
+            in_section && /^## / {
+              exit
+            }
+            in_section {
+              print
+            }
+            END {
+              if (!in_section) exit 2
+            }
+          ' CHANGELOG.md > release-notes.md; then
+            echo "CHANGELOG.md does not contain a section for version $VERSION."
+            exit 1
+          fi
+          if [ ! -s release-notes.md ]; then
+            echo "The changelog section for version $VERSION is empty."
+            exit 1
+          fi
+
       - name: Upload tarball as workflow artifact
         uses: actions/upload-artifact@v4
         with:
@@ -79,8 +107,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ steps.package.outputs.path }}
+          body_path: release-notes.md
           draft: false
           prerelease: false
-          generate_release_notes: true
+          generate_release_notes: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

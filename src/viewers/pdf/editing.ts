@@ -10,13 +10,16 @@ import { mergeHighlightRects, type PdfAnnotation, type PdfHighlightRect, type Pd
 /** Type-only reference — erased at compile time. */
 export type PdfLibModule = typeof import('pdf-lib');
 
-// Hybrid sidecar: saved PDFs keep flattened (portable) pages while embedding
-// the pristine source + a layer JSON, so the omni viewer can restore a
-// removable overlay layer on reopen. External readers only see the flat pages.
+// Hybrid sidecar: saved PDFs keep flattened (portable) pages for external
+// readers while embedding a re-editable base + a layer JSON, so the omni
+// viewer can restore a removable overlay layer on reopen. The embedded base
+// holds only the kept pages (deleted pages are gone for good) with signatures
+// permanently flattened in; text/markup stay out so they remain editable.
+// External readers only ever see the flat pages.
 export const SIDECAR_LAYER_NAME = 'omni-viewer-layer.json';
-export const SIDECAR_ORIGINAL_NAME = 'omni-viewer-original.pdf';
+export const SIDECAR_BASE_NAME = 'omni-viewer-base.pdf';
 /** Bumped when the sidecar shape changes; older/newer versions are ignored. */
-const SIDECAR_VERSION = 1;
+const SIDECAR_VERSION = 2;
 /** Defensive ceilings — the sidecar is untrusted input on reopen. */
 const MAX_ANNOTATIONS = 2000;
 const MAX_TEXT_LENGTH = 10_000;
@@ -129,20 +132,53 @@ async function stamp(
     });
 }
 
+type PdfLibDocument = Awaited<ReturnType<PdfLibModule['PDFDocument']['create']>>;
+
+/** Copy the kept pages (in display order) from `source` into a fresh doc. */
+async function copyKeptPages(
+    pdfLib: PdfLibModule,
+    source: Uint8Array,
+    pageOrder: readonly number[]
+): Promise<PdfLibDocument> {
+    const original = await pdfLib.PDFDocument.load(source);
+    const output = await pdfLib.PDFDocument.create();
+    const indices = pageOrder
+        .map((page) => page - 1)
+        .filter((page) => page >= 0 && page < original.getPageCount());
+    const copied = await output.copyPages(original, indices);
+    copied.forEach((page) => output.addPage(page));
+    return output;
+}
+
 /** Reorder/delete pages and stamp the overlays into a fresh (unsaved) doc. */
 async function flattenInto(
     pdfLib: PdfLibModule,
     source: Uint8Array,
     state: PdfViewState
-): Promise<Awaited<ReturnType<PdfLibModule['PDFDocument']['create']>>> {
-    const original = await pdfLib.PDFDocument.load(source);
-    const output = await pdfLib.PDFDocument.create();
-    const indices = state.pageOrder
-        .map((page) => page - 1)
-        .filter((page) => page >= 0 && page < original.getPageCount());
-    const copied = await output.copyPages(original, indices);
-    copied.forEach((page) => output.addPage(page));
+): Promise<PdfLibDocument> {
+    const output = await copyKeptPages(pdfLib, source, state.pageOrder);
     for (const annotation of state.annotations) {
+        const outputIndex = state.pageOrder.indexOf(annotation.page);
+        const page = output.getPages()[outputIndex];
+        if (page) await stamp(pdfLib, page, annotation);
+    }
+    return output;
+}
+
+/**
+ * The re-editable base embedded in a saved PDF: the kept pages (unflattened)
+ * with ONLY signatures permanently stamped in. Text/markup are deliberately
+ * left out so the omni viewer can restore them as a removable layer, while
+ * signatures — and any pages the user deleted — cannot be recovered.
+ */
+async function buildEditableBase(
+    pdfLib: PdfLibModule,
+    pristine: Uint8Array,
+    state: PdfViewState
+): Promise<PdfLibDocument> {
+    const output = await copyKeptPages(pdfLib, pristine, state.pageOrder);
+    for (const annotation of state.annotations) {
+        if (annotation.kind !== 'signature') continue;
         const outputIndex = state.pageOrder.indexOf(annotation.page);
         const page = output.getPages()[outputIndex];
         if (page) await stamp(pdfLib, page, annotation);
@@ -164,9 +200,11 @@ export async function buildEditedPdf(
 /**
  * Like {@link buildEditedPdf}, but also embeds the hybrid sidecar so the
  * omni viewer can rehydrate a removable overlay layer on reopen:
- *   - the pristine (unflattened) source, and
- *   - the layer JSON `{ version, pageOrder, annotations }`.
- * External readers only ever see the flattened pages.
+ *   - a re-editable base (kept pages only, signatures flattened in), and
+ *   - the layer JSON `{ version, pageOrder, annotations }` for text/markup,
+ *     with page references remapped onto the kept-pages base.
+ * Deleted pages and signatures are unrecoverable; external readers only ever
+ * see the flattened pages.
  */
 export async function buildSavedPdf(
     pdfLib: PdfLibModule,
@@ -174,15 +212,21 @@ export async function buildSavedPdf(
     state: PdfViewState
 ): Promise<Uint8Array> {
     const output = await flattenInto(pdfLib, pristine, state);
+    const base = await buildEditableBase(pdfLib, pristine, state);
+    // The base is already in display order, so its pages number 1..keptCount.
+    // Remap each overlay's page reference (an original page number) onto that.
+    const remap = new Map(state.pageOrder.map((page, index) => [page, index + 1]));
     const layer = JSON.stringify({
         version: SIDECAR_VERSION,
-        pageOrder: state.pageOrder,
+        pageOrder: base.getPages().map((_, index) => index + 1),
         annotations: state.annotations
+            .filter((annotation) => annotation.kind !== 'signature')
+            .map((annotation) => ({ ...annotation, page: remap.get(annotation.page) ?? annotation.page }))
     });
     await output.attach(new TextEncoder().encode(layer), SIDECAR_LAYER_NAME, {
         mimeType: 'application/json'
     });
-    await output.attach(pristine, SIDECAR_ORIGINAL_NAME, {
+    await output.attach(await base.save(), SIDECAR_BASE_NAME, {
         mimeType: 'application/pdf'
     });
     return output.save();

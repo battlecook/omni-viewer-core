@@ -67,7 +67,7 @@ describe('highlight annotations', () => {
         expect((await pdfLib.PDFDocument.load(out)).getPageCount()).toBe(1);
 
         const parsed = parseLayer(JSON.stringify({
-            version: 1,
+            version: 2,
             pageOrder: [1],
             annotations: [{ id: 'pdf-a1', ...sampleHighlight, kind }]
         }));
@@ -76,7 +76,7 @@ describe('highlight annotations', () => {
 
     it('parseLayer keeps valid highlights and drops malformed rects', () => {
         const layer = JSON.stringify({
-            version: 1,
+            version: 2,
             pageOrder: [1],
             annotations: [
                 { id: 'pdf-a1', kind: 'highlight', page: 1, color: '#ffeb3b', rects: [{ x: 1, y: 2, width: 3, height: 4 }, { x: 'bad', y: 2, width: 3, height: 4 }] }
@@ -90,7 +90,7 @@ describe('highlight annotations', () => {
 
     it('drops a highlight with no usable rects', () => {
         const layer = JSON.stringify({
-            version: 1,
+            version: 2,
             pageOrder: [1],
             annotations: [{ id: 'pdf-a1', kind: 'highlight', page: 1, color: '#fff', rects: [] }]
         });

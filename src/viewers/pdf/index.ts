@@ -37,7 +37,7 @@ import {
     parseLayer,
     savedPdfName,
     SIDECAR_LAYER_NAME,
-    SIDECAR_ORIGINAL_NAME,
+    SIDECAR_BASE_NAME,
     type ParsedLayer,
     type PdfLibModule
 } from './editing.js';
@@ -302,27 +302,27 @@ export async function mountPdfViewer(
     }
 
     /**
-     * Read the hybrid sidecar (pristine source + layer JSON) from a document's
+     * Read the hybrid sidecar (re-editable base + layer JSON) from a document's
      * attachments. Returns null unless BOTH parts are present and the layer
      * parses — a lone layer over already-flattened pages would double up.
      */
     async function readSidecar(
         d: PdfJsDocument
-    ): Promise<{ pristine: Uint8Array; layer: ParsedLayer } | null> {
+    ): Promise<{ base: Uint8Array; layer: ParsedLayer } | null> {
         try {
             const attachments = await d.getAttachments?.();
             if (!attachments) return null;
-            let pristine: Uint8Array | undefined;
+            let base: Uint8Array | undefined;
             let layerText: string | undefined;
             for (const entry of Object.values(attachments)) {
-                if (entry.filename === SIDECAR_ORIGINAL_NAME) pristine = entry.content;
+                if (entry.filename === SIDECAR_BASE_NAME) base = entry.content;
                 else if (entry.filename === SIDECAR_LAYER_NAME) {
                     layerText = new TextDecoder().decode(entry.content);
                 }
             }
-            if (!pristine || layerText === undefined) return null;
+            if (!base || layerText === undefined) return null;
             const layer = parseLayer(layerText);
-            return layer ? { pristine, layer } : null;
+            return layer ? { base, layer } : null;
         } catch {
             return null;
         }
@@ -1581,12 +1581,13 @@ export async function mountPdfViewer(
     throwIfAborted();
 
     // Hybrid rehydration: if this file was saved by us, its visible pages are
-    // flattened but it carries the pristine source + layer JSON. Render/edit
-    // from the pristine base and restore the overlays as a removable layer.
+    // flattened but it carries a re-editable base (kept pages, signatures baked
+    // in) + layer JSON. Render/edit from that base and restore the text/markup
+    // overlays as a removable layer.
     const sidecar = await readSidecar(doc);
     if (sidecar) {
         await doc.destroy();
-        sourceBytes = sidecar.pristine;
+        sourceBytes = sidecar.base;
         doc = await loadDocument(sourceBytes, password);
         throwIfAborted();
         adoptController(createPdfController(doc.numPages, sidecar.layer));
