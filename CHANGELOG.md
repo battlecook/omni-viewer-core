@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-19
+
+### Added
+
+- Exported `parsePptxLegacy` from the PPTX parser entry point so hosts can run
+  the lightweight extractor directly instead of going through `parsePptx`.
+
+### Fixed
+
+- Fixed the built-in legacy PPTX extractor never running for hosts that do not
+  inject their own `parseLegacyPptx`. The recovery path called `parsePptx`,
+  which retries the full-fidelity parser first — that parser had already
+  succeeded with an element-less deck, so the legacy extractor was unreachable
+  and such presentations always fell through to PDF conversion. The path now
+  calls `parsePptxLegacy` directly, and passes the host's own ZIP reader when
+  one is provided.
+- Fixed the PowerPoint toolbar ordering the zoom controls as `−` `+` `100%`,
+  which separated the two zoom buttons from each other; the reset button now
+  sits between them as `−` `100%` `+`.
+- Fixed the archive viewer jumping back to the top of the entry list while
+  scrolling. The virtualized list emptied the table body before measuring the
+  viewport, so the layout flush collapsed the scroll height and the browser
+  clamped the scroll offset to zero. The rows are now measured before any DOM
+  write and swapped in a single update.
+- Fixed the archive viewer scrolling back to the top when an entry further down
+  the list was selected. Selecting an entry rebuilt every visible row, including
+  the one being clicked; selection now patches the existing rows in place, and
+  the scroll offset is restored whenever the rows genuinely have to be redrawn.
+- Fixed the archive viewer losing keyboard focus while scrolling. Recycled rows
+  now hand focus to their replacement, and scroll ticks that stay inside the
+  overscan margin no longer rebuild the rows at all.
+
 ## [0.3.0] - 2026-07-19
 
 ### Changed
