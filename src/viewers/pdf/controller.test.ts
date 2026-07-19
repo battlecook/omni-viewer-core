@@ -56,4 +56,40 @@ describe('PdfController', () => {
         expect(merged.state.annotations).toHaveLength(1);
         expect(merged.state.annotations[0]?.kind).toBe('highlight');
     });
+
+    it('uses the VS Code-compatible intermediate zoom steps', () => {
+        const c = createPdfController(1);
+        for (const expected of [125, 150, 175, 200, 225, 250, 275, 300]) {
+            c.dispatch({ type: 'zoom-in' });
+            expect(c.state.zoom).toBe(expected);
+        }
+    });
+
+    it('keeps arbitrary fit zooms and reaches the real minimum and maximum', () => {
+        const c = createPdfController(1);
+        c.dispatch({ type: 'set-zoom', zoom: 33 });
+        expect(c.state.zoom).toBe(33);
+        c.dispatch({ type: 'zoom-out' });
+        expect(c.state.zoom).toBe(25);
+        c.dispatch({ type: 'zoom-out' });
+        expect(c.state.zoom).toBe(25);
+
+        c.dispatch({ type: 'set-zoom', zoom: 350 });
+        c.dispatch({ type: 'zoom-in' });
+        expect(c.state.zoom).toBe(400);
+        c.dispatch({ type: 'zoom-in' });
+        expect(c.state.zoom).toBe(400);
+    });
+
+    it('supports mount-provided zoom steps without changing the default API', () => {
+        const c = createPdfController(1, undefined, {
+            zoomLevels: [80, 100, 160], minZoom: 40, maxZoom: 220
+        });
+        c.dispatch({ type: 'zoom-in' });
+        expect(c.state.zoom).toBe(160);
+        c.dispatch({ type: 'zoom-in' });
+        expect(c.state.zoom).toBe(220);
+        c.dispatch({ type: 'zoom-out' });
+        expect(c.state.zoom).toBe(160);
+    });
 });

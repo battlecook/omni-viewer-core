@@ -12,6 +12,7 @@
 
 import type {
     FilePickService,
+    FileSaveResult,
     FileSaveService,
     FileWritebackService,
     HostContext
@@ -26,8 +27,8 @@ import {
 import {
     createPdfController,
     mergeHighlightRects,
-    PDF_ZOOM_LEVELS,
     type PdfController,
+    type PdfControllerOptions,
     type PdfViewState
 } from './controller.js';
 import {
@@ -43,11 +44,85 @@ import {
 } from './editing.js';
 import { pdfViewerCss } from './styles.js';
 
-export { createPdfController, PDF_ZOOM_LEVELS } from './controller.js';
-export type { PdfController, PdfAction, PdfViewState, PdfAnnotation } from './controller.js';
+export {
+    createPdfController,
+    PDF_MAX_ZOOM,
+    PDF_MIN_ZOOM,
+    PDF_ZOOM_LEVELS
+} from './controller.js';
+export type {
+    PdfController,
+    PdfControllerOptions,
+    PdfAction,
+    PdfViewState,
+    PdfAnnotation
+} from './controller.js';
 export { pdfViewerCss } from './styles.js';
-export { buildEditedPdf, mergePdfBytes, savedPdfName } from './editing.js';
-export type { PdfLibModule } from './editing.js';
+export {
+    buildEditedPdf,
+    buildSavedPdf,
+    mergePdfBytes,
+    parseLayer,
+    savedPdfName,
+    SIDECAR_BASE_NAME,
+    SIDECAR_LAYER_NAME
+} from './editing.js';
+export type { ParsedLayer, PdfLibModule } from './editing.js';
+
+/** Asset key passed to `HostContext.assets.resolveAssetUrl` by default. */
+export const PDF_WORKER_ASSET_KEY = 'assets/pdfjs/pdf.worker.min.mjs';
+export type PdfSaveMode = 'hybrid' | 'flattened';
+export type PdfProcessingMode = 'auto' | 'host' | 'browser';
+
+export interface PdfToolbarAction {
+    id: string;
+    label: string;
+    title?: string;
+    ariaLabel?: string;
+    disabled?: boolean | (() => boolean);
+    onClick(): void | Promise<void>;
+}
+
+export interface PdfProcessingControl {
+    signal: AbortSignal;
+    onProgress(progress: number | undefined): void;
+}
+
+/** Optional host/Worker implementation for byte-heavy PDF operations. */
+export interface PdfProcessingService {
+    /** Request byte arrays are borrowed: implementations must not mutate or
+     * detach their buffers. A Worker adapter may copy/transfer internally. */
+    buildPdf?(
+        request: { source: Uint8Array; state: PdfViewState; mode: PdfSaveMode },
+        control: PdfProcessingControl
+    ): Promise<Uint8Array>;
+    mergePdfs?(
+        request: { first: Uint8Array; second: Uint8Array },
+        control: PdfProcessingControl
+    ): Promise<Uint8Array>;
+}
+
+export type PdfOperationState =
+    | { status: 'idle' }
+    | { status: 'running'; kind: 'save' | 'save-as' | 'merge'; progress?: number }
+    | { status: 'succeeded'; kind: 'save' | 'save-as' | 'merge' }
+    | { status: 'failed'; kind: 'save' | 'save-as' | 'merge'; error: string }
+    | { status: 'cancelled'; kind: 'save' | 'save-as' | 'merge' };
+
+export interface PdfMountOptions extends MountOptions, PdfControllerOptions {
+    /** Defaults to `hybrid` for v0.4 compatibility. */
+    saveMode?: PdfSaveMode;
+    /** `auto` delegates when a service method exists, `browser` always uses pdf-lib. */
+    processingMode?: PdfProcessingMode;
+    /** Maximum merge input requested from FilePickService. */
+    maxMergeBytes?: number;
+    toolbarActions?: readonly PdfToolbarAction[];
+    /** Safe default for VS Code CSP is false. */
+    isEvalSupported?: boolean;
+    /** Host-provided worker URL. Omit to resolve {@link PDF_WORKER_ASSET_KEY}. */
+    workerSrc?: string;
+    onSaveAsComplete?(result: FileSaveResult | void): void | Promise<void>;
+}
 
 /** Viewer metadata — single source for the registry codegen (DESIGN.md §7). */
 export const PDF_VIEWER_META = {
@@ -93,10 +168,14 @@ export interface PdfJsDocument {
 }
 export interface PdfJsLoadingTask {
     promise: Promise<PdfJsDocument>;
-    destroy(): void;
+    destroy(): void | Promise<void>;
 }
 export interface PdfJsModule {
-    getDocument(options: { data: Uint8Array; password?: string }): PdfJsLoadingTask;
+    getDocument(options: {
+        data: Uint8Array;
+        password?: string;
+        isEvalSupported?: boolean;
+    }): PdfJsLoadingTask;
     GlobalWorkerOptions: { workerSrc: string };
     TextLayer: new (options: {
         textContentSource: unknown;
@@ -111,23 +190,39 @@ export interface PdfViewerDeps {
     /** Editing dependency (save / save-as / merge / annotation stamping).
      *  Absent -> editing controls disabled with a reason. */
     loadPdfLib?(): Promise<PdfLibModule>;
+    /** Host/extension-host/Web Worker implementation for large byte operations. */
+    processing?: PdfProcessingService;
 }
 
 export interface PdfViewerHandle extends ViewerHandle {
     readonly controller: PdfController;
+    readonly operation: PdfOperationState;
     isDirty(): boolean;
+    cancelOperation(): void;
+    refreshToolbarActions(): void;
 }
 
 const THUMB_FALLBACK_RENDER_COUNT = 10;
 
 interface PageRecord {
+    /** Stable source page id used by pdf.js, annotations and persistence. */
     pageNumber: number;
+    /** One-based visible position presented to the user. */
+    displayNumber: number;
     page: PdfJsPage;
     wrapper: HTMLElement;
     rendered: boolean;
     rendering: boolean;
     task: { cancel(): void } | undefined;
     textLayer: PdfJsTextLayer | undefined;
+}
+
+interface ThumbRecord {
+    pageNumber: number;
+    /** Positioned holder around the thumb canvas that overlays attach to. */
+    holder: HTMLElement;
+    /** Thumb render scale relative to the scale-1 viewport (annotation units). */
+    scale: number;
 }
 
 function isPasswordError(error: unknown): boolean {
@@ -138,12 +233,25 @@ function isPasswordError(error: unknown): boolean {
     );
 }
 
+export function containPdfSignatureSize(
+    width: number,
+    height: number,
+    maxWidth = 120,
+    maxHeight = 60
+): { width: number; height: number } {
+    if (!(width > 0) || !(height > 0) || !(maxWidth > 0) || !(maxHeight > 0)) {
+        return { width: 0, height: 0 };
+    }
+    const scale = Math.min(maxWidth / width, maxHeight / height);
+    return { width: width * scale, height: height * scale };
+}
+
 export async function mountPdfViewer(
     input: ViewerInput,
     container: HTMLElement,
     ctx: PdfViewerContext,
     deps: PdfViewerDeps,
-    options: MountOptions = {}
+    options: PdfMountOptions = {}
 ): Promise<PdfViewerHandle> {
     if (options.signal?.aborted) throw new MountAbortedError();
     const t = ctx.i18n.t.bind(ctx.i18n);
@@ -196,6 +304,7 @@ export async function mountPdfViewer(
     status.setAttribute('aria-live', 'polite');
     frame.append(header, zoomBar, body, status);
     root.appendChild(frame);
+    const customActionCleanups: Array<() => void> = [];
 
     // ------------------------------------------------------------- lifecycle
     let disposed = false;
@@ -203,7 +312,9 @@ export async function mountPdfViewer(
     let loadingTask: PdfJsLoadingTask | undefined;
     let pageObserver: IntersectionObserver | undefined;
     let thumbObserver: IntersectionObserver | undefined;
+    let thumbTasks: Array<{ cancel(): void }> = [];
     let records: PageRecord[] = [];
+    let thumbRecords: ThumbRecord[] = [];
     let renderEpoch = 0;
     let currentPage = 1;
     let tool: 'view' | 'text' | 'signature' = 'view';
@@ -214,16 +325,28 @@ export async function mountPdfViewer(
     let pageLayout: 'single' | 'spread-odd' | 'spread-even' = 'single';
     let matchThemeColors = false;
     let sourceBytes = input.data;
+    const saveMode = options.saveMode ?? 'hybrid';
+    const processingMode = options.processingMode ?? 'auto';
+    const controllerOptions: PdfControllerOptions = {
+        ...(options.zoomLevels === undefined ? {} : { zoomLevels: options.zoomLevels }),
+        ...(options.minZoom === undefined ? {} : { minZoom: options.minZoom }),
+        ...(options.maxZoom === undefined ? {} : { maxZoom: options.maxZoom })
+    };
     /** A merge changed the document without going through the edit stack. */
     let mergedSinceSave = false;
     let pdfLib: PdfLibModule | undefined;
     let unsubscribe: (() => void) | undefined;
-    let controller: PdfController = createPdfController(0);
+    let controller: PdfController = createPdfController(0, undefined, controllerOptions);
+    let operationState: PdfOperationState = { status: 'idle' };
+    let operationController: AbortController | undefined;
+    let cancelPasswordPrompt: (() => void) | undefined;
     /** Layout inputs of the last rebuild — annotation-only changes skip it. */
     let layoutKey = '';
 
     const abortListener = () => {
-        loadingTask?.destroy();
+        void loadingTask?.destroy();
+        operationController?.abort();
+        cancelPasswordPrompt?.();
     };
     options.signal?.addEventListener('abort', abortListener, { once: true });
 
@@ -239,14 +362,21 @@ export async function mountPdfViewer(
         document.removeEventListener('keydown', keyHandler);
         document.removeEventListener('selectionchange', syncMarkupAvailability);
         options.signal?.removeEventListener('abort', abortListener);
+        operationController?.abort();
+        operationController = undefined;
+        cancelPasswordPrompt?.();
+        for (const cleanup of customActionCleanups.splice(0)) cleanup();
         unsubscribe?.();
         pageObserver?.disconnect();
         thumbObserver?.disconnect();
+        for (const task of thumbTasks) task.cancel();
+        thumbTasks = [];
         for (const record of records) {
             record.task?.cancel();
             record.textLayer?.cancel();
         }
         records = [];
+        thumbRecords = [];
         void doc?.destroy();
         doc = undefined;
         root.replaceChildren();
@@ -277,27 +407,47 @@ export async function mountPdfViewer(
     document.addEventListener('keydown', keyHandler);
 
     // -------------------------------------------------------------- pdf.js
-    const pdfjs = await deps.loadPdfjs();
-    throwIfAborted();
-    pdfjs.GlobalWorkerOptions.workerSrc = await ctx.assets.resolveAssetUrl(
-        'assets/pdfjs/pdf.worker.min.mjs'
-    );
-    throwIfAborted();
+    let pdfjs: PdfJsModule;
+    try {
+        pdfjs = await deps.loadPdfjs();
+        throwIfAborted();
+        pdfjs.GlobalWorkerOptions.workerSrc = options.workerSrc
+            ?? await ctx.assets.resolveAssetUrl(PDF_WORKER_ASSET_KEY);
+        throwIfAborted();
+    } catch (error) {
+        if (error instanceof MountAbortedError) throw error;
+        ctx.logger.log('error', `pdf worker asset failed: ${String(error)}`);
+        status.textContent = t('pdf.workerLoadFailed');
+        status.classList.add('omni-pdf__status--error');
+        return {
+            get controller() { return controller; },
+            get operation() { return operationState; },
+            isDirty: () => false,
+            cancelOperation: () => undefined,
+            refreshToolbarActions: () => undefined,
+            dispose: teardown
+        };
+    }
 
     async function loadDocument(
         bytes: Uint8Array,
         password?: string
     ): Promise<PdfJsDocument> {
-        const request: { data: Uint8Array; password?: string } = {
+        const request: { data: Uint8Array; password?: string; isEvalSupported: boolean } = {
             // pdf.js transfers the buffer to its worker; keep ours intact.
-            data: bytes.slice()
+            data: bytes.slice(),
+            isEvalSupported: options.isEvalSupported ?? false
         };
         if (password !== undefined) request.password = password;
-        loadingTask = pdfjs.getDocument(request);
+        const task = pdfjs.getDocument(request);
+        loadingTask = task;
         try {
-            return await loadingTask.promise;
+            return await task.promise;
+        } catch (error) {
+            await task.destroy();
+            throw error;
         } finally {
-            loadingTask = undefined;
+            if (loadingTask === task) loadingTask = undefined;
         }
     }
 
@@ -352,10 +502,15 @@ export async function mountPdfViewer(
             overlay.appendChild(panel);
             frame.appendChild(overlay);
 
+            let finished = false;
             const finish = (value: string | null) => {
+                if (finished) return;
+                finished = true;
+                cancelPasswordPrompt = undefined;
                 overlay.remove();
                 resolve(value);
             };
+            cancelPasswordPrompt = () => finish(null);
             submit.addEventListener('click', () => finish(inputEl.value));
             cancel.addEventListener('click', () => finish(null));
             inputEl.addEventListener('keydown', (e) => {
@@ -367,7 +522,11 @@ export async function mountPdfViewer(
     }
 
     // --------------------------------------------------------------- toolbar
-    const editingAvailable = typeof deps.loadPdfLib === 'function';
+    const canUseBrowserProcessing = processingMode !== 'host' && typeof deps.loadPdfLib === 'function';
+    const canDelegateBuild = processingMode !== 'browser' && typeof deps.processing?.buildPdf === 'function';
+    const canDelegateMerge = processingMode !== 'browser' && typeof deps.processing?.mergePdfs === 'function';
+    const editingAvailable = canUseBrowserProcessing || canDelegateBuild;
+    const mergeAvailable = canUseBrowserProcessing || canDelegateMerge;
 
     function toolButton(
         labelKey: string,
@@ -388,6 +547,15 @@ export async function mountPdfViewer(
     }
 
     toolbar.appendChild(pageInfo);
+    const saveModeBadge = el(
+        'span',
+        'omni-pdf__save-mode',
+        t(saveMode === 'hybrid' ? 'pdf.saveModeHybrid' : 'pdf.saveModeFlattened')
+    );
+    saveModeBadge.title = t(
+        saveMode === 'hybrid' ? 'pdf.saveModeHybridTitle' : 'pdf.saveModeFlattenedTitle'
+    );
+    toolbar.appendChild(saveModeBadge);
     const textBtn = toolButton('pdf.annotationText', () => {
         tool = tool === 'text' ? 'view' : 'text';
         syncToolButtons();
@@ -479,6 +647,26 @@ export async function mountPdfViewer(
     const saveBtn = toolButton('pdf.save', () => void save());
     const saveAsBtn = toolButton('pdf.saveAs', () => void saveAs());
     const mergeBtn = toolButton('pdf.merge', () => void merge());
+    const customActionButtons = (options.toolbarActions ?? []).map((action) => {
+        const button = el('button', 'omni-pdf__tool omni-pdf__host-action', action.label);
+        button.type = 'button';
+        button.dataset.actionId = action.id;
+        if (action.title !== undefined) button.title = action.title;
+        button.setAttribute('aria-label', action.ariaLabel ?? action.label);
+        const listener = () => {
+            try {
+                void Promise.resolve(action.onClick()).catch((error) => {
+                    ctx.logger.log('error', `pdf toolbar action ${action.id} failed: ${String(error)}`);
+                });
+            } catch (error) {
+                ctx.logger.log('error', `pdf toolbar action ${action.id} failed: ${String(error)}`);
+            }
+        };
+        button.addEventListener('click', listener);
+        customActionCleanups.push(() => button.removeEventListener('click', listener));
+        toolbar.appendChild(button);
+        return { action, button };
+    });
 
     function syncToolButtons(): void {
         textBtn.setAttribute('aria-pressed', String(tool === 'text'));
@@ -492,7 +680,7 @@ export async function mountPdfViewer(
     syncToolButtons();
 
     if (!editingAvailable) {
-        for (const b of [textBtn, signatureBtn, highlightBtn, markupMenuBtn, highlightChoiceBtn, underlineBtn, strikeoutBtn, resetBtn, saveBtn, saveAsBtn, mergeBtn]) {
+        for (const b of [textBtn, signatureBtn, highlightBtn, markupMenuBtn, highlightChoiceBtn, underlineBtn, strikeoutBtn, resetBtn, saveBtn, saveAsBtn]) {
             degrade(b, 'pdf.editingUnavailable');
         }
         highlightColorInput.disabled = true;
@@ -501,8 +689,9 @@ export async function mountPdfViewer(
     } else {
         if (!ctx.writeback) degrade(saveBtn, 'common.noWriteback');
         if (!ctx.save) degrade(saveAsBtn, 'common.noFileSave');
-        if (!ctx.filePick) degrade(mergeBtn, 'pdf.noFilePick');
     }
+    if (!ctx.filePick) degrade(mergeBtn, 'pdf.noFilePick');
+    else if (!mergeAvailable) degrade(mergeBtn, 'pdf.editingUnavailable');
 
     function syncMarkupAvailability(): void {
         if (!editingAvailable) return;
@@ -687,14 +876,14 @@ export async function mountPdfViewer(
                 page: position.page,
                 x: position.x,
                 y: position.y,
-                width: 120,
-                height: 60,
-                dataUrl: image
+                width: image.width,
+                height: image.height,
+                dataUrl: image.dataUrl
             }
         });
     });
 
-    function trimmedSignature(): string | undefined {
+    function trimmedSignature(): { dataUrl: string; width: number; height: number } | undefined {
         const pixels = signatureContext?.getImageData(
             0,
             0,
@@ -732,7 +921,8 @@ export async function mountPdfViewer(
             maxX - minX + 1,
             maxY - minY + 1
         );
-        return crop.toDataURL('image/png');
+        const size = containPdfSignatureSize(crop.width, crop.height);
+        return { dataUrl: crop.toDataURL('image/png'), ...size };
     }
 
     /** Rasterize user-added text for portable PDF flattening. The sidecar
@@ -974,6 +1164,7 @@ export async function mountPdfViewer(
                 continue;
             }
             const overlay = el('div', 'omni-pdf__annotation');
+            overlay.dataset.annotationId = annotation.id;
             overlay.tabIndex = 0;
             overlay.setAttribute('role', 'button');
             overlay.setAttribute('aria-label', annotation.kind === 'text' ? annotation.text : t('pdf.signature'));
@@ -1041,6 +1232,49 @@ export async function mountPdfViewer(
         }
     }
 
+    /** Mirror the page annotations onto a thumbnail as non-interactive,
+     *  scaled-down overlays so thumbs stay in sync with markup edits. */
+    function renderThumbOverlays(thumbRecord: ThumbRecord): void {
+        for (const node of thumbRecord.holder.querySelectorAll('.omni-pdf__thumb-annotation')) {
+            node.remove();
+        }
+        const scale = thumbRecord.scale;
+        for (const annotation of controller.state.annotations) {
+            if (annotation.page !== thumbRecord.pageNumber) continue;
+            if (annotation.kind === 'highlight' || annotation.kind === 'underline' || annotation.kind === 'strikeout') {
+                for (const rect of mergeHighlightRects(annotation.rects)) {
+                    const box = el(
+                        'div',
+                        `omni-pdf__thumb-annotation omni-pdf__${annotation.kind}`
+                    );
+                    box.style.left = `${rect.x * scale}px`;
+                    box.style.top = `${rect.y * scale}px`;
+                    box.style.width = `${rect.width * scale}px`;
+                    box.style.height = `${rect.height * scale}px`;
+                    box.style.setProperty('--omni-hl-color', annotation.color);
+                    thumbRecord.holder.appendChild(box);
+                }
+                continue;
+            }
+            const overlay = el('div', 'omni-pdf__thumb-annotation');
+            overlay.style.left = `${annotation.x * scale}px`;
+            overlay.style.top = `${annotation.y * scale}px`;
+            if (annotation.kind === 'text') {
+                overlay.textContent = annotation.text;
+                overlay.style.fontSize = `${annotation.size * scale}px`;
+                overlay.style.color = annotation.color;
+            } else {
+                const image = el('img');
+                image.src = annotation.dataUrl;
+                image.alt = '';
+                image.style.width = `${annotation.width * scale}px`;
+                image.style.height = `${annotation.height * scale}px`;
+                overlay.appendChild(image);
+            }
+            thumbRecord.holder.appendChild(overlay);
+        }
+    }
+
     // -------------------------------------------------------------- render
     async function renderPage(record: PageRecord, epoch: number): Promise<void> {
         if (disposed || epoch !== renderEpoch || record.rendered || record.rendering) return;
@@ -1052,7 +1286,7 @@ export async function mountPdfViewer(
         canvas.setAttribute('role', 'img');
         canvas.setAttribute(
             'aria-label',
-            t('common.page', { page: record.pageNumber, pages: controller.state.pageOrder.length })
+            t('common.page', { page: record.displayNumber, pages: controller.state.pageOrder.length })
         );
         const canvasContext = canvas.getContext('2d');
         if (!canvasContext) {
@@ -1119,7 +1353,9 @@ export async function mountPdfViewer(
 
     function setCurrentPage(pageNumber: number): void {
         currentPage = pageNumber;
-        pageInput.value = String(currentPage);
+        const displayNumber = records.findIndex((record) => record.pageNumber === currentPage) + 1;
+        pageInput.value = String(Math.max(1, displayNumber));
+        pageInput.max = String(records.length);
         pageTotal.textContent = `/ ${records.length}`;
         records.forEach((record, index) => {
             (thumbs.children[index] as HTMLElement | undefined)?.toggleAttribute(
@@ -1130,14 +1366,15 @@ export async function mountPdfViewer(
     }
 
     function goToPageInput(): void {
-        const pageNumber = Number(pageInput.value);
-        const record = records.find((item) => item.pageNumber === pageNumber);
+        const displayNumber = Number(pageInput.value);
+        const record = Number.isInteger(displayNumber) ? records[displayNumber - 1] : undefined;
         if (!record) {
-            pageInput.value = String(currentPage);
+            const currentDisplay = records.findIndex((item) => item.pageNumber === currentPage) + 1;
+            pageInput.value = String(Math.max(1, currentDisplay));
             return;
         }
         scrollToPage(record);
-        setCurrentPage(pageNumber);
+        setCurrentPage(record.pageNumber);
     }
 
     pageInput.addEventListener('keydown', (event) => {
@@ -1217,11 +1454,14 @@ export async function mountPdfViewer(
         const epoch = ++renderEpoch;
         pageObserver?.disconnect();
         thumbObserver?.disconnect();
+        for (const task of thumbTasks) task.cancel();
+        thumbTasks = [];
         for (const record of records) {
             record.task?.cancel();
             record.textLayer?.cancel();
         }
         records = [];
+        thumbRecords = [];
         pages.replaceChildren();
         thumbs.replaceChildren();
 
@@ -1229,17 +1469,19 @@ export async function mountPdfViewer(
         const pageTotal = controller.state.pageOrder.length;
         const thumbRenderers: Array<{ element: HTMLElement; render: () => void }> = [];
 
-        for (const pageNumber of controller.state.pageOrder) {
+        for (const [displayIndex, pageNumber] of controller.state.pageOrder.entries()) {
+            const displayNumber = displayIndex + 1;
             const page = await doc.getPage(pageNumber);
             if (disposed || epoch !== renderEpoch) return;
             const viewport = page.getViewport({ scale });
 
             const wrapper = el('div', 'omni-pdf__page');
             wrapper.dataset.pageNumber = String(pageNumber);
+            wrapper.dataset.displayNumber = String(displayNumber);
             wrapper.style.width = `${viewport.width}px`;
             wrapper.style.height = `${viewport.height}px`;
             wrapper.appendChild(
-                el('div', 'omni-pdf__placeholder', t('common.page', { page: pageNumber, pages: pageTotal }))
+                el('div', 'omni-pdf__placeholder', t('common.page', { page: displayNumber, pages: pageTotal }))
             );
             wrapper.addEventListener('click', (event) => {
                 const target = event.target;
@@ -1272,6 +1514,7 @@ export async function mountPdfViewer(
             pages.appendChild(wrapper);
             const record: PageRecord = {
                 pageNumber,
+                displayNumber,
                 page,
                 wrapper,
                 rendered: false,
@@ -1286,12 +1529,11 @@ export async function mountPdfViewer(
             thumb.type = 'button';
             thumb.setAttribute(
                 'aria-label',
-                t('common.page', { page: pageNumber, pages: pageTotal })
+                t('common.page', { page: displayNumber, pages: pageTotal })
             );
             const thumbCanvas = el('canvas');
-            const thumbViewport = page.getViewport({
-                scale: Math.min(0.18, 90 / (viewport.width / scale || 1))
-            });
+            const thumbScale = Math.min(0.18, 90 / (viewport.width / scale || 1));
+            const thumbViewport = page.getViewport({ scale: thumbScale });
             thumbCanvas.width = Math.floor(thumbViewport.width);
             thumbCanvas.height = Math.floor(thumbViewport.height);
             let thumbRendered = false;
@@ -1300,13 +1542,22 @@ export async function mountPdfViewer(
                 thumbRendered = true;
                 const thumbContext = thumbCanvas.getContext('2d');
                 if (!thumbContext) return;
-                void page
-                    .render({ canvasContext: thumbContext, viewport: thumbViewport })
-                    .promise.catch(() => undefined);
+                const task = page.render({ canvasContext: thumbContext, viewport: thumbViewport });
+                thumbTasks.push(task);
+                void task.promise
+                    .catch(() => undefined)
+                    .finally(() => {
+                        thumbTasks = thumbTasks.filter((candidate) => candidate !== task);
+                    });
             };
             thumbRenderers.push({ element: thumb, render: renderThumb });
-            const label = el('span', 'omni-pdf__thumb-label', String(pageNumber));
-            thumb.append(thumbCanvas, label);
+            const label = el('span', 'omni-pdf__thumb-label', String(displayNumber));
+            const thumbHolder = el('div', 'omni-pdf__thumb-page');
+            thumbHolder.appendChild(thumbCanvas);
+            thumb.append(thumbHolder, label);
+            const thumbRecord: ThumbRecord = { pageNumber, holder: thumbHolder, scale: thumbScale };
+            thumbRecords.push(thumbRecord);
+            renderThumbOverlays(thumbRecord);
             thumb.addEventListener('click', () => {
                 // Keep thumbnail navigation inside the PDF scroll container.
                 scrollToPage(record);
@@ -1416,10 +1667,18 @@ export async function mountPdfViewer(
     function refreshChrome(): void {
         const state = controller.state;
         zoomLevel.textContent = `${state.zoom}%`;
-        zoomOutBtn.disabled = state.zoom === PDF_ZOOM_LEVELS[0];
-        zoomInBtn.disabled = state.zoom === PDF_ZOOM_LEVELS[PDF_ZOOM_LEVELS.length - 1];
+        zoomOutBtn.disabled = state.zoom <= controller.minZoom;
+        zoomInBtn.disabled = state.zoom >= controller.maxZoom;
+        const busy = operationState.status === 'running';
         if (editingAvailable && ctx.writeback) {
-            saveBtn.disabled = !(state.dirty || mergedSinceSave);
+            saveBtn.disabled = busy || !(state.dirty || mergedSinceSave);
+        }
+        if (editingAvailable && ctx.save) saveAsBtn.disabled = busy;
+        if (mergeAvailable && ctx.filePick) mergeBtn.disabled = busy;
+        for (const { action, button } of customActionButtons) {
+            button.disabled = typeof action.disabled === 'function'
+                ? action.disabled()
+                : action.disabled ?? false;
         }
     }
 
@@ -1437,6 +1696,7 @@ export async function mountPdfViewer(
         for (const record of records) {
             if (record.rendered) renderOverlays(record);
         }
+        for (const thumbRecord of thumbRecords) renderThumbOverlays(thumbRecord);
     }
 
     function adoptController(next: PdfController): void {
@@ -1470,61 +1730,149 @@ export async function mountPdfViewer(
         };
     }
 
+    function isOperationCancelled(error: unknown, signal: AbortSignal): boolean {
+        return signal.aborted || (
+            typeof error === 'object' && error !== null
+            && (error as { name?: string }).name === 'AbortError'
+        );
+    }
+
+    async function runOperation<T>(
+        kind: 'save' | 'save-as' | 'merge',
+        work: (control: PdfProcessingControl) => Promise<T>
+    ): Promise<{ status: 'succeeded'; value: T } | { status: 'failed' | 'cancelled' }> {
+        const abortController = new AbortController();
+        operationController = abortController;
+        operationState = { status: 'running', kind };
+        refreshChrome();
+        const control: PdfProcessingControl = {
+            signal: abortController.signal,
+            onProgress(progress) {
+                if (operationController !== abortController || abortController.signal.aborted) return;
+                const normalized = progress === undefined
+                    ? undefined
+                    : Math.max(0, Math.min(1, progress));
+                operationState = normalized === undefined
+                    ? { status: 'running', kind }
+                    : { status: 'running', kind, progress: normalized };
+                const base = t(kind === 'merge' ? 'pdf.merging' : 'pdf.saving');
+                status.textContent = normalized === undefined
+                    ? base
+                    : `${base} ${Math.round(normalized * 100)}%`;
+            }
+        };
+        control.onProgress(undefined);
+        try {
+            const value = await work(control);
+            if (abortController.signal.aborted || disposed) {
+                throw new DOMException('PDF operation cancelled', 'AbortError');
+            }
+            operationState = { status: 'succeeded', kind };
+            return { status: 'succeeded', value };
+        } catch (error) {
+            if (isOperationCancelled(error, abortController.signal)) {
+                operationState = { status: 'cancelled', kind };
+                status.textContent = t('pdf.operationCancelled');
+                return { status: 'cancelled' };
+            }
+            operationState = { status: 'failed', kind, error: String(error) };
+            return { status: 'failed' };
+        } finally {
+            if (operationController === abortController) operationController = undefined;
+            refreshChrome();
+        }
+    }
+
+    async function buildOutput(
+        state: PdfViewState,
+        control: PdfProcessingControl
+    ): Promise<Uint8Array> {
+        if (canDelegateBuild) {
+            return deps.processing!.buildPdf!({ source: sourceBytes, state, mode: saveMode }, control);
+        }
+        if (!canUseBrowserProcessing) throw new Error('PDF processing service unavailable');
+        if (control.signal.aborted) throw new DOMException('PDF operation cancelled', 'AbortError');
+        const lib = await ensurePdfLib();
+        const output = saveMode === 'hybrid'
+            ? await buildSavedPdf(lib, sourceBytes, state)
+            : await buildEditedPdf(lib, sourceBytes, state);
+        if (control.signal.aborted) throw new DOMException('PDF operation cancelled', 'AbortError');
+        return output;
+    }
+
+    async function mergeOutput(
+        second: Uint8Array,
+        control: PdfProcessingControl
+    ): Promise<Uint8Array> {
+        if (canDelegateMerge) {
+            return deps.processing!.mergePdfs!({ first: sourceBytes, second }, control);
+        }
+        if (!canUseBrowserProcessing) throw new Error('PDF merge service unavailable');
+        if (control.signal.aborted) throw new DOMException('PDF operation cancelled', 'AbortError');
+        const lib = await ensurePdfLib();
+        const output = await mergePdfBytes(lib, sourceBytes, second);
+        if (control.signal.aborted) throw new DOMException('PDF operation cancelled', 'AbortError');
+        return output;
+    }
+
     async function save(): Promise<void> {
         if (!ctx.writeback || saveBtn.disabled) return;
-        try {
-            const lib = await ensurePdfLib();
-            // Flatten from the pristine base (not the on-disk flattened copy),
-            // embedding the sidecar so overlays stay removable on reopen. The
-            // in-memory session keeps `sourceBytes` pristine + the live layer;
-            // we only rebaseline the dirty marker.
-            const data = await buildSavedPdf(lib, sourceBytes, stateForSave());
-            await ctx.writeback.write(data);
+        const result = await runOperation('save', async (control) => {
+            const data = await buildOutput(stateForSave(), control);
+            await ctx.writeback!.write(data);
+        });
+        if (result.status === 'succeeded') {
             mergedSinceSave = false;
             controller.dispatch({ type: 'mark-saved' });
             refreshChrome();
             status.textContent = t('common.savedToOriginal');
-        } catch (error) {
-            ctx.logger.log('error', `pdf save failed: ${String(error)}`);
+        } else if (result.status === 'failed') {
+            ctx.logger.log('error', `pdf save failed: ${operationState.status === 'failed' ? operationState.error : ''}`);
             status.textContent = t('common.saveFailed');
         }
     }
 
     async function saveAs(): Promise<void> {
         if (!ctx.save || saveAsBtn.disabled) return;
-        try {
-            const lib = await ensurePdfLib();
-            // Keep the same hybrid sidecar as Save so a Save As document can
-            // be reopened in Omni Viewer with all overlays still editable.
-            // Other PDF readers continue to see the flattened result.
-            const data = await buildSavedPdf(lib, sourceBytes, stateForSave());
-            await ctx.save.saveFile(savedPdfName(input.fileName), data, 'application/pdf');
+        const result = await runOperation('save-as', async (control) => {
+            const data = await buildOutput(stateForSave(), control);
+            const saveResult = await ctx.save!.saveFile(
+                savedPdfName(input.fileName), data, 'application/pdf'
+            );
+            await options.onSaveAsComplete?.(saveResult);
+            if (saveResult?.status === 'cancelled') {
+                throw new DOMException('Save As cancelled', 'AbortError');
+            }
+        });
+        if (result.status === 'succeeded') {
             status.textContent = t('common.saved', { name: savedPdfName(input.fileName) });
-        } catch (error) {
-            ctx.logger.log('error', `pdf save-as failed: ${String(error)}`);
+        } else if (result.status === 'failed') {
+            ctx.logger.log('error', `pdf save-as failed: ${operationState.status === 'failed' ? operationState.error : ''}`);
             status.textContent = t('common.saveFailed');
         }
     }
 
     async function merge(): Promise<void> {
         if (!ctx.filePick || mergeBtn.disabled) return;
-        const picked = await ctx.filePick.pickFile({ accept: ['application/pdf', '.pdf'] });
+        const picked = await ctx.filePick.pickFile({
+            accept: ['application/pdf', '.pdf'],
+            ...(options.maxMergeBytes === undefined ? {} : { maxBytes: options.maxMergeBytes })
+        });
         if (!picked || disposed) return;
-        try {
-            status.textContent = t('pdf.merging');
-            const lib = await ensurePdfLib();
+        const result = await runOperation('merge', async (control) => {
             // `sourceBytes` is the pristine base while the controller holds
             // the live reorder/delete/annotation layer. Keep that layer and
             // append the new source pages to its current visible order.
             const previousState = controller.state;
-            const previousSourcePageCount = doc?.numPages ?? sourceBytes.length;
-            const merged = await mergePdfBytes(lib, sourceBytes, picked.data);
-            await doc?.destroy();
-            doc = await loadDocument(merged);
+            const previousSourcePageCount = doc?.numPages ?? 0;
+            const merged = await mergeOutput(picked.data, control);
+            const candidate = await loadDocument(merged);
             if (disposed) {
-                void doc.destroy();
-                return;
+                void candidate.destroy();
+                throw new DOMException('PDF operation cancelled', 'AbortError');
             }
+            const previousDocument = doc;
+            doc = candidate;
             sourceBytes = merged;
             currentPage = 1;
             // The merged pages exist only in memory until the user saves.
@@ -1533,15 +1881,18 @@ export async function mountPdfViewer(
                 { length: Math.max(0, doc.numPages - previousSourcePageCount) },
                 (_, index) => previousSourcePageCount + index + 1
             );
-            adoptController(createPdfController(doc.numPages, {
+            adoptController(createPdfController(candidate.numPages, {
                 pageOrder: [...previousState.pageOrder, ...appendedPages],
                 annotations: previousState.annotations
-            }));
+            }, controllerOptions));
+            await previousDocument?.destroy();
             refreshChrome();
             await rebuildLayout();
+        });
+        if (result.status === 'succeeded') {
             status.textContent = t('pdf.mergeComplete');
-        } catch (error) {
-            ctx.logger.log('error', `pdf merge failed: ${String(error)}`);
+        } else if (result.status === 'failed') {
+            ctx.logger.log('error', `pdf merge failed: ${operationState.status === 'failed' ? operationState.error : ''}`);
             status.textContent = t('pdf.mergeFailed');
         }
     }
@@ -1568,12 +1919,17 @@ export async function mountPdfViewer(
             }
             status.classList.add('omni-pdf__status--error');
             // Stable failed handle: one empty controller, normal dispose.
-            const failedController = createPdfController(0);
+            const failedController = createPdfController(0, undefined, controllerOptions);
             return {
                 get controller() {
                     return failedController;
                 },
+                get operation() {
+                    return operationState;
+                },
                 isDirty: () => false,
+                cancelOperation: () => operationController?.abort(),
+                refreshToolbarActions: refreshChrome,
                 dispose: teardown
             };
         }
@@ -1586,13 +1942,29 @@ export async function mountPdfViewer(
     // overlays as a removable layer.
     const sidecar = await readSidecar(doc);
     if (sidecar) {
-        await doc.destroy();
-        sourceBytes = sidecar.base;
-        doc = await loadDocument(sourceBytes, password);
-        throwIfAborted();
-        adoptController(createPdfController(doc.numPages, sidecar.layer));
+        let baseDocument: PdfJsDocument | undefined;
+        try {
+            baseDocument = await loadDocument(sidecar.base, password);
+            throwIfAborted();
+        } catch (error) {
+            throwIfAborted();
+            ctx.logger.log('warn', `pdf sidecar base ignored: ${String(error)}`);
+        }
+        if (baseDocument) {
+            const flattenedDocument = doc;
+            doc = baseDocument;
+            sourceBytes = sidecar.base;
+            adoptController(createPdfController(doc.numPages, sidecar.layer, controllerOptions));
+            try {
+                await flattenedDocument.destroy();
+            } catch (error) {
+                ctx.logger.log('warn', `pdf flattened document cleanup failed: ${String(error)}`);
+            }
+        } else {
+            adoptController(createPdfController(doc.numPages, undefined, controllerOptions));
+        }
     } else {
-        adoptController(createPdfController(doc.numPages));
+        adoptController(createPdfController(doc.numPages, undefined, controllerOptions));
     }
     refreshChrome();
     await rebuildLayout();
@@ -1602,7 +1974,12 @@ export async function mountPdfViewer(
         get controller() {
             return controller;
         },
+        get operation() {
+            return operationState;
+        },
         isDirty: () => controller.state.dirty || mergedSinceSave,
+        cancelOperation: () => operationController?.abort(),
+        refreshToolbarActions: refreshChrome,
         dispose: teardown
     };
 }

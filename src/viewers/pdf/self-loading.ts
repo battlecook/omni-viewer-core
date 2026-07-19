@@ -3,10 +3,11 @@
 // whose bundler resolves the peers use this; others import `viewers/pdf`
 // and inject their own loaders.
 
-import type { ViewerInput, MountOptions } from '../types.js';
+import type { ViewerInput } from '../types.js';
 import {
     mountPdfViewer,
     type PdfJsModule,
+    type PdfMountOptions,
     type PdfViewerContext,
     type PdfViewerDeps,
     type PdfViewerHandle
@@ -25,7 +26,7 @@ export function mountSelfLoadingPdfViewer(
     input: ViewerInput,
     container: HTMLElement,
     ctx: PdfViewerContext,
-    options: MountOptions = {}
+    options: PdfMountOptions = {}
 ): Promise<PdfViewerHandle> {
     return mountPdfViewer(input, container, ctx, selfLoadingPdfDeps, options);
 }

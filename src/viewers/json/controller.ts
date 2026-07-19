@@ -309,28 +309,15 @@ export function createJsonController(
     const requireValidRoot = (): JsonNode | null =>
         state.status === 'ok' && state.root ? state.root : null;
 
-    /** Show raw-text conversions for review without overwriting the editor. */
-    const runRawResult = (action: JsonToolAction, result: TransformResult | string): void => {
+    /** Raw-text transforms replace the scratchpad immediately (J11, vscode
+     * routing) so they chain naturally; failures surface as status messages. */
+    const runRawTransform = (action: JsonToolAction, result: TransformResult | string): void => {
         const transformed = typeof result === 'string' ? { ok: true as const, output: result } : result;
-        state.toolResult = {
-            action,
-            titleKey: TOOL_MESSAGE[action]!,
-            output: transformed.ok ? transformed.output : '',
-            ...(transformed.ok
-                ? {}
-                : { error: { key: TRANSFORM_ERROR[transformed.error] ?? 'json.tool.failed' } })
-        };
-    };
-
-    /** Chain Base64 operations through their latest successful result while
-     * leaving the editor's original JSON untouched. */
-    const base64Input = (): string => {
-        const previous = state.toolResult;
-        return previous
-            && !previous.error
-            && (previous.action === 'base64-encode' || previous.action === 'base64-decode')
-            ? previous.output
-            : state.scratchpad;
+        if (transformed.ok) {
+            replaceScratchpad(transformed.output, TOOL_MESSAGE[action]!);
+        } else {
+            state.statusMessage = { key: TRANSFORM_ERROR[transformed.error] ?? 'json.tool.failed' };
+        }
     };
 
     const runConverter = (
@@ -391,16 +378,16 @@ export function createJsonController(
                 break;
             }
             case 'escape':
-                runRawResult('escape', escapeText(state.scratchpad));
+                runRawTransform('escape', escapeText(state.scratchpad));
                 break;
             case 'unescape':
-                runRawResult('unescape', unescapeText(state.scratchpad));
+                runRawTransform('unescape', unescapeText(state.scratchpad));
                 break;
             case 'base64-encode':
-                runRawResult('base64-encode', base64Encode(base64Input()));
+                runRawTransform('base64-encode', base64Encode(state.scratchpad));
                 break;
             case 'base64-decode':
-                runRawResult('base64-decode', base64Decode(base64Input()));
+                runRawTransform('base64-decode', base64Decode(state.scratchpad));
                 break;
             case 'to-csv':
                 runConverter('to-csv', jsonToCsv);

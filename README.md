@@ -63,6 +63,34 @@ Viewers follow the same pattern — a `mount*Viewer(input, container, ctx,
 deps)` entry per format, plus `self-loading` variants that dynamically import
 their own dependencies for hosts that don't want to wire them manually.
 
+### PDF host integration
+
+The PDF viewer asks `ctx.assets.resolveAssetUrl` for the exact key
+`assets/pdfjs/pdf.worker.min.mjs`. The published package also exposes that
+worker at `omni-viewer-core/assets/pdfjs/pdf.worker.min.mjs`; a host may return
+its own compatible `pdfjs-dist` worker URL instead, or pass `workerSrc` in the
+PDF mount options. `isEvalSupported` defaults to `false` for CSP-safe hosts.
+
+PDF mount options are additive and optional. `saveMode` is `hybrid` by default
+(editable text/markup sidecar; signatures and deleted pages are permanent) and
+may be set to `flattened` for smaller output. `toolbarActions` adds host-owned
+buttons without exposing platform APIs to core. `zoomLevels`, `maxMergeBytes`,
+and `onSaveAsComplete` configure navigation and host save behavior.
+
+Large save and merge work can be delegated through the optional
+`PdfViewerDeps.processing` service. VS Code extension-host and Web Worker
+adapters can implement `buildPdf` and/or `mergePdfs`; each receives an
+`AbortSignal` and progress callback. When the service is absent, the default
+`auto` mode preserves the browser `pdf-lib` fallback. `host` requires the
+service and `browser` forces the fallback. `PdfViewerHandle.operation` reports
+running, succeeded, failed, and cancelled states, and `cancelOperation()`
+requests cancellation.
+
+`FileSaveService.saveFile` may continue resolving `void` for compatibility.
+New adapters should return `{ status: 'cancelled' }` when a Save As picker is
+dismissed, or `{ status: 'saved', fileName?, uri? }` after any host post-save
+work (for example opening the new file or showing a notification) completes.
+
 Parsers never throw on malformed input; they return a
 `ParseOutcome` with a typed failure and diagnostics, and they enforce
 resource limits (input size, cell/row/entry counts, declared decompressed

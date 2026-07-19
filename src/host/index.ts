@@ -47,11 +47,24 @@ export interface LoggerService {
 // (excluded vs degraded mode) are declared per viewer (DESIGN.md ADR 24).
 // ---------------------------------------------------------------------------
 
+export type FileSaveResult =
+    | { status: 'saved'; fileName?: string; uri?: string }
+    | { status: 'cancelled' };
+
 export interface FileSaveService {
     /** Creates a new file. Implementations present the platform's save
      *  destination picker (or browser-equivalent download prompt) so the
-     *  user chooses the target path and may change the suggested name. */
-    saveFile(name: string, data: Uint8Array, mimeType: string): Promise<void>;
+     *  user chooses the target path and may change the suggested name.
+     *
+     * Existing implementations may continue returning `void` (treated as a
+     * successful save). New implementations should return `cancelled` when the
+     * picker is dismissed, and may open the saved file or show host UI before
+     * resolving `saved`. */
+    saveFile(
+        name: string,
+        data: Uint8Array,
+        mimeType: string
+    ): Promise<void | FileSaveResult>;
 }
 
 export interface ClipboardService {

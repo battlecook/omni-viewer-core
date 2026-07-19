@@ -7,6 +7,82 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-19
+
+### Added
+
+- Added PDF host-integration mount options (`PdfMountOptions`): `saveMode`
+  (`hybrid` default, or `flattened` for smaller output without the editable
+  sidecar, with a toolbar badge showing the active mode), host-owned
+  `toolbarActions`, `workerSrc` (defaulting to the exported
+  `PDF_WORKER_ASSET_KEY` asset), `isEvalSupported` (defaults to `false` for
+  CSP-safe hosts such as VS Code), `maxMergeBytes` for the merge file picker,
+  and `onSaveAsComplete`.
+- Added an optional `PdfViewerDeps.processing` service so hosts (VS Code
+  extension host, Web Workers) can run byte-heavy PDF save and merge work via
+  `buildPdf`/`mergePdfs`, with an `AbortSignal` and progress reporting per
+  operation. `processingMode` selects `auto` (delegate when available),
+  `host`, or `browser` (always use the `pdf-lib` fallback).
+  `PdfViewerHandle` now exposes the running/succeeded/failed/cancelled
+  `operation` state, `cancelOperation()`, and `refreshToolbarActions()`.
+- Added configurable PDF zoom (`PdfControllerOptions`: `zoomLevels`,
+  `minZoom`, `maxZoom`), expanded the default button steps with the VS
+  Code-compatible intermediate levels (175/225/250/275), and exported
+  `PDF_MIN_ZOOM`/`PDF_MAX_ZOOM`. Zoom buttons now disable at the real
+  minimum and maximum instead of the first and last button step.
+- Added annotation overlays to PDF thumbnails so highlights, underlines,
+  strikeouts, text, and signatures stay in sync with markup edits.
+- Added a `FileSaveResult` return type to `FileSaveService.saveFile` so new
+  host adapters can report `saved` (with optional file name/URI) or
+  `cancelled`; existing `void`-returning implementations keep working. A
+  cancelled Save As picker no longer reports a successful save.
+- Added a Markdown save fallback: when no writeback service exists, Ctrl+S
+  saves a copy through the optional `save` (file-save) service, now declared
+  in the Markdown viewer descriptor.
+- Added a "Replace editor" action to the JSON converter result panel so a
+  conversion can be applied back to the editor without a clipboard service.
+- Added YAML duplicate-key detection: duplicate mapping keys now parse as a
+  `yaml.duplicate-key` warning (keeping every entry with disambiguated
+  paths) instead of failing the document, and structured-viewer diagnostics
+  now interpolate message arguments.
+- Added YAML alias and merge-key resolution to JSON output: scalar aliases
+  resolve to their anchor values, `<<:` merge keys are expanded, redefined
+  anchors resolve in document order, and self-referencing cycles are broken
+  instead of overflowing the stack.
+- Added a `verify:pdf-package` script that checks the published package
+  ships the PDF entry points, styles, worker asset, and matching `exports`.
+- Added GitHub sponsor metadata (`.github/FUNDING.yml`) and README
+  documentation for PDF host integration.
+
+### Changed
+
+- Changed the JSON raw-text tools (escape, unescape, Base64 encode/decode)
+  to replace the editor content directly — chaining through the editor —
+  instead of opening a review panel; failures surface as status messages.
+- Changed PDF page navigation to use display positions after reordering or
+  deleting pages: the page input, placeholders, and thumbnail labels now
+  show the visible position rather than the original page number.
+- Changed drawn PDF signatures to keep their drawn aspect ratio (contained
+  within the stamp box) instead of being stretched to a fixed 120×60 size.
+- Changed the PDF merge button to only require a file-pick service plus any
+  merge-capable processing path, instead of the full editing dependency.
+- Updated GitHub Actions to `actions/checkout@v6`, `actions/setup-node@v6`,
+  `actions/upload-artifact@v7`, and `softprops/action-gh-release@v3`.
+
+### Fixed
+
+- Fixed opening a saved PDF whose embedded sidecar base is corrupt: the
+  viewer now logs a warning and falls back to the flattened document
+  instead of failing to open the file.
+- Fixed PDF worker-asset load failures crashing the mount; the viewer now
+  reports a localized error status and returns a stable handle.
+- Fixed pdf.js resource cleanup: failed loading tasks are destroyed,
+  in-flight thumbnail renders are cancelled on layout rebuilds, the
+  password prompt is dismissed on abort, and the previous document is
+  destroyed only after a merge succeeds.
+- Fixed YAML merge-key (`<<`) entries being parsed as a literal `Symbol()`
+  key by the self-loading normalizer.
+
 ## [0.4.0] - 2026-07-19
 
 ### Added

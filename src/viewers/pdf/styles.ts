@@ -55,6 +55,14 @@ export const pdfViewerCss = `
     color: var(--omni-fg-muted, #9d9d9d);
     margin-right: 8px;
 }
+.omni-pdf__save-mode {
+    padding: 2px 6px;
+    color: var(--omni-fg-muted, #9d9d9d);
+    border: 1px solid var(--omni-border, #3c3c3c);
+    border-radius: 999px;
+    font-size: 11px;
+    white-space: nowrap;
+}
 .omni-pdf__page-input {
     width: 52px;
     padding: 3px 5px;
@@ -269,9 +277,27 @@ export const pdfViewerCss = `
 .omni-pdf__thumb.drop-before::before { top: -6px; }
 .omni-pdf__thumb.drop-after::after { bottom: -6px; }
 .omni-pdf__thumb canvas {
+    display: block;
     max-width: 100%;
     background: #ffffff;
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+.omni-pdf__thumb-page {
+    position: relative;
+    max-width: 100%;
+}
+.omni-pdf__thumb-annotation {
+    position: absolute;
+    z-index: 1;
+    overflow: hidden;
+    pointer-events: none;
+    color: #111111; /* ink on paper */
+    white-space: nowrap;
+}
+.omni-pdf__thumb-annotation img { display: block; }
+.omni-pdf__thumb-annotation.omni-pdf__underline::after,
+.omni-pdf__thumb-annotation.omni-pdf__strikeout::after {
+    height: 1px;
 }
 .omni-pdf__thumb-label {
     font-family: var(--omni-font-mono, Monaco, Menlo, monospace);

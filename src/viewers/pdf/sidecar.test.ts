@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import * as pdfLib from 'pdf-lib';
 import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import {
+    buildEditedPdf,
     buildSavedPdf,
     parseLayer,
     SIDECAR_LAYER_NAME,
@@ -45,6 +46,7 @@ describe('parseLayer', () => {
         const parsed = parseLayer(layer);
         expect(parsed?.pageOrder).toEqual([2, 1]);
         expect(parsed?.annotations).toHaveLength(2);
+        expect(parsed?.annotations[1]).toMatchObject({ kind: 'signature', width: 10, height: 4 });
     });
 
     it('rejects an unknown version (including the old v1) and invalid JSON', () => {
@@ -111,6 +113,35 @@ describe('createPdfController seeding', () => {
 });
 
 describe('hybrid sidecar round-trip', () => {
+    it('omits attachments in flattened mode while preserving the visible page geometry', async () => {
+        const pristine = await samplePdf(2);
+        const c = createPdfController(2);
+        c.dispatch({ type: 'reorder-pages', from: 0, to: 1 });
+        c.dispatch({
+            type: 'add-annotation',
+            annotation: { kind: 'text', page: 2, x: 10, y: 20, text: 'same', size: 14, color: '#ff0000' }
+        });
+        const flattened = await buildEditedPdf(pdfLib, pristine, c.state);
+        const hybrid = await buildSavedPdf(pdfLib, pristine, c.state);
+
+        const flattenedPdf = await getDocument({ data: flattened.slice() }).promise;
+        const hybridPdf = await getDocument({ data: hybrid.slice() }).promise;
+        expect(await flattenedPdf.getAttachments()).toBeNull();
+        const hybridAttachments = (await hybridPdf.getAttachments()) as Record<
+            string, { filename: string; content: Uint8Array }
+        > | null;
+        expect(Object.values(hybridAttachments ?? {}).map((entry) => entry.filename).sort())
+            .toEqual([SIDECAR_BASE_NAME, SIDECAR_LAYER_NAME].sort());
+        expect(flattenedPdf.numPages).toBe(hybridPdf.numPages);
+        const [flattenedViewport, hybridViewport] = await Promise.all([
+            flattenedPdf.getPage(1).then((page) => page.getViewport({ scale: 1 })),
+            hybridPdf.getPage(1).then((page) => page.getViewport({ scale: 1 }))
+        ]);
+        expect({ width: flattenedViewport.width, height: flattenedViewport.height })
+            .toEqual({ width: hybridViewport.width, height: hybridViewport.height });
+        await Promise.all([flattenedPdf.destroy(), hybridPdf.destroy()]);
+    });
+
     it('embeds a kept-pages base + remapped layer JSON that reads back through pdf.js', async () => {
         const pristine = await samplePdf(3);
         const c = createPdfController(3);

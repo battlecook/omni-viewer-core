@@ -1,4 +1,4 @@
-import type { ClipboardService, DocumentAssetsService, FileWritebackService, HostContext, NavigationService } from '../../host/index.js';
+import type { ClipboardService, DocumentAssetsService, FileSaveService, FileWritebackService, HostContext, NavigationService } from '../../host/index.js';
 import { ALLOWED_LINK_SCHEMES } from '../../host/index.js';
 import { parseMarkdown, type MarkdownDocument, type MarkdownParseOptions } from '../../parsers/markdown/index.js';
 import type { ResourceLimits } from '../../parsers/types.js';
@@ -16,7 +16,7 @@ export const MARKDOWN_VIEWER_META = {
     id: 'markdown', displayNameKey: 'markdown.title',
     extensions: ['md', 'markdown', 'mdown', 'mkdn', 'mkd'], priority: 10,
     requiredServices: [] as const,
-    optionalServices: ['clipboard', 'navigation', 'documentAssets', 'writeback'] as const,
+    optionalServices: ['clipboard', 'navigation', 'documentAssets', 'writeback', 'save'] as const,
     inputOwnership: 'borrows' as const
 };
 
@@ -46,6 +46,7 @@ export interface MarkdownViewerDeps {
 export type MarkdownViewerContext = HostContext & {
     clipboard?: ClipboardService; navigation?: NavigationService;
     documentAssets?: DocumentAssetsService; writeback?: FileWritebackService;
+    save?: FileSaveService;
 };
 export interface MarkdownMountOptions extends MountOptions {
     limits?: ResourceLimits;
@@ -271,9 +272,20 @@ export async function mountMarkdownViewer(
         }
     };
     const saveSource = async (): Promise<void> => {
-        if (!ctx.writeback) { showMessage(t('common.noWriteback')); setStatus('common.saveFailed', 'invalid'); return; }
-        try { await ctx.writeback.write(new TextEncoder().encode(controller.state.source)); controller.dispatch({ type: 'mark-saved' }); setStatus('common.savedToOriginal', 'valid'); sourceCaption.textContent = t('common.savedToOriginal'); }
-        catch (error) { ctx.logger.log('error', `markdown save failed: ${String(error)}`); setStatus('common.saveFailed', 'invalid'); showMessage(errorText(error, t('common.saveFailed'))); }
+        const bytes = new TextEncoder().encode(controller.state.source);
+        if (ctx.writeback) {
+            try { await ctx.writeback.write(bytes); controller.dispatch({ type: 'mark-saved' }); setStatus('common.savedToOriginal', 'valid'); sourceCaption.textContent = t('common.savedToOriginal'); }
+            catch (error) { ctx.logger.log('error', `markdown save failed: ${String(error)}`); setStatus('common.saveFailed', 'invalid'); showMessage(errorText(error, t('common.saveFailed'))); }
+            return;
+        }
+        if (ctx.save) {
+            // Download fallback saves a copy, not the original — the dirty
+            // state is intentionally kept (no mark-saved).
+            try { await ctx.save.saveFile(input.fileName, bytes, 'text/markdown'); setStatus('common.savedToOriginal', 'valid'); }
+            catch (error) { ctx.logger.log('error', `markdown save failed: ${String(error)}`); setStatus('common.saveFailed', 'invalid'); showMessage(errorText(error, t('common.saveFailed'))); }
+            return;
+        }
+        showMessage(t('common.noWriteback')); setStatus('common.saveFailed', 'invalid');
     };
     const copy = async (value: string, successKey: string): Promise<void> => {
         if (!ctx.clipboard) return;

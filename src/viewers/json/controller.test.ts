@@ -142,32 +142,38 @@ describe('createJsonController — toolbox routing (J11/부록 B-1)', () => {
         expect(c.state.toolResult?.error?.key).toBe('json.tool.csvRequiresObjects');
     });
 
-    it('escape/unescape/base64 show results without overwriting raw text', () => {
+    it('escape/unescape replace the scratchpad immediately', () => {
         const c = createJsonController('"a\\tb"');
         c.dispatch({ type: 'run-tool', action: 'unescape' });
-        expect(c.state.scratchpad).toBe('"a\\tb"');
-        expect(c.state.toolResult?.action).toBe('unescape');
-        expect(c.state.toolResult?.output).toBe('a\tb');
+        expect(c.state.scratchpad).toBe('a\tb');
+        expect(c.state.toolResult).toBeNull(); // no panel — editor is replaced
+        expect(c.state.statusMessage?.key).toBe('json.tool.unescaped');
+        c.dispatch({ type: 'run-tool', action: 'escape' });
+        expect(c.state.scratchpad).toBe('a\\tb');
+        expect(c.state.statusMessage?.key).toBe('json.tool.escaped');
     });
 
-    it('chains Base64 encode/decode through the last Base64 result', () => {
+    it('chains Base64 encode/decode through the scratchpad', () => {
         const c = createJsonController('{"a":1}');
         c.dispatch({ type: 'run-tool', action: 'base64-encode' });
-        const once = c.state.toolResult?.output;
+        const once = c.state.scratchpad;
+        expect(c.state.statusMessage?.key).toBe('json.tool.base64Encoded');
         c.dispatch({ type: 'run-tool', action: 'base64-encode' });
-        const twice = c.state.toolResult?.output;
-        expect(twice).not.toBe(once);
+        expect(c.state.scratchpad).not.toBe(once);
         c.dispatch({ type: 'run-tool', action: 'base64-decode' });
-        expect(c.state.toolResult?.output).toBe(once);
+        expect(c.state.scratchpad).toBe(once);
+        c.dispatch({ type: 'run-tool', action: 'base64-decode' });
         expect(c.state.scratchpad).toBe('{"a":1}');
+        expect(c.state.status).toBe('ok'); // decode → pretty chaining works
     });
 
-    it('unescape failure opens an error result and keeps scratchpad', () => {
+    it('unescape failure reports status and keeps scratchpad', () => {
         const c = createJsonController('a\\');
         const before = c.state.scratchpad;
         c.dispatch({ type: 'run-tool', action: 'unescape' });
         expect(c.state.scratchpad).toBe(before);
-        expect(c.state.toolResult?.error?.key).toBe('json.tool.unescapeFailed');
+        expect(c.state.toolResult).toBeNull();
+        expect(c.state.statusMessage?.key).toBe('json.tool.unescapeFailed');
     });
 
     it('transforms on invalid JSON report invalid instead of throwing', () => {

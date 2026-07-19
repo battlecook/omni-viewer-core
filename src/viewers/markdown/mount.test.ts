@@ -76,6 +76,29 @@ describe('mountMarkdownViewer', () => {
         expect(root.querySelector('.omni-markdown__preview')?.textContent).toContain('Read only');
     });
 
+    it('falls back to the save service download when writeback is unavailable', async () => {
+        const saveFile = vi.fn(async () => undefined);
+        const context: MarkdownViewerContext = { ...readonlyCtx(), save: { saveFile } };
+        const container = document.createElement('div');
+        await mountMarkdownViewer({ fileName: 'readme.md', data: new TextEncoder().encode('# Hello') }, container, context, deps);
+        const root = container.shadowRoot!; const source = root.querySelector('textarea')!;
+        source.value = '# Changed'; source.dispatchEvent(new Event('input'));
+        source.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true }));
+        await new Promise(resolve => setTimeout(resolve, 0));
+        expect(saveFile).toHaveBeenCalledWith('readme.md', new TextEncoder().encode('# Changed'), 'text/markdown');
+        expect(root.querySelector('.omni-markdown__status')?.textContent).toBe('Saved');
+    });
+
+    it('reports the missing-writeback message when neither save service exists', async () => {
+        const container = document.createElement('div');
+        await mountMarkdownViewer({ fileName: 'readme.md', data: new TextEncoder().encode('# Hello') }, container, readonlyCtx(), deps);
+        const root = container.shadowRoot!; const source = root.querySelector('textarea')!;
+        source.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true }));
+        await new Promise(resolve => setTimeout(resolve, 0));
+        expect(root.querySelector('.omni-markdown__status')?.textContent).toBe('Save failed');
+        expect(root.querySelector('.omni-markdown__message')?.textContent).toContain('unavailable');
+    });
+
     it('never sends content beyond parser limits to the Markdown renderer', async () => {
         const parse = vi.fn((source: string) => `<p>${source}</p>`);
         const limitedDeps: MarkdownViewerDeps = { ...deps, render: { parse } };

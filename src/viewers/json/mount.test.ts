@@ -176,6 +176,26 @@ describe('mountJsonViewer', () => {
         expect(root.querySelector('.omni-json__result-value')?.textContent).toContain('Omni');
     });
 
+    it('applies a converter result back to the editor without clipboard (J11)', async () => {
+        const container = document.createElement('div');
+        await mountJsonViewer(jsonInput('{"a":1}'), container, stubCtx());
+        const root = shadow(container);
+        button(root, '→ YAML').click();
+        const replace = button(root, 'Replace editor');
+        expect(replace.disabled).toBe(false);
+        replace.click();
+        expect((root.querySelector('.omni-json__result') as HTMLElement).style.display).toBe('none');
+        expect((root.querySelector('.omni-json__editor') as HTMLTextAreaElement).value).toBe('a: 1');
+    });
+
+    it('disables Replace editor for an error result', async () => {
+        const container = document.createElement('div');
+        await mountJsonViewer(jsonInput('[1,2]'), container, stubCtx());
+        const root = shadow(container);
+        button(root, '→ CSV').click(); // scalars → csv-requires-objects error
+        expect(button(root, 'Replace editor').disabled).toBe(true);
+    });
+
     it('reflects a transform in the verbatim editor (routing J11)', async () => {
         const container = document.createElement('div');
         await mountJsonViewer(jsonInput('{ "a" : 1 }'), container, stubCtx());

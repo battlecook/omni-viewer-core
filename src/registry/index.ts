@@ -221,7 +221,7 @@ export const IMAGE_VIEWER_DESCRIPTOR: ViewerDescriptor = {
 export const MARKDOWN_VIEWER_DESCRIPTOR: ViewerDescriptor = {
     id: 'markdown', displayNameKey: 'markdown.title',
     extensions: ['md', 'markdown', 'mdown', 'mkdn', 'mkd'], priority: 10,
-    requiredServices: [], optionalServices: ['clipboard', 'navigation', 'documentAssets', 'writeback']
+    requiredServices: [], optionalServices: ['clipboard', 'navigation', 'documentAssets', 'writeback', 'save']
 };
 export const ARCHIVE_MAGIC_SIGNATURES: readonly MagicSignature[] = [
     [{ offset: 0, bytes: [0x50,0x4b,0x03,0x04] }], [{ offset: 0, bytes: [0x50,0x4b,0x05,0x06] }],

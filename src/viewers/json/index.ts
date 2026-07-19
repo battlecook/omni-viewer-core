@@ -333,10 +333,15 @@ export async function mountJsonViewer(
         copyResultBtn.disabled = true;
         copyResultBtn.title = t('common.noClipboard');
     }
+    const replaceResultBtn = el('button', undefined, t('json.result.replace'));
+    replaceResultBtn.type = 'button';
+    on(replaceResultBtn, 'click', () =>
+        controller.dispatch({ type: 'apply-result-to-editor' })
+    );
     const closeResultBtn = el('button', undefined, t('json.result.close'));
     closeResultBtn.type = 'button';
     on(closeResultBtn, 'click', () => controller.dispatch({ type: 'dismiss-result' }));
-    resultActions.append(copyResultBtn, closeResultBtn);
+    resultActions.append(copyResultBtn, replaceResultBtn, closeResultBtn);
     resultPanel.append(resultTitle, resultOutput, resultMarkup, resultTableWrap, resultActions);
 
     frame.append(toolbar, statusBar, diagnosticsBar, resultPanel, body);
@@ -582,6 +587,7 @@ export async function mountJsonViewer(
             if (isCsv) renderCsvResult(state.toolResult.output);
             if (isMarkup) renderMarkupResult(state.toolResult.action, state.toolResult.output);
             copyResultBtn.disabled = !clipboard || !!state.toolResult.error;
+            replaceResultBtn.disabled = !!state.toolResult.error;
         } else {
             resultPanel.style.display = 'none';
         }

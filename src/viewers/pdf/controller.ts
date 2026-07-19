@@ -1,4 +1,8 @@
-export const PDF_ZOOM_LEVELS = [50, 75, 100, 125, 150, 200, 300] as const;
+export const PDF_ZOOM_LEVELS = [
+    50, 75, 100, 125, 150, 175, 200, 225, 250, 275, 300
+] as const;
+export const PDF_MIN_ZOOM = 25;
+export const PDF_MAX_ZOOM = 400;
 export type PdfZoom = number;
 
 export interface PdfTextAnnotation {
@@ -143,14 +147,37 @@ export type PdfAction =
 
 export interface PdfController {
     readonly state: PdfViewState;
+    /** Ordered button steps used by zoom-in/zoom-out. */
+    readonly zoomLevels: readonly number[];
+    readonly minZoom: number;
+    readonly maxZoom: number;
     dispatch(action: PdfAction): void;
     subscribe(listener: (state: PdfViewState) => void): () => void;
 }
 
-function nearestZoom(value: number): PdfZoom {
-    return PDF_ZOOM_LEVELS.reduce((best, candidate) =>
-        Math.abs(candidate - value) < Math.abs(best - value) ? candidate : best
-    ) as PdfZoom;
+export interface PdfControllerOptions {
+    /** Custom button steps. Fit-to-width/height may still set an intermediate value. */
+    zoomLevels?: readonly number[];
+    minZoom?: number;
+    maxZoom?: number;
+}
+
+function normalizedZoomOptions(options: PdfControllerOptions): {
+    levels: number[];
+    min: number;
+    max: number;
+} {
+    const requestedMin = Number.isFinite(options.minZoom) ? Math.round(options.minZoom!) : PDF_MIN_ZOOM;
+    const requestedMax = Number.isFinite(options.maxZoom) ? Math.round(options.maxZoom!) : PDF_MAX_ZOOM;
+    const min = Math.max(1, Math.min(requestedMin, requestedMax));
+    const max = Math.max(min, Math.max(requestedMin, requestedMax));
+    const source = options.zoomLevels ?? PDF_ZOOM_LEVELS;
+    const levels = [...new Set(source
+        .filter(Number.isFinite)
+        .map((level) => Math.round(level))
+        .filter((level) => level >= min && level <= max))]
+        .sort((a, b) => a - b);
+    return { levels: levels.length > 0 ? levels : [min, max], min, max };
 }
 
 /** Persisted layer used to restore an editing session (sidecar rehydration). */
@@ -181,10 +208,15 @@ function copyAnnotations(annotations: readonly PdfAnnotation[]): PdfAnnotation[]
         : { ...annotation });
 }
 
-export function createPdfController(pageCount: number, seed?: PdfControllerSeed): PdfController {
+export function createPdfController(
+    pageCount: number,
+    seed?: PdfControllerSeed,
+    options: PdfControllerOptions = {}
+): PdfController {
     const original = Array.from({ length: Math.max(0, Math.floor(pageCount)) }, (_, i) => i + 1);
     const listeners = new Set<(state: PdfViewState) => void>();
-    let zoom: PdfZoom = 100;
+    const zoomOptions = normalizedZoomOptions(options);
+    let zoom: PdfZoom = Math.max(zoomOptions.min, Math.min(zoomOptions.max, 100));
     // A seeded order may only reference pages that still exist; an empty result
     // falls back to the natural order so the document is never left blank.
     const seededOrder = seed?.pageOrder?.filter((page) => page >= 1 && page <= original.length) ?? [];
@@ -218,6 +250,9 @@ export function createPdfController(pageCount: number, seed?: PdfControllerSeed)
 
     return {
         get state() { return state(); },
+        zoomLevels: zoomOptions.levels,
+        minZoom: zoomOptions.min,
+        maxZoom: zoomOptions.max,
         subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
         dispatch(action) {
             if (action.type === 'undo') {
@@ -246,18 +281,18 @@ export function createPdfController(pageCount: number, seed?: PdfControllerSeed)
             const beforeSignature = tracksHistory ? signature() : undefined;
             switch (action.type) {
                 case 'zoom-in': {
-                    zoom = PDF_ZOOM_LEVELS.find((level) => level > zoom)
-                        ?? PDF_ZOOM_LEVELS[PDF_ZOOM_LEVELS.length - 1]!;
+                    zoom = zoomOptions.levels.find((level) => level > zoom)
+                        ?? zoomOptions.max;
                     break;
                 }
                 case 'zoom-out': {
-                    zoom = [...PDF_ZOOM_LEVELS].reverse().find((level) => level < zoom)
-                        ?? PDF_ZOOM_LEVELS[0]!;
+                    zoom = [...zoomOptions.levels].reverse().find((level) => level < zoom)
+                        ?? zoomOptions.min;
                     break;
                 }
                 case 'set-zoom': {
                     if (!Number.isFinite(action.zoom)) return;
-                    zoom = Math.max(25, Math.min(400, Math.round(action.zoom)));
+                    zoom = Math.max(zoomOptions.min, Math.min(zoomOptions.max, Math.round(action.zoom)));
                     break;
                 }
                 case 'reorder-pages': {

@@ -1,6 +1,6 @@
 {
   "name": "omni-viewer-core",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Shared parsing + rendering core for Omni Viewer (vscode / chrome / obsidian / web)",
   "type": "module",
   "license": "MIT",
@@ -283,6 +283,7 @@
     "build": "tsc -p tsconfig.build.json && node scripts/build-styles.mjs",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "verify:pdf-package": "node scripts/verify-pdf-package.mjs",
     "prepublishOnly": "npm run build && npm test"
   },
   "devDependencies": {
