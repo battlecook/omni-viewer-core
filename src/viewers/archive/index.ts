@@ -210,16 +210,48 @@ export async function mountArchiveViewer(inputOrSource: ViewerInput | ArchiveStr
         }
     });
     const ROW_HEIGHT = 43; const OVERSCAN = 8; const FALLBACK_VIEWPORT_HEIGHT = 600;
-    const render = (): void => {
-        const visible = controller.visibleEntries(); visibleStat[1] = visible.length;
-        stats.querySelectorAll('.omni-archive__stat-value')[3]!.textContent = visible.length.toLocaleString();
-        tbody.replaceChildren(); empty.hidden = visible.length !== 0; table.hidden = visible.length === 0;
+    let lastStart = -1; let lastEnd = -1; let lastLength = -1;
+    let lastQuery: string | undefined; let lastExpanded: ReadonlySet<string> | undefined;
+    /** `force` covers state changes (search/select/expand) that must repaint the
+     *  rows; scroll events pass `false` so an unchanged window is a no-op. */
+    const render = (force = true): void => {
+        const visible = controller.visibleEntries();
+        // Measure before mutating: emptying the tbody first would collapse the
+        // scroll height, so the layout flush from reading clientHeight clamps
+        // scrollTop to 0 and every scroll snaps back to the top of the list.
         const viewportHeight = tableWrap.clientHeight || FALLBACK_VIEWPORT_HEIGHT;
-        const start = Math.max(0, Math.floor(tableWrap.scrollTop / ROW_HEIGHT) - OVERSCAN);
+        const scrollTop = tableWrap.scrollTop;
+        const start = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN);
         const count = Math.ceil(viewportHeight / ROW_HEIGHT) + OVERSCAN * 2;
         const end = Math.min(visible.length, start + count);
+        // Most scroll ticks land inside the overscan margin. Rebuilding the rows
+        // anyway would destroy the focused row on every tick, and the resulting
+        // focus restore plus scroll anchoring drags the viewport around.
+        // The rendered window is fully determined by these; the controller hands
+        // out a fresh `expanded` set per toggle, so identity comparison is enough.
+        const sameWindow = start === lastStart && end === lastEnd && visible.length === lastLength
+            && controller.state.query === lastQuery && controller.state.expanded === lastExpanded;
+        // Most scroll ticks land inside the overscan margin. Rebuilding the rows
+        // anyway would destroy the focused row on every tick, and the resulting
+        // focus restore plus scroll anchoring drags the viewport around.
+        if (!force && sameWindow) return;
+        // Selecting an entry only flips a class. Rebuilding every row for that is
+        // what threw the viewport back to the top the moment a row was clicked,
+        // so patch the existing rows in place and leave the scroll state alone.
+        if (sameWindow) {
+            for (const row of tbody.querySelectorAll<HTMLElement>('.omni-archive__entry'))
+                row.classList.toggle('is-selected', Number(row.dataset.entryId) === controller.state.selectedId);
+            return;
+        }
+        lastStart = start; lastEnd = end; lastLength = visible.length;
+        lastQuery = controller.state.query; lastExpanded = controller.state.expanded;
+        visibleStat[1] = visible.length;
+        stats.querySelectorAll('.omni-archive__stat-value')[3]!.textContent = visible.length.toLocaleString();
+        empty.hidden = visible.length !== 0; table.hidden = visible.length === 0;
         const spacer = (height: number): HTMLTableRowElement => { const row = element('tr', 'omni-archive__spacer'); const cell = element('td'); cell.colSpan = 5; cell.style.height = `${height}px`; row.append(cell); return row; };
-        if (start > 0) tbody.append(spacer(start * ROW_HEIGHT));
+        // Build off-DOM and swap once, so the tbody is never laid out empty.
+        const rows: HTMLTableRowElement[] = [];
+        if (start > 0) rows.push(spacer(start * ROW_HEIGHT));
         for (const entry of visible.slice(start, end)) {
             const row = element('tr', `omni-archive__entry${controller.state.selectedId === entry.entryId ? ' is-selected' : ''}`); row.tabIndex = 0; row.dataset.entryId = String(entry.entryId);
             const path = element('td', 'omni-archive__path', `${entry.isDirectory ? (controller.state.expanded.has(entry.path) ? '▾ ' : '▸ ') : ''}${entry.path}`);
@@ -227,12 +259,22 @@ export async function mountArchiveViewer(inputOrSource: ViewerInput | ArchiveStr
             row.append(path, element('td', '', t(entry.isDirectory ? 'archive.directory' : 'archive.file')), element('td', '', formatSize(entry.compressedSize)), element('td', '', formatSize(entry.uncompressedSize)), element('td', '', formatDate(entry.modifiedAt)));
             row.addEventListener('click', () => void select(entry));
             row.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); void select(entry); } });
-            tbody.append(row);
+            rows.push(row);
         }
-        if (end < visible.length) tbody.append(spacer((visible.length - end) * ROW_HEIGHT));
+        if (end < visible.length) rows.push(spacer((visible.length - end) * ROW_HEIGHT));
+        // Recycling rows destroys the focused one; hand focus back to its
+        // replacement so keyboard navigation survives a scroll.
+        const active = (typeof ShadowRoot !== 'undefined' && root instanceof ShadowRoot ? root.activeElement : document.activeElement);
+        const focusedId = active instanceof HTMLElement && tbody.contains(active) ? active.dataset.entryId : undefined;
+        tbody.replaceChildren(...rows);
+        // Swapping the rows can still make the browser adjust the offset (focus
+        // fixup, anchoring, a transient height change). The list is virtualized,
+        // so the pre-swap offset is authoritative — put it back.
+        if (tableWrap.scrollTop !== scrollTop) tableWrap.scrollTop = scrollTop;
+        if (focusedId !== undefined) rows.find(row => row.dataset.entryId === focusedId)?.focus({ preventScroll: true });
     };
-    tableWrap.addEventListener('scroll', render, { passive: true });
+    tableWrap.addEventListener('scroll', () => render(false), { passive: true });
     search.addEventListener('input', () => { tableWrap.scrollTop = 0; controller.dispatch({ type: 'set-search', query: search.value }); });
-    const unsubscribe = controller.subscribe(render); render();
+    const unsubscribe = controller.subscribe(() => render(true)); render();
     return { dispose() { ticket++; extraction?.abort(); saveExtraction?.abort(); clearPreviewMedia(); unsubscribe(); wrap.remove(); void handle?.close(); handle = undefined; } };
 }

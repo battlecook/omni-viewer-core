@@ -45,6 +45,52 @@ describe('mountArchiveViewer', () => {
         expect(root.querySelector('[data-entry-id="1"]')).toBeNull();
     });
 
+    it('keeps the scroll window after a scroll instead of snapping back to the top', async () => {
+        const entries = Array.from({ length: 1_000 }, (_, index) => ({ entryId: index, path: `file-${index}.txt`, isDirectory: false }));
+        const container = document.createElement('div');
+        await mountArchiveViewer({ fileName: 'large.zip', data: new Uint8Array(1) }, container, context, { openArchive: async () => ({ entries, extract: async () => new Uint8Array(), close() {} }) });
+        const root = container.shadowRoot!;
+        const tableWrap = root.querySelector<HTMLElement>('.omni-archive__table-wrap')!;
+        const tbody = root.querySelector('tbody')!;
+        // Browsers clamp scrollTop to the scrollable height, so an emptied tbody
+        // reports 0 — the exact condition that used to reset the viewport.
+        Object.defineProperty(tableWrap, 'scrollTop', { get: () => (tbody.querySelector('.omni-archive__entry') ? 4_300 : 0), configurable: true });
+        tableWrap.dispatchEvent(new Event('scroll'));
+        expect(root.querySelector('.omni-archive__path')?.textContent).not.toBe('file-0.txt');
+        expect(root.querySelector<HTMLElement>('[data-entry-id="100"]')).not.toBeNull();
+    });
+
+    it('leaves the rows and the focused entry untouched while the window is unchanged', async () => {
+        const entries = Array.from({ length: 1_000 }, (_, index) => ({ entryId: index, path: `file-${index}.txt`, isDirectory: false }));
+        const container = document.createElement('div'); document.body.append(container);
+        await mountArchiveViewer({ fileName: 'large.zip', data: new Uint8Array(1) }, container, context, { openArchive: async () => ({ entries, extract: async () => new TextEncoder().encode('body'), close() {} }) });
+        const root = container.shadowRoot!;
+        const tableWrap = root.querySelector<HTMLElement>('.omni-archive__table-wrap')!;
+        const tbody = root.querySelector('tbody')!;
+        let pos = 0;
+        Object.defineProperty(tableWrap, 'scrollTop', { get: () => (tbody.querySelector('.omni-archive__entry') ? pos : 0), set: (value: number) => { pos = value; }, configurable: true });
+        pos = 4_300; tableWrap.dispatchEvent(new Event('scroll'));
+        const selected = root.querySelector<HTMLElement>('[data-entry-id="105"]')!;
+        selected.focus(); selected.click();
+        await Promise.resolve(); await Promise.resolve();
+        // Selecting must patch the row in place — a rebuild here is what threw the
+        // viewport back to the top as soon as a scrolled-to row was clicked.
+        expect(root.querySelector<HTMLElement>('[data-entry-id="105"]')).toBe(selected);
+        expect(selected.classList.contains('is-selected')).toBe(true);
+        expect(root.activeElement).toBe(selected);
+        expect(pos).toBe(4_300);
+        expect(root.querySelector('.omni-archive__path')?.textContent).toBe('file-92.txt');
+        // A tick inside the overscan margin must not recycle rows, or the focused
+        // row is destroyed and the browser drags the viewport back to the top.
+        pos = 4_320; tableWrap.dispatchEvent(new Event('scroll'));
+        expect(root.querySelector<HTMLElement>('[data-entry-id="105"]')).toBe(selected);
+        expect(root.activeElement).toBe(selected);
+        // A tick past the margin repaints, and focus follows to the new row.
+        pos = 6_000; tableWrap.dispatchEvent(new Event('scroll'));
+        expect(root.querySelector('.omni-archive__path')?.textContent).toBe('file-131.txt');
+        container.remove();
+    });
+
     it('saves the selected entry when the optional save service is present', async () => {
         const saveFile = vi.fn(async () => undefined); const bytes = new TextEncoder().encode('saved');
         const container = document.createElement('div');
