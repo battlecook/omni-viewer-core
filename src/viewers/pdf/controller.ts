@@ -89,6 +89,8 @@ export interface PdfHighlightAnnotation {
     /** A text selection can span several lines -> several rects. */
     rects: PdfHighlightRect[];
     color: string;
+    /** The plain text under the selection, kept for copy and the markup list. */
+    text?: string;
 }
 
 /** A text selection rendered as a horizontal strike through each line. */
@@ -98,6 +100,7 @@ export interface PdfStrikeoutAnnotation {
     page: number;
     rects: PdfHighlightRect[];
     color: string;
+    text?: string;
 }
 
 /** A text selection rendered as an underline beneath each line. */
@@ -107,6 +110,7 @@ export interface PdfUnderlineAnnotation {
     page: number;
     rects: PdfHighlightRect[];
     color: string;
+    text?: string;
 }
 
 export type PdfAnnotation =
@@ -139,6 +143,7 @@ export type PdfAction =
     | { type: 'reset-pages' }
     | { type: 'add-annotation'; annotation: PdfAnnotationInput }
     | { type: 'move-annotation'; id: string; x: number; y: number }
+    | { type: 'set-annotation-color'; id: string; color: string }
     | { type: 'remove-annotation'; id: string }
     | { type: 'select-annotation'; id: string | null }
     | { type: 'undo' }
@@ -276,6 +281,7 @@ export function createPdfController(
                 || action.type === 'reset-pages'
                 || action.type === 'add-annotation'
                 || action.type === 'move-annotation'
+                || action.type === 'set-annotation-color'
                 || action.type === 'remove-annotation';
             const before = tracksHistory ? snapshot() : undefined;
             const beforeSignature = tracksHistory ? signature() : undefined;
@@ -315,6 +321,7 @@ export function createPdfController(
                     break;
                 }
                 case 'move-annotation': annotations = annotations.map((a) => a.id === action.id ? { ...a, x: action.x, y: action.y } : a); break;
+                case 'set-annotation-color': annotations = annotations.map((a) => a.id === action.id ? { ...a, color: action.color } : a); break;
                 case 'remove-annotation': annotations = annotations.filter((a) => a.id !== action.id); if (selectedAnnotationId === action.id) selectedAnnotationId = null; break;
                 case 'select-annotation': selectedAnnotationId = action.id; break;
                 case 'mark-saved': savedSignature = signature(); break;

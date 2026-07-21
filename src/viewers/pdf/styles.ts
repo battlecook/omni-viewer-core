@@ -187,6 +187,17 @@ export const pdfViewerCss = `
     min-width: 56px;
     text-align: center;
 }
+.omni-pdf__thumbs-toggle {
+    width: 30px;
+    height: 28px;
+    padding: 0;
+    margin-right: auto;
+    font-size: 16px;
+    line-height: 1;
+}
+.omni-pdf__thumbs-toggle.is-collapsed {
+    opacity: 0.6;
+}
 .omni-pdf__view-menu-wrap { position: relative; }
 .omni-pdf__view-menu-btn {
     width: 30px;
@@ -231,11 +242,18 @@ export const pdfViewerCss = `
     background: var(--omni-border, #3c3c3c);
 }
 .omni-pdf__body {
+    position: relative;
     flex: 1;
     min-height: 0;
     display: grid;
     grid-template-columns: 160px minmax(0, 1fr);
     overflow: hidden;
+}
+.omni-pdf__body--thumbs-collapsed {
+    grid-template-columns: minmax(0, 1fr);
+}
+.omni-pdf__body--thumbs-collapsed .omni-pdf__thumbs {
+    display: none;
 }
 .omni-pdf__thumbs {
     overflow: auto;
@@ -468,6 +486,161 @@ export const pdfViewerCss = `
     content: '';
     background: var(--omni-hl-color, #ffeb3b);
 }
+/* Floating action bar shown above a selected text-markup annotation. */
+.omni-pdf__markup-toolbar {
+    position: absolute;
+    z-index: 5;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 4px;
+    transform: translateY(calc(-100% - 8px));
+    background: var(--omni-bg-secondary, #252526);
+    border: 1px solid var(--omni-border, #3c3c3c);
+    border-radius: 10px;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+    cursor: default;
+}
+.omni-pdf button.omni-pdf__markup-tool {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--omni-fg, #e8e8e8);
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+}
+.omni-pdf button.omni-pdf__markup-tool:hover:not(:disabled) { background: var(--omni-button-hover-bg, #45494e); }
+.omni-pdf button.omni-pdf__markup-tool:disabled { opacity: 0.4; cursor: default; }
+.omni-pdf__markup-color::before {
+    content: '';
+    width: 18px;
+    height: 18px;
+    border-radius: 5px;
+    background: var(--omni-hl-color, #ffeb3b);
+    border: 1px solid rgba(0, 0, 0, 0.25);
+}
+.omni-pdf__markup-color-wrap { position: relative; display: inline-flex; }
+.omni-pdf__markup-palette {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 50%;
+    transform: translateX(-50%);
+    display: none;
+    grid-template-columns: repeat(3, auto);
+    gap: 6px;
+    padding: 8px;
+    background: var(--omni-bg-secondary, #252526);
+    border: 1px solid var(--omni-border, #3c3c3c);
+    border-radius: 8px;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+    z-index: 6;
+}
+.omni-pdf__markup-palette.is-open { display: grid; }
+.omni-pdf button.omni-pdf__markup-swatch,
+.omni-pdf button.omni-pdf__markup-swatch:hover:not(:disabled) {
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border-radius: 5px;
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    background: var(--omni-hl-color, #ffeb3b);
+    cursor: pointer;
+}
+.omni-pdf button.omni-pdf__markup-swatch.is-current {
+    outline: 2px solid var(--omni-accent, #0e639c);
+    outline-offset: 1px;
+}
+/* Left overlay panel listing every text-markup annotation. */
+.omni-pdf__markup-list {
+    position: absolute;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    z-index: 6;
+    display: none;
+    flex-direction: column;
+    width: min(280px, 70%);
+    background: var(--omni-bg-secondary, #252526);
+    border-right: 1px solid var(--omni-border, #3c3c3c);
+    box-shadow: 2px 0 12px rgba(0, 0, 0, 0.35);
+    overflow-y: auto;
+}
+.omni-pdf__markup-list.is-open { display: flex; }
+.omni-pdf__markup-list-head {
+    position: sticky;
+    top: 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 12px;
+    background: var(--omni-bg-secondary, #252526);
+    border-bottom: 1px solid var(--omni-border, #3c3c3c);
+}
+.omni-pdf__markup-list-title { font-weight: 600; }
+.omni-pdf button.omni-pdf__markup-list-close {
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--omni-fg, #e8e8e8);
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+}
+.omni-pdf button.omni-pdf__markup-list-close:hover:not(:disabled) { background: var(--omni-button-hover-bg, #45494e); }
+.omni-pdf__markup-list-empty {
+    padding: 16px 12px;
+    color: var(--omni-fg-muted, #9d9d9d);
+    font-size: 13px;
+}
+.omni-pdf button.omni-pdf__markup-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 10px 12px;
+    border: 0;
+    border-bottom: 1px solid var(--omni-border, #3c3c3c);
+    background: transparent;
+    color: var(--omni-fg, #e8e8e8);
+    text-align: left;
+    cursor: pointer;
+}
+.omni-pdf button.omni-pdf__markup-item:hover:not(:disabled) { background: var(--omni-button-hover-bg, #45494e); }
+.omni-pdf button.omni-pdf__markup-item.is-selected {
+    background: var(--omni-button-hover-bg, #45494e);
+    box-shadow: inset 3px 0 0 var(--omni-accent, #0e639c);
+}
+.omni-pdf__markup-item-dot {
+    flex: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 3px;
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    background: var(--omni-hl-color, #ffeb3b);
+}
+.omni-pdf__markup-item-text {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 13px;
+}
+.omni-pdf__markup-item-page {
+    flex: none;
+    color: var(--omni-fg-muted, #9d9d9d);
+    font-size: 12px;
+}
 .omni-pdf__text-editor {
     position: absolute;
     z-index: 3;
@@ -573,10 +746,14 @@ export const pdfViewerCss = `
         grid-template-columns: minmax(0, 1fr);
         grid-template-rows: minmax(120px, 30vh) minmax(0, 1fr);
     }
+    .omni-pdf__body--thumbs-collapsed {
+        grid-template-rows: minmax(0, 1fr);
+    }
     .omni-pdf__thumbs {
         border-right: 0;
         border-bottom: 1px solid var(--omni-border, #3c3c3c);
     }
     .omni-pdf__pages { grid-row: 2; }
+    .omni-pdf__body--thumbs-collapsed .omni-pdf__pages { grid-row: 1; }
 }
 `;

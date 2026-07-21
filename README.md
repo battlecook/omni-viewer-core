@@ -15,7 +15,7 @@ models, viewers mount into a DOM element, and everything host-specific
 - **Documents** — PDF, Word (DOCX and legacy DOC), HWP, PowerPoint (PPTX and
   legacy PPT), Markdown
 - **Data & spreadsheets** — Excel, CSV/TSV, JSON, JSONL/NDJSON, YAML, TOML,
-  Parquet, Avro, HDF5, MATLAB MAT, Protocol Buffers, ReqIF, SQLite
+  Parquet, Avro, HDF5, MATLAB MAT, Safetensors, Protocol Buffers, ReqIF, SQLite
 - **Media & graphics** — audio (waveform/spectrogram), video, images,
   Photoshop PSD
 - **Engineering & automotive** — CAN DBC, AUTOSAR ARXML, ASAM A2L, Vector

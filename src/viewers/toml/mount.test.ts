@@ -41,6 +41,50 @@ describe('mountTomlViewer', () => {
         expect(flat.style.display).toBe('none');
         expect(JSON.parse(json.textContent!)).toEqual({ server: { host: 'x', port: '1' } });
     });
+    it('syncs the tree and the source caret in both directions', async () => {
+        const text = '[server]\nhost = "example.com"\nport = 8080\n';
+        const container = document.createElement('div'); document.body.append(container);
+        await mountTomlViewer({ fileName: 'a.toml', data: new TextEncoder().encode(text) }, container, ctx());
+        const root = container.shadowRoot!; const editor = root.querySelector<HTMLTextAreaElement>('.omni-structured__editor')!;
+        const rowFor = (label: string) => [...root.querySelectorAll<HTMLElement>('.omni-structured__tree:not(.omni-structured__flat) .omni-structured__node')].find(row => row.querySelector('.omni-structured__key')?.textContent === label)!;
+        rowFor('port').click();
+        expect(text.slice(editor.selectionStart, editor.selectionEnd)).toBe('port = 8080');
+        expect(rowFor('port').classList.contains('omni-structured__node--selected')).toBe(true);
+        editor.selectionStart = editor.selectionEnd = text.indexOf('example.com');
+        editor.dispatchEvent(new Event('click'));
+        expect(rowFor('host').classList.contains('omni-structured__node--selected')).toBe(true);
+        expect(rowFor('port').classList.contains('omni-structured__node--selected')).toBe(false);
+        expect(root.querySelector('.omni-structured__status')?.textContent).toContain('server.host');
+        container.remove();
+    });
+    it('shows comments, container previews, and a scoped search with a match count', async () => {
+        const container = document.createElement('div');
+        await mountTomlViewer({ fileName: 'a.toml', data: new TextEncoder().encode('# listener settings\n[server]\nhost = "example.com"\nport = 8080\n') }, container, ctx());
+        const root = container.shadowRoot!; const tree = root.querySelector<HTMLElement>('.omni-structured__tree')!;
+        expect(tree.querySelector('.omni-structured__node-comment')?.textContent).toBe('# listener settings');
+        expect(tree.textContent).toContain('{ 2 keys }');
+        const search = root.querySelector<HTMLInputElement>('.omni-structured__search')!;
+        search.value = 'server'; search.dispatchEvent(new Event('input'));
+        const status = root.querySelector('.omni-structured__status')!;
+        expect(status.textContent).toContain('3 matches');
+        const scope = root.querySelector<HTMLSelectElement>('.omni-structured__scope')!;
+        expect([...scope.options].map(option => option.value)).toEqual(['all', 'key', 'path', 'value']);
+        scope.value = 'value'; scope.dispatchEvent(new Event('change'));
+        expect(status.textContent).toContain('0 matches');
+    });
+    it('makes flat rows navigable and typed', async () => {
+        const text = '[server]\nport = 8080\n';
+        const container = document.createElement('div'); document.body.append(container);
+        await mountTomlViewer({ fileName: 'a.toml', data: new TextEncoder().encode(text) }, container, ctx());
+        const root = container.shadowRoot!;
+        [...root.querySelectorAll('button')].find(button => button.textContent === 'Flat')!.click();
+        const row = root.querySelector<HTMLElement>('.omni-structured__flat-row')!;
+        expect(row.querySelector('.omni-structured__kind')?.textContent).toBe('integer');
+        row.click();
+        const editor = root.querySelector<HTMLTextAreaElement>('.omni-structured__editor')!;
+        expect(text.slice(editor.selectionStart, editor.selectionEnd)).toBe('port = 8080');
+        container.remove();
+    });
     it('writes edited source through writeback', async () => {
         const write = vi.fn(async () => undefined); const container = document.createElement('div');
         await mountTomlViewer({ fileName: 'a.toml', data: new TextEncoder().encode('a = 1') }, container, ctx({ write })); const root = container.shadowRoot!; const editor = root.querySelector<HTMLTextAreaElement>('.omni-structured__editor')!; editor.value = 'a = 2'; editor.dispatchEvent(new Event('input')); [...root.querySelectorAll('button')].find(button => button.textContent === 'Save')!.click(); await Promise.resolve(); expect(write).toHaveBeenCalledWith(new TextEncoder().encode('a = 2'));

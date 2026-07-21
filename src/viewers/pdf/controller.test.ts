@@ -39,6 +39,25 @@ describe('PdfController', () => {
         expect(c.state.annotations).toHaveLength(1);
     });
 
+    it('recolors a markup annotation and tracks the change in history', () => {
+        const c = createPdfController(1);
+        c.dispatch({
+            type: 'add-annotation',
+            annotation: { kind: 'highlight', page: 1, color: '#ffeb3b', text: 'hi', rects: [{ x: 0, y: 0, width: 10, height: 4 }] }
+        });
+        const id = c.state.annotations[0]!.id;
+        const colorOf = () => {
+            const a = c.state.annotations[0]!;
+            return a.kind === 'signature' ? undefined : a.color;
+        };
+        c.dispatch({ type: 'set-annotation-color', id, color: '#ffc9c9' });
+        expect(colorOf()).toBe('#ffc9c9');
+        c.dispatch({ type: 'undo' });
+        expect(colorOf()).toBe('#ffeb3b');
+        c.dispatch({ type: 'redo' });
+        expect(colorOf()).toBe('#ffc9c9');
+    });
+
     it('rehydrates existing markup when merged pages are appended', () => {
         const beforeMerge = createPdfController(2);
         beforeMerge.dispatch({

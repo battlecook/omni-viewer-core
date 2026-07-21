@@ -4,6 +4,7 @@ import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import {
     buildEditedPdf,
     buildSavedPdf,
+    markupLineY,
     parseLayer,
     SIDECAR_LAYER_NAME
 } from './editing.js';
@@ -72,6 +73,23 @@ describe('highlight annotations', () => {
             annotations: [{ id: 'pdf-a1', ...sampleHighlight, kind }]
         }));
         expect(parsed?.annotations[0]?.kind).toBe(kind);
+    });
+
+    it('places an underline near the box bottom and a strikeout at the middle', () => {
+        const rect = { y: 100, height: 20 };
+        const pageHeight = 400;
+        const boxTop = pageHeight - rect.y;        // 300 in PDF (bottom-left) space
+        const boxBottom = pageHeight - rect.y - rect.height; // 280
+        const underline = markupLineY('underline', rect, pageHeight);
+        const strikeout = markupLineY('strikeout', rect, pageHeight);
+        // Underline hugs the bottom edge, not the top (the previous bug drew it
+        // near the top, at height - y - height*0.1 = 298).
+        expect(underline).toBeCloseTo(282);
+        expect(underline).toBeGreaterThan(boxBottom);
+        expect(underline).toBeLessThan(boxTop - rect.height * 0.5);
+        // Strikeout runs through the vertical middle, above the underline.
+        expect(strikeout).toBeCloseTo(290);
+        expect(underline).toBeLessThan(strikeout);
     });
 
     it('parseLayer keeps valid highlights and drops malformed rects', () => {

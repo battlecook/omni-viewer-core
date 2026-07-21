@@ -11,6 +11,7 @@
 // annotations use an inline input overlay instead.
 
 import type {
+    ClipboardService,
     FilePickService,
     FileSaveResult,
     FileSaveService,
@@ -29,7 +30,9 @@ import {
     mergeHighlightRects,
     type PdfController,
     type PdfControllerOptions,
-    type PdfViewState
+    type PdfViewState,
+    type PdfAnnotation,
+    type PdfHighlightRect
 } from './controller.js';
 import {
     buildEditedPdf,
@@ -131,11 +134,12 @@ export const PDF_VIEWER_META = {
     extensions: ['pdf'],
     priority: 20,
     requiredServices: [] as const,
-    optionalServices: ['save', 'writeback', 'filePick'] as const,
+    optionalServices: ['save', 'writeback', 'filePick', 'clipboard'] as const,
     inputOwnership: 'borrows' as const
 };
 
 export type PdfViewerContext = HostContext & {
+    clipboard?: ClipboardService;
     save?: FileSaveService;
     writeback?: FileWritebackService;
     filePick?: FilePickService;
@@ -299,7 +303,11 @@ export async function mountPdfViewer(
     const body = el('div', 'omni-pdf__body');
     const thumbs = el('div', 'omni-pdf__thumbs');
     const pages = el('div', 'omni-pdf__pages');
-    body.append(thumbs, pages);
+    // Left overlay panel listing every text-markup annotation. Absolutely
+    // positioned, so it does not claim a grid track when hidden or shown.
+    const markupList = el('div', 'omni-pdf__markup-list');
+    markupList.setAttribute('aria-label', t('pdf.markupList'));
+    body.append(thumbs, pages, markupList);
     const status = el('div', 'omni-pdf__status', t('pdf.loading'));
     status.setAttribute('aria-live', 'polite');
     frame.append(header, zoomBar, body, status);
@@ -324,6 +332,9 @@ export async function mountPdfViewer(
     let markupKind: 'highlight' | 'underline' | 'strikeout' = 'highlight';
     let pageLayout: 'single' | 'spread-odd' | 'spread-even' = 'single';
     let matchThemeColors = false;
+    let markupListOpen = false;
+    /** Swatches offered by the markup toolbar's colour control. */
+    const MARKUP_COLORS = ['#ffeb3b', '#ffc9c9', '#b2f2bb', '#a5d8ff', '#ffd8a8', '#000000'];
     let sourceBytes = input.data;
     const saveMode = options.saveMode ?? 'hybrid';
     const processingMode = options.processingMode ?? 'auto';
@@ -360,7 +371,6 @@ export async function mountPdfViewer(
     function teardown(): void {
         disposed = true;
         document.removeEventListener('keydown', keyHandler);
-        document.removeEventListener('selectionchange', syncMarkupAvailability);
         options.signal?.removeEventListener('abort', abortListener);
         operationController?.abort();
         operationController = undefined;
@@ -693,22 +703,16 @@ export async function mountPdfViewer(
     if (!ctx.filePick) degrade(mergeBtn, 'pdf.noFilePick');
     else if (!mergeAvailable) degrade(mergeBtn, 'pdf.editingUnavailable');
 
-    function syncMarkupAvailability(): void {
-        if (!editingAvailable) return;
-        const enabled = activeSelection() !== null;
-        highlightBtn.disabled = !enabled;
-        markupMenuBtn.disabled = !enabled;
-        highlightChoiceBtn.disabled = !enabled;
-        underlineBtn.disabled = !enabled;
-        strikeoutBtn.disabled = !enabled;
-        if (!enabled) {
-            markupMenu.classList.remove('is-open');
-            markupMenuBtn.setAttribute('aria-expanded', 'false');
-        }
+    // Markup buttons stay enabled at all times; the toolbar just picks which
+    // kind is active. Finishing a text selection applies it straight away.
+    function autoApplyMarkup(): void {
+        if (!editingAvailable || tool !== 'view') return;
+        if (!activeSelection()) return;
+        if (captureMarkup(markupKind)) status.textContent = '';
     }
-    document.addEventListener('selectionchange', syncMarkupAvailability);
-    pages.addEventListener('mouseup', () => requestAnimationFrame(syncMarkupAvailability));
-    syncMarkupAvailability();
+    const scheduleAutoApply = () => requestAnimationFrame(autoApplyMarkup);
+    pages.addEventListener('mouseup', scheduleAutoApply);
+    pages.addEventListener('touchend', scheduleAutoApply);
 
     const zoomOutBtn = el('button', 'omni-pdf__zoom-btn', '−');
     zoomOutBtn.type = 'button';
@@ -720,6 +724,45 @@ export async function mountPdfViewer(
     zoomInBtn.type = 'button';
     zoomInBtn.setAttribute('aria-label', t('pdf.zoomIn'));
     zoomInBtn.addEventListener('click', () => controller.dispatch({ type: 'zoom-in' }));
+
+    // Trackpad pinch (two-finger spread/close) reaches the page as a wheel event
+    // with `ctrlKey` set. Turn it into a continuous zoom instead of letting the
+    // browser zoom the whole document. Updates are coalesced to one per frame so
+    // a burst of wheel events triggers a single re-layout.
+    let pendingPinchZoom: number | null = null;
+    let pinchFrame = 0;
+    const onPinchZoom = (event: WheelEvent) => {
+        if (!event.ctrlKey) return;
+        event.preventDefault();
+        const base = pendingPinchZoom ?? controller.state.zoom;
+        // deltaY < 0 is a spread (zoom in); scale exponentially so the step feels
+        // even across the whole range.
+        const next = base * Math.exp(-event.deltaY * 0.01);
+        pendingPinchZoom = Math.max(controller.minZoom, Math.min(controller.maxZoom, next));
+        if (pinchFrame) return;
+        pinchFrame = requestAnimationFrame(() => {
+            pinchFrame = 0;
+            const zoom = pendingPinchZoom;
+            pendingPinchZoom = null;
+            if (zoom != null) controller.dispatch({ type: 'set-zoom', zoom });
+        });
+    };
+    pages.addEventListener('wheel', onPinchZoom, { passive: false });
+    customActionCleanups.push(() => {
+        pages.removeEventListener('wheel', onPinchZoom);
+        if (pinchFrame) cancelAnimationFrame(pinchFrame);
+    });
+
+    // Clicking anywhere outside a markup box or its toolbar clears the selection
+    // so the floating toolbar goes away (page margins, gaps between pages, …).
+    pages.addEventListener('pointerdown', (event) => {
+        const target = event.target;
+        if (target instanceof Element
+            && target.closest('.omni-pdf__annotation, .omni-pdf__markup-toolbar')) return;
+        if (controller.state.selectedAnnotationId) {
+            controller.dispatch({ type: 'select-annotation', id: null });
+        }
+    });
     const viewMenuWrap = el('div', 'omni-pdf__view-menu-wrap');
     const viewMenuBtn = el('button', 'omni-pdf__view-menu-btn', '⌄');
     viewMenuBtn.type = 'button';
@@ -742,7 +785,19 @@ export async function mountPdfViewer(
     }
     viewMenu.append(fitWidthBtn, fitHeightBtn, separator, singlePageBtn, spreadOddBtn, spreadEvenBtn, separator2, themeBtn);
     viewMenuWrap.append(viewMenuBtn, viewMenu);
-    zoomBar.append(zoomOutBtn, zoomLevel, zoomInBtn, viewMenuWrap);
+
+    // Thumbnail rail toggle — the rail is shown by default and can be collapsed
+    // to give the page more room.
+    const thumbsToggleBtn = el('button', 'omni-pdf__thumbs-toggle', '☰');
+    thumbsToggleBtn.type = 'button';
+    thumbsToggleBtn.setAttribute('aria-label', t('pdf.thumbnails'));
+    thumbsToggleBtn.setAttribute('aria-expanded', 'true');
+    thumbsToggleBtn.addEventListener('click', () => {
+        const collapsed = body.classList.toggle('omni-pdf__body--thumbs-collapsed');
+        thumbsToggleBtn.setAttribute('aria-expanded', String(!collapsed));
+        thumbsToggleBtn.classList.toggle('is-collapsed', collapsed);
+    });
+    zoomBar.append(thumbsToggleBtn, zoomOutBtn, zoomLevel, zoomInBtn, viewMenuWrap);
 
     const closeViewMenu = () => {
         viewMenu.classList.remove('is-open');
@@ -1066,10 +1121,11 @@ export async function mountPdfViewer(
             ctx.logger.log('info', '[pdf highlight] selection has no PDF page rectangles');
             return false;
         }
+        const text = selection.toString().replace(/\s+/g, ' ').trim();
         for (const [page, rects] of byPage) {
             controller.dispatch({
                 type: 'add-annotation',
-                annotation: { kind, page, rects: mergeHighlightRects(rects), color }
+                annotation: { kind, page, rects: mergeHighlightRects(rects), color, text }
             });
         }
         selection.removeAllRanges();
@@ -1083,7 +1139,7 @@ export async function mountPdfViewer(
 
     // ------------------------------------------------------- annotations UI
     function renderOverlays(record: PageRecord): void {
-        for (const node of record.wrapper.querySelectorAll('.omni-pdf__annotation')) {
+        for (const node of record.wrapper.querySelectorAll('.omni-pdf__annotation, .omni-pdf__markup-toolbar')) {
             node.remove();
         }
         const scale = controller.state.zoom / 100;
@@ -1132,7 +1188,9 @@ export async function mountPdfViewer(
                     box.addEventListener('click', (event) => {
                         event.preventDefault();
                         event.stopPropagation();
-                        controller.dispatch({ type: 'select-annotation', id: annotation.id });
+                        // Clicking the active markup again dismisses its toolbar.
+                        const active = controller.state.selectedAnnotationId === annotation.id;
+                        controller.dispatch({ type: 'select-annotation', id: active ? null : annotation.id });
                     });
                     box.addEventListener('pointerenter', () => setGroupHover(true));
                     box.addEventListener('pointerleave', (event) => {
@@ -1144,7 +1202,8 @@ export async function mountPdfViewer(
                             setGroupHover(false);
                         }
                     });
-                    if (rect === deleteRect) {
+                    const selected = controller.state.selectedAnnotationId === annotation.id;
+                    if (rect === deleteRect && !selected) {
                         const deleteButton = el('button', 'omni-pdf__annotation-delete', '×');
                         deleteButton.type = 'button';
                         deleteButton.setAttribute('aria-label', t('pdf.deleteAnnotation'));
@@ -1160,6 +1219,9 @@ export async function mountPdfViewer(
                         box.appendChild(deleteButton);
                     }
                     record.wrapper.appendChild(box);
+                }
+                if (controller.state.selectedAnnotationId === annotation.id) {
+                    record.wrapper.appendChild(buildMarkupToolbar(annotation, rects, scale));
                 }
                 continue;
             }
@@ -1229,6 +1291,129 @@ export async function mountPdfViewer(
             });
             overlay.appendChild(deleteButton);
             record.wrapper.appendChild(overlay);
+        }
+    }
+
+    type MarkupAnnotation = Extract<PdfAnnotation, { kind: 'highlight' | 'underline' | 'strikeout' }>;
+    const isMarkup = (annotation: PdfAnnotation): annotation is MarkupAnnotation =>
+        annotation.kind === 'highlight' || annotation.kind === 'underline' || annotation.kind === 'strikeout';
+
+    /** Floating action bar shown above a selected text-markup annotation. */
+    function buildMarkupToolbar(
+        annotation: MarkupAnnotation,
+        rects: readonly PdfHighlightRect[],
+        scale: number
+    ): HTMLElement {
+        const anchor = rects.reduce((best, rect) =>
+            rect.y < best.y || (rect.y === best.y && rect.x < best.x) ? rect : best);
+        const toolbar = el('div', 'omni-pdf__markup-toolbar');
+        toolbar.style.left = `${anchor.x * scale}px`;
+        toolbar.style.top = `${anchor.y * scale}px`;
+        // Keep interactions inside the bar from bubbling to the page, which would
+        // clear the selection and tear the bar down mid-click.
+        toolbar.addEventListener('pointerdown', (event) => event.stopPropagation());
+        toolbar.addEventListener('click', (event) => event.stopPropagation());
+
+        const tool = (label: string, aria: string, onClick: () => void): HTMLButtonElement => {
+            const button = el('button', 'omni-pdf__markup-tool', label);
+            button.type = 'button';
+            button.setAttribute('aria-label', aria);
+            button.addEventListener('click', onClick);
+            return button;
+        };
+
+        // 1) Open the markup list sidebar.
+        toolbar.appendChild(tool('▤', t('pdf.markupList'), () => setMarkupListOpen(true)));
+
+        // 2) Colour swatch with a small palette popover.
+        const colorWrap = el('div', 'omni-pdf__markup-color-wrap');
+        const colorBtn = tool('', t('pdf.changeColor'), () => {
+            popover.classList.toggle('is-open');
+        });
+        colorBtn.classList.add('omni-pdf__markup-color');
+        colorBtn.style.setProperty('--omni-hl-color', annotation.color);
+        const popover = el('div', 'omni-pdf__markup-palette');
+        for (const color of MARKUP_COLORS) {
+            const swatch = el('button', 'omni-pdf__markup-swatch');
+            swatch.type = 'button';
+            swatch.style.setProperty('--omni-hl-color', color);
+            swatch.setAttribute('aria-label', color);
+            if (color.toLowerCase() === annotation.color.toLowerCase()) swatch.classList.add('is-current');
+            swatch.addEventListener('click', () => {
+                popover.classList.remove('is-open');
+                controller.dispatch({ type: 'set-annotation-color', id: annotation.id, color });
+            });
+            popover.appendChild(swatch);
+        }
+        colorWrap.append(colorBtn, popover);
+        toolbar.appendChild(colorWrap);
+
+        // 3) Copy the underlying text.
+        const text = annotation.text ?? '';
+        const copyBtn = tool('⧉', t('pdf.copyText'), () => {
+            void ctx.clipboard?.writeText(text);
+        });
+        copyBtn.disabled = text.length === 0 || !ctx.clipboard;
+        if (!ctx.clipboard) copyBtn.title = t('common.noClipboard');
+        toolbar.appendChild(copyBtn);
+
+        // 4) Delete.
+        toolbar.appendChild(tool('🗑', t('pdf.deleteAnnotation'), () => {
+            controller.dispatch({ type: 'remove-annotation', id: annotation.id });
+        }));
+        return toolbar;
+    }
+
+    // -------------------------------------------------- markup list sidebar
+    function setMarkupListOpen(open: boolean): void {
+        markupListOpen = open;
+        markupList.classList.toggle('is-open', open);
+        if (open) renderMarkupList();
+    }
+
+    /** Scroll the page carrying an annotation into view. */
+    function scrollToAnnotation(annotation: PdfAnnotation): void {
+        const record = records.find((item) => item.pageNumber === annotation.page);
+        if (record) scrollToPage(record);
+    }
+
+    function renderMarkupList(): void {
+        markupList.replaceChildren();
+        const header = el('div', 'omni-pdf__markup-list-head');
+        header.appendChild(el('span', 'omni-pdf__markup-list-title', t('pdf.markupList')));
+        const closeBtn = el('button', 'omni-pdf__markup-list-close', '×');
+        closeBtn.type = 'button';
+        closeBtn.setAttribute('aria-label', t('pdf.closeMarkupList'));
+        closeBtn.addEventListener('click', () => setMarkupListOpen(false));
+        header.appendChild(closeBtn);
+        markupList.appendChild(header);
+
+        const order = controller.state.pageOrder;
+        const items = controller.state.annotations
+            .filter(isMarkup)
+            .sort((a, b) => order.indexOf(a.page) - order.indexOf(b.page));
+        if (items.length === 0) {
+            markupList.appendChild(el('div', 'omni-pdf__markup-list-empty', t('pdf.noMarkups')));
+            return;
+        }
+        for (const annotation of items) {
+            const row = el('button', 'omni-pdf__markup-item');
+            row.type = 'button';
+            if (controller.state.selectedAnnotationId === annotation.id) row.classList.add('is-selected');
+            const dot = el('span', `omni-pdf__markup-item-dot omni-pdf__markup-item-dot--${annotation.kind}`);
+            dot.style.setProperty('--omni-hl-color', annotation.color);
+            const label = el('span', 'omni-pdf__markup-item-text', (annotation.text ?? '').trim() || t(
+                annotation.kind === 'highlight'
+                    ? 'pdf.highlight'
+                    : annotation.kind === 'underline' ? 'pdf.underline' : 'pdf.strikeout'
+            ));
+            const page = el('span', 'omni-pdf__markup-item-page', String(order.indexOf(annotation.page) + 1));
+            row.append(dot, label, page);
+            row.addEventListener('click', () => {
+                controller.dispatch({ type: 'select-annotation', id: annotation.id });
+                scrollToAnnotation(annotation);
+            });
+            markupList.appendChild(row);
         }
     }
 
@@ -1688,6 +1873,7 @@ export async function mountPdfViewer(
         const state = controller.state;
         const nextKey = JSON.stringify({ zoom: state.zoom, pageOrder: state.pageOrder });
         refreshChrome();
+        if (markupListOpen) renderMarkupList();
         if (nextKey !== layoutKey) {
             layoutKey = nextKey;
             void rebuildLayout();

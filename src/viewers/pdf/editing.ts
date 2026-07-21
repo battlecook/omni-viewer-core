@@ -45,6 +45,22 @@ function parseColor(pdfLib: PdfLibModule, value: string) {
     );
 }
 
+/**
+ * PDF-space Y for a strike-through / underline drawn over a text rect.
+ * `rect.y` is the box top measured from the page top (top-left origin, as the
+ * DOM reports it); PDF space has a bottom-left origin, so we flip through the
+ * page height. Strikeout sits at the vertical middle; underline sits just above
+ * the bottom edge to mirror the on-screen `bottom: 8%` rendering.
+ */
+export function markupLineY(
+    kind: 'strikeout' | 'underline',
+    rect: { y: number; height: number },
+    pageHeight: number
+): number {
+    const fromTop = kind === 'strikeout' ? rect.height * 0.5 : rect.height * 0.9;
+    return pageHeight - rect.y - fromTop;
+}
+
 function pngBytes(dataUrl: string): Uint8Array | undefined {
     const encoded = /^data:image\/png;base64,(.*)$/i.exec(dataUrl)?.[1];
     if (!encoded) return undefined;
@@ -97,24 +113,13 @@ async function stamp(
         }
         return;
     }
-    if (annotation.kind === 'strikeout') {
+    if (annotation.kind === 'strikeout' || annotation.kind === 'underline') {
         const color = parseColor(pdfLib, annotation.color);
         for (const rect of mergeHighlightRects(annotation.rects)) {
+            const y = markupLineY(annotation.kind, rect, height);
             page.drawLine({
-                start: { x: rect.x, y: height - rect.y - rect.height / 2 },
-                end: { x: rect.x + rect.width, y: height - rect.y - rect.height / 2 },
-                thickness: Math.max(1, rect.height * 0.08),
-                color
-            });
-        }
-        return;
-    }
-    if (annotation.kind === 'underline') {
-        const color = parseColor(pdfLib, annotation.color);
-        for (const rect of mergeHighlightRects(annotation.rects)) {
-            page.drawLine({
-                start: { x: rect.x, y: height - rect.y - rect.height * 0.1 },
-                end: { x: rect.x + rect.width, y: height - rect.y - rect.height * 0.1 },
+                start: { x: rect.x, y },
+                end: { x: rect.x + rect.width, y },
                 thickness: Math.max(1, rect.height * 0.08),
                 color
             });
@@ -276,7 +281,10 @@ function toAnnotation(raw: unknown): PdfAnnotation | null {
             }
         }
         if (rects.length === 0) return null;
-        return { id: a.id, kind: a.kind, page: a.page as number, rects, color: a.color };
+        return {
+            id: a.id, kind: a.kind, page: a.page as number, rects, color: a.color,
+            ...(typeof a.text === 'string' && a.text.length <= MAX_TEXT_LENGTH ? { text: a.text } : {})
+        };
     }
     return null;
 }

@@ -5,7 +5,56 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.0] - 2026-07-21
+
+### Added
+
+- New Safetensors viewer (`.safetensors`). It decodes only the 8-byte header
+  length and the JSON header — never the tensor payloads — so multi-gigabyte
+  checkpoints stay cheap to inspect. Shows a tensor table (name, dtype, shape,
+  parameter count, byte size), the `__metadata__` string map, a structure
+  preview, search, and JSON copy, and validates current Safetensors 0.8 dtypes,
+  tensor declarations, and packed byte ranges without decoding tensor data.
+  Exposed via
+  `omni-viewer-core/parsers/safetensors` (`parseSafetensors`) and
+  `omni-viewer-core/viewers/safetensors` (`mountSafetensorsViewer`,
+  `mountSafetensorsDocument`).
+- The PDF viewer now zooms with a trackpad pinch (two-finger spread/close),
+  handled as a `ctrl`+wheel gesture and coalesced to one re-layout per frame so
+  a burst of events stays smooth.
+- The PDF page-thumbnail rail (shown by default) can now be collapsed and
+  restored with a toolbar toggle to give the page area more room.
+- Clicking a PDF text-markup annotation (highlight/underline/strikethrough) now
+  shows a floating toolbar to open the annotation list, recolor it from a
+  palette, copy its text, or delete it. Markups now store their selected text
+  (persisted through the sidecar) and the toolbar's leftmost button opens a
+  left sidebar listing every markup, each linking to its place in the document.
+- The PDF markup toolbar button is no longer disabled until a selection exists.
+  It always reflects the active markup kind (highlight/underline/strikethrough),
+  and finishing a text selection now applies that kind immediately — no extra
+  click required.
+- TOML nodes now carry a `range` (character offsets into the document text) and
+  a `comment` (the `#` run directly above the declaration plus any trailing
+  comment on its line). Ranges stay accurate across CRLF sources, a leading BOM,
+  multiline arrays, and inline-table members.
+- `TomlController` gained `nodeRange`, `nodeAtOffset`, and `nodeMatches`, plus
+  the `set-search-scope`, `select-node`, and `select-offset` actions, with
+  `searchScope` (`all`/`key`/`path`/`value`), `searchScopes`, `matchCount`, and
+  `selected` on the view state.
+- The shared structured viewer (TOML/YAML) now syncs the tree with the source
+  caret in both directions when a controller exposes ranges, highlights the
+  selected node, shows a status badge with the selected path and match count,
+  renders node comments, previews empty containers as `{ n keys }` /
+  `[ n items ]`, and gives flat rows a type badge and click-to-navigate. Every
+  new `StructuredController` member is optional, so controllers that omit them
+  render exactly as before.
+
+### Fixed
+
+- PDF underline annotations were stamped near the top of the text box instead of
+  the bottom, so a saved/flattened file showed the underline in the wrong place
+  when opened in another viewer. The line now sits just above the box bottom,
+  matching the on-screen rendering.
 
 ## [0.5.0] - 2026-07-19
 

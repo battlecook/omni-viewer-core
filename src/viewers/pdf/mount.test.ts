@@ -246,6 +246,127 @@ describe('mountPdfViewer host contracts', () => {
         handle.dispose();
     });
 
+    it('zooms with a trackpad pinch (ctrl + wheel) and coalesces a burst', async () => {
+        const container = document.createElement('div');
+        const handle = await mountPdfViewer(
+            { fileName: 'sample.pdf', data: new Uint8Array([1]) },
+            container, ctx(), deps
+        );
+        const root = container.shadowRoot!;
+        const pages = root.querySelector<HTMLElement>('.omni-pdf__pages')!;
+        const nextFrame = () => new Promise(resolve => requestAnimationFrame(() => resolve(undefined)));
+
+        // A pinch-in (spread) reports negative deltaY -> zoom in past 100%.
+        pages.dispatchEvent(new WheelEvent('wheel', { deltaY: -20, ctrlKey: true, cancelable: true, bubbles: true }));
+        await nextFrame();
+        expect(handle.controller.state.zoom).toBeGreaterThan(100);
+
+        // A pinch-close reports positive deltaY -> zoom back out.
+        const zoomedIn = handle.controller.state.zoom;
+        pages.dispatchEvent(new WheelEvent('wheel', { deltaY: 40, ctrlKey: true, cancelable: true, bubbles: true }));
+        await nextFrame();
+        expect(handle.controller.state.zoom).toBeLessThan(zoomedIn);
+
+        // A plain wheel (no ctrlKey) scrolls and must not change the zoom.
+        const beforeScroll = handle.controller.state.zoom;
+        pages.dispatchEvent(new WheelEvent('wheel', { deltaY: 40, cancelable: true, bubbles: true }));
+        await nextFrame();
+        expect(handle.controller.state.zoom).toBe(beforeScroll);
+        handle.dispose();
+    });
+
+    it('shows the thumbnail rail by default and toggles it collapsed', async () => {
+        const container = document.createElement('div');
+        const handle = await mountPdfViewer(
+            { fileName: 'sample.pdf', data: new Uint8Array([1]) },
+            container, ctx(), deps
+        );
+        const root = container.shadowRoot!;
+        const body = root.querySelector<HTMLElement>('.omni-pdf__body')!;
+        const toggle = root.querySelector<HTMLButtonElement>('.omni-pdf__thumbs-toggle')!;
+
+        expect(body.classList.contains('omni-pdf__body--thumbs-collapsed')).toBe(false);
+        expect(toggle.getAttribute('aria-expanded')).toBe('true');
+
+        toggle.click();
+        expect(body.classList.contains('omni-pdf__body--thumbs-collapsed')).toBe(true);
+        expect(toggle.getAttribute('aria-expanded')).toBe('false');
+
+        toggle.click();
+        expect(body.classList.contains('omni-pdf__body--thumbs-collapsed')).toBe(false);
+        expect(toggle.getAttribute('aria-expanded')).toBe('true');
+        handle.dispose();
+    });
+
+    it('shows a markup toolbar on selection and lists markups in the sidebar', async () => {
+        const getContext = vi.mocked(HTMLCanvasElement.prototype.getContext);
+        getContext.mockReturnValue({} as unknown as CanvasRenderingContext2D);
+        try {
+            const writeText = vi.fn().mockResolvedValue(undefined);
+            const container = document.createElement('div');
+            const handle = await mountPdfViewer(
+                { fileName: 'sample.pdf', data: new Uint8Array([1]) },
+                container, { ...ctx(), clipboard: { writeText } }, deps
+            );
+            const root = container.shadowRoot!;
+            await flush();
+
+            handle.controller.dispatch({
+                type: 'add-annotation',
+                annotation: {
+                    kind: 'highlight', page: 1, color: '#ffeb3b', text: 'knives and forks',
+                    rects: [{ x: 20, y: 40, width: 100, height: 12 }]
+                }
+            });
+            await flush();
+
+            const box = root.querySelector<HTMLElement>('.omni-pdf__markup')!;
+            expect(box).not.toBeNull();
+            // The toolbar only appears once the markup is selected.
+            expect(root.querySelector('.omni-pdf__markup-toolbar')).toBeNull();
+            box.click();
+            await flush();
+            const toolbar = root.querySelector<HTMLElement>('.omni-pdf__markup-toolbar')!;
+            expect(toolbar).not.toBeNull();
+
+            // Copy uses the host capability, which also works in webviews where
+            // direct navigator.clipboard access is unavailable.
+            const copyButton = [...toolbar.querySelectorAll<HTMLButtonElement>('button')]
+                .find(button => button.getAttribute('aria-label') === 'Copy text')!;
+            copyButton.click();
+            expect(writeText).toHaveBeenCalledWith('knives and forks');
+
+            // Leftmost tool opens the markup list sidebar with the annotation text.
+            toolbar.querySelector<HTMLButtonElement>('.omni-pdf__markup-tool')!.click();
+            expect(root.querySelector('.omni-pdf__markup-list')?.classList.contains('is-open')).toBe(true);
+            expect(root.querySelector('.omni-pdf__markup-item-text')?.textContent).toBe('knives and forks');
+
+            // A palette swatch recolors the annotation.
+            root.querySelectorAll<HTMLButtonElement>('.omni-pdf__markup-swatch')[1]!.click();
+            const recolored = handle.controller.state.annotations[0]!;
+            expect(recolored.kind === 'highlight' && recolored.color).toBe('#ffc9c9');
+
+            // Closing the sidebar hides it again.
+            root.querySelector<HTMLButtonElement>('.omni-pdf__markup-list-close')!.click();
+            expect(root.querySelector('.omni-pdf__markup-list')?.classList.contains('is-open')).toBe(false);
+
+            // Re-clicking the active markup dismisses the toolbar.
+            root.querySelector<HTMLElement>('.omni-pdf__markup')!.click();
+            expect(handle.controller.state.selectedAnnotationId).toBeNull();
+            expect(root.querySelector('.omni-pdf__markup-toolbar')).toBeNull();
+
+            // Selecting again, then a pointerdown on empty page space clears it.
+            root.querySelector<HTMLElement>('.omni-pdf__markup')!.click();
+            expect(root.querySelector('.omni-pdf__markup-toolbar')).not.toBeNull();
+            root.querySelector<HTMLElement>('.omni-pdf__pages')!
+                .dispatchEvent(new Event('pointerdown', { bubbles: true }));
+            expect(handle.controller.state.selectedAnnotationId).toBeNull();
+            handle.dispose();
+        } finally {
+            getContext.mockReturnValue(null);
+        }
+    });
+
     it('returns a stable failed handle when worker URL resolution fails', async () => {
         const context = ctx();
         context.assets.resolveAssetUrl = async () => { throw new Error('missing worker'); };
@@ -511,6 +632,43 @@ describe('mountPdfViewer host contracts', () => {
             root.querySelector<HTMLButtonElement>('.omni-pdf__markup-wrap .omni-pdf__tool')!.click();
             expect(handle.controller.state.annotations.map((annotation) => annotation.kind))
                 .toEqual(['highlight', 'underline', 'strikeout']);
+        } finally {
+            selectionSpy.mockRestore();
+            handle.dispose();
+        }
+    });
+
+    it('keeps markup buttons enabled and applies the active kind on selection', async () => {
+        const container = document.createElement('div');
+        const handle = await mountPdfViewer(
+            { fileName: 'sample.pdf', data: new Uint8Array([1]) },
+            container, ctx(), { ...deps, processing: { buildPdf: async () => new Uint8Array([1]) } }
+        );
+        const root = container.shadowRoot!;
+        const wrapper = root.querySelector<HTMLElement>('.omni-pdf__page')!;
+        wrapper.getBoundingClientRect = () => ({
+            x: 0, y: 0, left: 0, top: 0, right: 300, bottom: 400,
+            width: 300, height: 400, toJSON: () => undefined
+        });
+        const selectionSpy = vi.spyOn(document, 'getSelection');
+        selectionSpy.mockReturnValue({
+            isCollapsed: false, rangeCount: 1, toString: () => 'auto applied',
+            getRangeAt: () => ({ getClientRects: () => [{
+                x: 10, y: 20, left: 10, top: 20, right: 60, bottom: 30,
+                width: 50, height: 10, toJSON: () => undefined
+            }] }),
+            removeAllRanges: vi.fn()
+        } as unknown as Selection);
+        const nextFrame = () => new Promise(resolve => requestAnimationFrame(() => resolve(undefined)));
+        try {
+            // The markup button is enabled even before any button interaction.
+            expect(buttonWithText(root, '✎').disabled).toBe(false);
+            // Pick underline as the active kind, then simply finish a selection.
+            buttonWithText(root, 'Underline').click();
+            root.querySelector<HTMLElement>('.omni-pdf__pages')!
+                .dispatchEvent(new Event('mouseup', { bubbles: true }));
+            await nextFrame();
+            expect(handle.controller.state.annotations.map((a) => a.kind)).toEqual(['underline']);
         } finally {
             selectionSpy.mockRestore();
             handle.dispose();

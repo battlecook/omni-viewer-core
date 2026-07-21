@@ -59,6 +59,7 @@ describe('detectViewer (stage 1)', () => {
             ['a.h5', 'hdf5'],
             ['a.hdf5', 'hdf5'],
             ['a.he5', 'hdf5'],
+            ['a.safetensors', 'safetensors'],
             ['a.json', 'json'],
             ['a.toml', 'toml'],
             ['a.jsonl', 'jsonl'],

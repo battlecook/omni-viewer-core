@@ -126,7 +126,7 @@ export const PDF_VIEWER_DESCRIPTOR: ViewerDescriptor = {
     priority: 20,
     magicPrefix: [0x25, 0x50, 0x44, 0x46, 0x2d], // '%PDF-'
     requiredServices: [],
-    optionalServices: ['save', 'writeback', 'filePick']
+    optionalServices: ['save', 'writeback', 'filePick', 'clipboard']
 };
 export const PARQUET_MAGIC_SIGNATURES: readonly MagicSignature[] = [[{ offset: 0, bytes: [0x50, 0x41, 0x52, 0x31] }]];
 export const PARQUET_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'parquet',displayNameKey:'parquet.title',extensions:['parquet'],priority:20,magicSignatures:PARQUET_MAGIC_SIGNATURES,requiredServices:[],optionalServices:['clipboard','save']};
@@ -141,6 +141,9 @@ export const HDF5_MAGIC_PREFIX = [0x89, 0x48, 0x44, 0x46, 0x0d, 0x0a, 0x1a, 0x0a
 // signature still enables extensionless content routing below.
 export const HDF5_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'hdf5',displayNameKey:'hdf5.title',extensions:['h5','hdf5','he5'],priority:20,requiredServices:[],optionalServices:['clipboard']};
 export const MAT_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'mat',displayNameKey:'mat.title',extensions:['mat'],priority:20,requiredServices:[],optionalServices:['clipboard']};
+// Safetensors has no fixed leading magic (the file opens with an 8-byte header
+// length), so it is admitted by extension and validated by the parser.
+export const SAFETENSORS_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'safetensors',displayNameKey:'safetensors.title',extensions:['safetensors'],priority:20,requiredServices:[],optionalServices:['clipboard']};
 export const AUDIO_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'audio',displayNameKey:'audio.title',extensions:['mp3','wav','pcm','aiff','aif','aifc','amr','awb','ogg','flac','ac3','aac','m4a'],priority:20,requiredServices:[],optionalServices:[]};
 export const VIDEO_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'video',displayNameKey:'video.title',extensions:['mp4','mts','m2ts','avi','mov','wmv','flv','webm','mkv'],priority:20,requiredServices:[],optionalServices:[]};
 export const DBC_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'dbc',displayNameKey:'dbc.title',extensions:['dbc'],priority:20,requiredServices:[],optionalServices:['clipboard']};
@@ -261,6 +264,7 @@ export const CORE_VIEWER_DESCRIPTORS: readonly ViewerDescriptor[] = [
     REQIF_VIEWER_DESCRIPTOR,
     HDF5_VIEWER_DESCRIPTOR,
     MAT_VIEWER_DESCRIPTOR,
+    SAFETENSORS_VIEWER_DESCRIPTOR,
     PPT_VIEWER_DESCRIPTOR,
     WORD_VIEWER_DESCRIPTOR,
     HWP_VIEWER_DESCRIPTOR,

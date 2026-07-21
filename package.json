@@ -1,6 +1,6 @@
 {
   "name": "omni-viewer-core",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Shared parsing + rendering core for Omni Viewer (vscode / chrome / obsidian / web)",
   "type": "module",
   "license": "MIT",
@@ -141,6 +141,10 @@
       "types": "./dist/parsers/mat/index.d.ts",
       "default": "./dist/parsers/mat/index.js"
     },
+    "./parsers/safetensors": {
+      "types": "./dist/parsers/safetensors/index.d.ts",
+      "default": "./dist/parsers/safetensors/index.js"
+    },
     "./viewers/types": {
       "types": "./dist/viewers/types.d.ts",
       "default": "./dist/viewers/types.js"
@@ -275,6 +279,10 @@
     "./viewers/mat": {
       "types": "./dist/viewers/mat/index.d.ts",
       "default": "./dist/viewers/mat/index.js"
+    },
+    "./viewers/safetensors": {
+      "types": "./dist/viewers/safetensors/index.d.ts",
+      "default": "./dist/viewers/safetensors/index.js"
     },
     "./styles/*": "./dist/styles/*",
     "./assets/*": "./dist/assets/*"
