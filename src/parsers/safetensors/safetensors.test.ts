@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatCount, parseSafetensors } from './index.js';
+import { formatCount, parseSafetensors, parseSafetensorsSource } from './index.js';
 
 /** Build a safetensors buffer from a header object plus a trailing data buffer. */
 function buildSafetensors(header: Record<string, unknown>, dataBytes = 0): Uint8Array {
@@ -96,6 +96,42 @@ describe('parseSafetensors', () => {
 
     it('handles a file too small to hold a header length', () => {
         expect(parseSafetensors(new Uint8Array(4)).warnings[0]).toContain('too small');
+    });
+
+    it('reads only the length prefix and JSON header from a large random-access source', async () => {
+        const payloadBytes = 10 * 1024 * 1024 * 1024;
+        const header = buildSafetensors({
+            weight: { dtype: 'U8', shape: [payloadBytes], data_offsets: [0, payloadBytes] }
+        });
+        const reads: Array<[number, number]> = [];
+        const doc = await parseSafetensorsSource({
+            size: header.byteLength + payloadBytes,
+            read(offset, length) {
+                reads.push([offset, length]);
+                return header.subarray(offset, Math.min(offset + length, header.byteLength));
+            }
+        });
+
+        expect(reads).toEqual([[0, 8], [8, header.byteLength - 8]]);
+        expect(doc.fileSize).toBe('10.0 GB');
+        expect(doc.warnings).toEqual([]);
+        expect(doc.tables[0]?.rows[0]).toEqual(['weight', 'U8', String(payloadBytes), payloadBytes, '10.0 GB']);
+    });
+
+    it('does not read a JSON header declared beyond the source size', async () => {
+        const prefix = new Uint8Array(8);
+        new DataView(prefix.buffer).setBigUint64(0, 999n, true);
+        const reads: Array<[number, number]> = [];
+        const doc = await parseSafetensorsSource({
+            size: 100,
+            read(offset, length) {
+                reads.push([offset, length]);
+                return prefix.subarray(offset, offset + length);
+            }
+        });
+
+        expect(reads).toEqual([[0, 8]]);
+        expect(doc.warnings[0]).toContain('past the end');
     });
 });
 

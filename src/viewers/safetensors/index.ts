@@ -1,5 +1,5 @@
 import type { ClipboardService, HostContext } from '../../host/index.js';
-import { parseSafetensors, type SafetensorsDocument, type SafetensorsTable } from '../../parsers/safetensors/index.js';
+import { parseSafetensors, parseSafetensorsSource, type SafetensorsDocument, type SafetensorsSource, type SafetensorsTable } from '../../parsers/safetensors/index.js';
 import { MountAbortedError, VIEWER_ROOT_CLASS, type MountOptions, type ViewerHandle, type ViewerInput } from '../types.js';
 import { safetensorsViewerCss } from './styles.js';
 
@@ -17,14 +17,54 @@ export const SAFETENSORS_VIEWER_META = {
 
 export type SafetensorsViewerContext = HostContext & { clipboard?: ClipboardService };
 
-export async function mountSafetensorsViewer(
+/** Lazy input used by large-file hosts to avoid materializing tensor payloads. */
+export interface SafetensorsViewerSource extends SafetensorsSource {
+    fileName: string;
+    lastModified?: number;
+}
+
+/** Creates a lazy safetensors input backed by browser `Blob.slice()` range reads. */
+export function createSafetensorsBlobSource(blob: Blob, fileName = 'model.safetensors'): SafetensorsViewerSource {
+    return {
+        fileName,
+        size: blob.size,
+        async read(offset: number, length: number, signal?: AbortSignal): Promise<Uint8Array> {
+            throwIfAborted(signal);
+            const bytes = new Uint8Array(await blob.slice(offset, offset + length).arrayBuffer());
+            throwIfAborted(signal);
+            return bytes;
+        }
+    };
+}
+
+export function mountSafetensorsViewer(
     input: ViewerInput,
+    container: HTMLElement,
+    ctx: SafetensorsViewerContext,
+    options?: MountOptions
+): Promise<ViewerHandle>;
+export function mountSafetensorsViewer(
+    input: SafetensorsViewerSource,
+    container: HTMLElement,
+    ctx: SafetensorsViewerContext,
+    options?: MountOptions
+): Promise<ViewerHandle>;
+export async function mountSafetensorsViewer(
+    input: ViewerInput | SafetensorsViewerSource,
     container: HTMLElement,
     ctx: SafetensorsViewerContext,
     options: MountOptions = {}
 ): Promise<ViewerHandle> {
     if (options.signal?.aborted) throw new MountAbortedError();
-    const document = parseSafetensors(input.data);
+    let document: SafetensorsDocument;
+    try {
+        document = 'data' in input
+            ? parseSafetensors(input.data)
+            : await parseSafetensorsSource(input, { ...(options.signal ? { signal: options.signal } : {}) });
+    } catch (error) {
+        if (options.signal?.aborted) throw new MountAbortedError();
+        throw error;
+    }
     if (options.signal?.aborted) throw new MountAbortedError();
     return mountSafetensorsDocument(document, input.fileName, container, ctx, options);
 }
@@ -195,4 +235,9 @@ function element<K extends keyof HTMLElementTagNameMap>(tag: K, className?: stri
     if (className) node.className = className;
     if (text !== undefined) node.textContent = text;
     return node;
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+    if (!signal?.aborted) return;
+    throw signal.reason ?? new DOMException('The operation was aborted.', 'AbortError');
 }

@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
+import { Blob as NodeBlob } from 'node:buffer';
 import { describe, expect, it, vi } from 'vitest';
 import type { SafetensorsDocument } from '../../parsers/safetensors/index.js';
-import { mountSafetensorsDocument } from './index.js';
+import { createSafetensorsBlobSource, mountSafetensorsDocument, mountSafetensorsViewer } from './index.js';
 
 const model: SafetensorsDocument = {
     format: 'safetensors',
@@ -57,5 +58,30 @@ describe('mountSafetensorsDocument', () => {
         const copy = [...container.querySelectorAll('button')].find(button => button.textContent === 'safetensors.copyJson') as HTMLButtonElement;
         copy.click();
         await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith(JSON.stringify(model, null, 2)));
+    });
+
+    it('mounts from Blob range reads without loading the tensor payload', async () => {
+        const headerJson = new TextEncoder().encode(JSON.stringify({
+            weight: { dtype: 'U8', shape: [1024], data_offsets: [0, 1024] }
+        }));
+        const file = new Uint8Array(8 + headerJson.byteLength + 1024);
+        new DataView(file.buffer).setBigUint64(0, BigInt(headerJson.byteLength), true);
+        file.set(headerJson, 8);
+        const blob = new NodeBlob([file]) as unknown as Blob;
+        const slice = vi.spyOn(blob, 'slice');
+        const container = document.createElement('div');
+
+        const handle = await mountSafetensorsViewer(
+            createSafetensorsBlobSource(blob, 'large.safetensors'),
+            container,
+            ctx,
+            { styleIsolation: 'scoped' }
+        );
+
+        expect(slice).toHaveBeenNthCalledWith(1, 0, 8);
+        expect(slice).toHaveBeenNthCalledWith(2, 8, 8 + headerJson.byteLength);
+        expect(slice).toHaveBeenCalledTimes(2);
+        expect(container.textContent).toContain('large.safetensors');
+        handle.dispose();
     });
 });

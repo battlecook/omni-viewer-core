@@ -19,6 +19,19 @@ export interface SafetensorsDocument {
     warnings: string[];
 }
 
+/** Random-access source used to inspect a safetensors file without loading its payload. */
+export interface SafetensorsSource {
+    /** Complete file size in bytes. */
+    readonly size: number;
+    /** Reads up to `length` bytes at the absolute `offset`. */
+    read(offset: number, length: number, signal?: AbortSignal): Uint8Array | Promise<Uint8Array>;
+}
+
+export interface SafetensorsSourceParseOptions {
+    fileSize?: string;
+    signal?: AbortSignal;
+}
+
 /** One tensor as declared in the safetensors header. */
 export interface SafetensorsTensor {
     name: string;
@@ -37,9 +50,10 @@ export interface SafetensorsTensor {
  *
  * The format is a fixed 8-byte little-endian header length, followed by a UTF-8
  * JSON header (tensor name → {dtype, shape, data_offsets}, plus an optional
- * "__metadata__" string map), followed by the raw tensor buffer. Only the header
- * is decoded here — the tensor payloads are never read, so inspecting a
- * multi-gigabyte checkpoint stays cheap.
+ * "__metadata__" string map), followed by the raw tensor buffer. Use
+ * {@link parseSafetensorsSource} for large files: it reads only the 8-byte length
+ * prefix and JSON header. {@link parseSafetensors} remains the compatibility API
+ * for callers that already have the complete file in memory.
  *
  * Reference: https://github.com/huggingface/safetensors
  */
@@ -71,21 +85,79 @@ export function parseSafetensors(
     input: Uint8Array,
     fileSize = formatFileSize(input.byteLength)
 ): SafetensorsDocument {
+    return parseSafetensorsHeader(input, input.byteLength, fileSize);
+}
+
+/**
+ * Reads and parses only the safetensors header from a random-access source.
+ * The tensor payload range is validated against `source.size` but never read.
+ */
+export async function parseSafetensorsSource(
+    source: SafetensorsSource,
+    options: SafetensorsSourceParseOptions = {}
+): Promise<SafetensorsDocument> {
+    const fileSize = options.fileSize ?? formatFileSize(source.size);
+    if (!Number.isSafeInteger(source.size) || source.size < 0) {
+        return invalid(fileSize, 'File size is out of range.');
+    }
+
+    throwIfAborted(options.signal);
+    const prefix = await source.read(0, HEADER_LENGTH_BYTES, options.signal);
+    throwIfAborted(options.signal);
+    if (prefix.byteLength < HEADER_LENGTH_BYTES) {
+        return invalid(fileSize, 'File is too small to contain a safetensors header.');
+    }
+
+    const headerLength = readHeaderLength(prefix);
+    const lengthIssue = validateHeaderLength(headerLength);
+    if (lengthIssue) return invalid(fileSize, lengthIssue);
+
+    const headerEnd = HEADER_LENGTH_BYTES + headerLength;
+    if (headerEnd > source.size) {
+        return invalid(fileSize, 'Declared header length extends past the end of the file.');
+    }
+
+    const jsonHeader = await source.read(HEADER_LENGTH_BYTES, headerLength, options.signal);
+    throwIfAborted(options.signal);
+    if (jsonHeader.byteLength < headerLength) {
+        return invalid(fileSize, 'The complete safetensors header could not be read.');
+    }
+
+    const headerBytes = new Uint8Array(headerEnd);
+    headerBytes.set(prefix.subarray(0, HEADER_LENGTH_BYTES));
+    headerBytes.set(jsonHeader.subarray(0, headerLength), HEADER_LENGTH_BYTES);
+    return parseSafetensorsHeader(headerBytes, source.size, fileSize);
+}
+
+/**
+ * Parses bytes containing the 8-byte length prefix and complete JSON header.
+ * `totalFileBytes` is the size of the original file and is used to validate
+ * tensor offsets without requiring tensor payload bytes in `input`.
+ */
+export function parseSafetensorsHeader(
+    input: Uint8Array,
+    totalFileBytes: number,
+    fileSize = formatFileSize(totalFileBytes)
+): SafetensorsDocument {
     const warnings: string[] = [];
 
     if (input.byteLength < HEADER_LENGTH_BYTES) {
         return invalid(fileSize, 'File is too small to contain a safetensors header.');
     }
 
-    const view = new DataView(input.buffer, input.byteOffset, input.byteLength);
-    const headerLength = Number(view.getBigUint64(0, true));
-
-    if (!Number.isSafeInteger(headerLength) || headerLength <= 0 || headerLength > MAX_HEADER_BYTES) {
-        return invalid(fileSize, 'Header length is out of range; the file is not a valid safetensors file.');
+    if (!Number.isSafeInteger(totalFileBytes) || totalFileBytes < 0) {
+        return invalid(fileSize, 'File size is out of range.');
     }
+
+    const headerLength = readHeaderLength(input);
+    const lengthIssue = validateHeaderLength(headerLength);
+    if (lengthIssue) return invalid(fileSize, lengthIssue);
     const headerEnd = HEADER_LENGTH_BYTES + headerLength;
-    if (headerEnd > input.byteLength) {
+    if (headerEnd > totalFileBytes) {
         return invalid(fileSize, 'Declared header length extends past the end of the file.');
+    }
+    if (headerEnd > input.byteLength) {
+        return invalid(fileSize, 'The complete safetensors header could not be read.');
     }
 
     const headerBytes = input.subarray(HEADER_LENGTH_BYTES, headerEnd);
@@ -120,7 +192,7 @@ export function parseSafetensors(
     }
     if (metadataIssue) warnings.push('Some "__metadata__" values are not strings and were ignored.');
 
-    const dataBufferSize = input.byteLength - headerEnd;
+    const dataBufferSize = totalFileBytes - headerEnd;
     const tensors: SafetensorsTensor[] = [];
     const dtypeCounts = new Map<string, number>();
     let totalElements = 0;
@@ -231,6 +303,22 @@ export function parseSafetensors(
         rawPreview,
         warnings
     };
+}
+
+function readHeaderLength(input: Uint8Array): number {
+    const view = new DataView(input.buffer, input.byteOffset, input.byteLength);
+    return Number(view.getBigUint64(0, true));
+}
+
+function validateHeaderLength(headerLength: number): string | undefined {
+    return !Number.isSafeInteger(headerLength) || headerLength <= 0 || headerLength > MAX_HEADER_BYTES
+        ? 'Header length is out of range; the file is not a valid safetensors file.'
+        : undefined;
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+    if (!signal?.aborted) return;
+    throw signal.reason ?? new DOMException('The operation was aborted.', 'AbortError');
 }
 
 function safeElementCount(shape: readonly number[]): number | undefined {

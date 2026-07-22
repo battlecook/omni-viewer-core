@@ -63,6 +63,26 @@ Viewers follow the same pattern — a `mount*Viewer(input, container, ctx,
 deps)` entry per format, plus `self-loading` variants that dynamically import
 their own dependencies for hosts that don't want to wire them manually.
 
+### Safetensors large-file input
+
+Pass browser `File`/`Blob` objects through the lazy source helper so only the
+8-byte length prefix and JSON header are read:
+
+```ts
+import {
+    createSafetensorsBlobSource,
+    mountSafetensorsViewer
+} from 'omni-viewer-core/viewers/safetensors';
+
+const source = createSafetensorsBlobSource(file, file.name);
+await mountSafetensorsViewer(source, container, ctx);
+```
+
+Node hosts can use `parseSafetensorsFile` from
+`omni-viewer-core/parsers/safetensors/node` and mount the returned document
+with `mountSafetensorsDocument`. The legacy `Uint8Array` input remains
+available, but it requires the host to load the complete file first.
+
 ### PDF host integration
 
 The PDF viewer asks `ctx.assets.resolveAssetUrl` for the exact key

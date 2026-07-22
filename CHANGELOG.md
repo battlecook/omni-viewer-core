@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-07-22
+
+### Added
+
+- Safetensors random-access parsing via `parseSafetensorsSource`, reading only
+  the 8-byte length prefix and JSON header while validating tensor offsets
+  against the complete file size. Browser hosts can use
+  `createSafetensorsBlobSource`; Node hosts can use `parseSafetensorsFile` from
+  `omni-viewer-core/parsers/safetensors/node`. The existing `Uint8Array` API
+  remains available for compatibility.
+
 ## [0.6.0] - 2026-07-21
 
 ### Added
