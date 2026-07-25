@@ -5,6 +5,29 @@ export type ArchiveAction = { type: 'set-search'; query: string } | { type: 'sel
 export interface ArchiveController { readonly state: ArchiveViewState; dispatch(action: ArchiveAction): void; visibleEntries(): readonly ArchiveEntry[]; subscribe(listener: () => void): () => void; }
 
 const parent = (path: string): string => path.replace(/\/?[^/]+\/?$/, '');
+
+/** Adds view-only directory entries for archives that contain `a/b.txt` but
+ * omit an explicit `a/` record. Original entries and IDs are left untouched.
+ * Synthetic IDs are negative because decoder-owned entry IDs are non-negative. */
+export function addImplicitArchiveDirectories(entries: readonly ArchiveEntry[], maxSyntheticDirectories = 100_000): readonly ArchiveEntry[] {
+    const explicit = new Set(entries.filter(entry => entry.isDirectory).map(entry => entry.path.replace(/\\/g, '/').replace(/\/+$/, '')));
+    const synthetic = new Set<string>();
+    const result: ArchiveEntry[] = [];
+    let nextSyntheticId = -1;
+    for (const entry of entries) {
+        const normalized = entry.path.replace(/\\/g, '/').replace(/^\/+/, '');
+        const segments = normalized.split('/').filter(Boolean);
+        for (let depth = 1; depth < segments.length && synthetic.size < maxSyntheticDirectories; depth++) {
+            const path = segments.slice(0, depth).join('/');
+            if (explicit.has(path) || synthetic.has(path)) continue;
+            synthetic.add(path);
+            result.push({ entryId: nextSyntheticId--, path: `${path}/`, isDirectory: true });
+        }
+        result.push(entry);
+    }
+    return result;
+}
+
 export function createArchiveController(entries: readonly ArchiveEntry[]): ArchiveController {
     let state: ArchiveViewState = { query: '', expanded: new Set(entries.filter(x => x.isDirectory).map(x => x.path)), entries };
     const listeners = new Set<() => void>(); const emit = () => listeners.forEach(x => x());

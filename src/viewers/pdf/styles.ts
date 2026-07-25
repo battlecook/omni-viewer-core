@@ -415,6 +415,9 @@ export const pdfViewerCss = `
     cursor: move;
     touch-action: none;
 }
+.omni-pdf__text-annotation {
+    white-space: pre;
+}
 .omni-pdf button.omni-pdf__annotation {
     background: transparent;
     border: 0;
@@ -645,7 +648,7 @@ export const pdfViewerCss = `
     position: absolute;
     z-index: 3;
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: 4px;
     padding: 3px;
     background: var(--omni-bg-secondary, #252526);
@@ -654,6 +657,8 @@ export const pdfViewerCss = `
 }
 .omni-pdf__text-input {
     min-width: 160px;
+    min-height: 52px;
+    resize: both;
     font: inherit;
     color: #111111;
     background: #ffffff;

@@ -7,6 +7,7 @@ export type JsonlAction =
     | { type: 'load-all' }
     | { type: 'set-search'; search: string }
     | { type: 'select'; id: string; additive?: boolean; range?: boolean }
+    | { type: 'deselect' }
     | { type: 'edit'; id: string; raw: string }
     | { type: 'insert'; raw?: string }
     | { type: 'delete-selected' }
@@ -89,6 +90,7 @@ export function createJsonlController(input: Uint8Array | string | JsonlPagedInp
             if (action.type === 'load-all') return loadAll();
             if (action.type === 'set-search') state.search = action.search;
             else if (action.type === 'select') { const selected = action.additive ? new Set(state.selected) : new Set<string>(); if (action.range && selectionAnchor) { const a = entries.findIndex(e => e.id === selectionAnchor), b = entries.findIndex(e => e.id === action.id); if (a >= 0 && b >= 0) for (let i = Math.min(a, b); i <= Math.max(a, b); i++) selected.add(entries[i]!.id); } else { selected.has(action.id) && action.additive ? selected.delete(action.id) : selected.add(action.id); selectionAnchor = action.id; } state.selected = selected; }
+            else if (action.type === 'deselect') { state.selected = new Set(); selectionAnchor = null; }
             else if (action.type === 'edit' && editable()) { const index = entries.findIndex(e => e.id === action.id); if (index >= 0) { const old = entries[index]!; entries[index] = parseEntry(action.raw, old.id, old.line); state.entries = entries; state.dirty = true; } }
             else if (action.type === 'insert' && editable()) { const id = `inserted:${nextId++}`; entries.push(parseEntry(action.raw ?? '{}', id, entries.length + 1)); state.entries = entries; state.dirty = true; }
             else if (action.type === 'delete-selected' && editable()) { entries = entries.filter(e => !state.selected.has(e.id)); renumber(); state.entries = entries; state.selected = new Set(); state.dirty = true; }

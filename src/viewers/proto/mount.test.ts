@@ -5,6 +5,18 @@ import { mountProtoViewer } from './index.js';
 const ctx = { assets:{resolveAssetUrl:async(path:string)=>path}, i18n:createCatalogI18n(), logger:{log:()=>undefined} };
 describe('mountProtoViewer',()=>{
     it('renders schema navigation and disposes cleanly',async()=>{const container=document.createElement('div');const handle=await mountProtoViewer({fileName:'a.proto',data:new TextEncoder().encode('syntax = "proto3";\nmessage User {\n string id = 1;\n}')},container,ctx);const root=container.shadowRoot!;expect(root.querySelector('.omni-proto__source')?.textContent).toContain('message User');expect(root.querySelector('.omni-proto__panel')?.textContent).toContain('User');expect([...root.querySelectorAll('button')].map(b=>b.textContent)).toContain('gRPC');handle.dispose();expect(root.childNodes).toHaveLength(0);});
+    it('applies syntax highlighting to the source pane', async () => {
+        const container = document.createElement('div');
+        await mountProtoViewer({ fileName: 'a.proto', data: new TextEncoder().encode('// header\nsyntax = "proto3";\nmessage User {\n string id = 1;\n}') }, container, ctx);
+        const root = container.shadowRoot!;
+        const source = root.querySelector('.omni-proto__source')!;
+        expect(source.querySelector('.omni-proto__tok--comment')?.textContent).toBe('// header');
+        expect([...source.querySelectorAll('.omni-proto__tok--kw')].map(n => n.textContent)).toEqual(expect.arrayContaining(['syntax', 'message']));
+        expect(source.querySelector('.omni-proto__tok--str')?.textContent).toBe('"proto3"');
+        expect(source.querySelector('.omni-proto__tok--type')?.textContent).toBe('string');
+        expect(source.querySelector('.omni-proto__tok--num')?.textContent).toBe('1');
+        expect(source.textContent).toContain('message User');
+    });
     it.each([
         ['account_id', 'field'],
         ['ACTIVE', 'value'],
@@ -75,6 +87,24 @@ message Lookup {
         click('Copy panel');
         await Promise.resolve();
         expect(writeText).toHaveBeenCalledWith(expect.stringContaining('Field number 1 changed'));
+    });
+    it('renders field- and RPC-level documentation in the Docs panel', async () => {
+        const source = `syntax = "proto3";
+message Account {
+  // the unique account identifier
+  string account_id = 1;
+}
+service Accounts {
+  // look up an account by id
+  rpc FindAccount(Account) returns (Account);
+}`;
+        const container = document.createElement('div');
+        await mountProtoViewer({ fileName: 'accounts.proto', data: new TextEncoder().encode(source) }, container, ctx);
+        const root = container.shadowRoot!;
+        [...root.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'Docs')!.click();
+        const text = root.querySelector('.omni-proto__panel')?.textContent ?? '';
+        expect(text).toContain('account_id: the unique account identifier');
+        expect(text).toContain('FindAccount: look up an account by id');
     });
     it('resolves Proto chrome through i18n keys', async () => {
         const requested: string[] = [];

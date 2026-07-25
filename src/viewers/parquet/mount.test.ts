@@ -83,10 +83,23 @@ describe('mountParquetViewer incremental loading', () => {
         const columnCopy = [...container.querySelectorAll('.omni-parquet__menu button')].find(button => button.textContent === 'parquet.copyColumn') as HTMLButtonElement;
         columnCopy.click(); await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith('alpha'));
         const frame = container.querySelector('.omni-parquet') as HTMLElement;
+        const copyTable = [...container.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'parquet.copyTable')!;
+        copyTable.click();
+        await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith('name\tscore\nalpha\t1'));
         frame.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, ctrlKey: true, key: 'c' }));
         await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith('name\tscore\nalpha\t1'));
         frame.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, ctrlKey: true, key: 'f' }));
         expect(document.activeElement).toBe(search);
+    });
+
+    it('renders disabled table and JSON copy buttons without a clipboard service', async () => {
+        parseParquet.mockResolvedValueOnce({ headers: ['id'], rows: [[1]], schema: {}, totalRows: 1, loadedRows: 1, fileSizeBytes: 10, isLimited: false });
+        const container = document.createElement('div');
+        await mountParquetViewer({ fileName: 'data.parquet', data: new Uint8Array() }, container, ctx, { styleIsolation: 'scoped' });
+        for (const key of ['parquet.copyTable', 'parquet.copyJson']) {
+            const button = [...container.querySelectorAll<HTMLButtonElement>('button')].find(node => node.textContent === key)!;
+            expect(button.disabled).toBe(true); expect(button.title).toBe('common.noClipboard');
+        }
     });
     it('copies a row as JSON from the cell context menu', async () => {
         const writeText = vi.fn().mockResolvedValue(undefined);

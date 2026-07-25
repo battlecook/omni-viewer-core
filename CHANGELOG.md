@@ -5,6 +5,68 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-07-25
+
+### Added
+
+- The Word viewer now exposes typed render status and diagnostics, stable
+  content/viewport accessors, host fallback rendering, custom toolbar actions,
+  configurable docx-preview options, and host-tightenable resource limits.
+- DOCX charts preserve bar, line, and pie types; unsupported charts use a
+  diagnosed placeholder, while packaged chart fallback images are preferred.
+- The Parquet toolbar now exposes the existing filtered-table TSV copy action.
+- Parquet parsing gains a random-access path: `parseParquetSource` reads a host
+  `ParquetSource` (Blob range reads, Node `fs`) and materializes only the footer
+  and requested preview pages. `createParquetBlobSource` and `mountParquetViewer`
+  accept such a source; the existing `Uint8Array` API remains for compatibility.
+- Mermaid and PlantUML now share an editable diagram viewer with Diagram/Split/
+  Source view modes, a Render action with undo/redo history, per-renderer theme
+  selection, zoom controls, SVG/source copy, and a live render status; when no
+  renderer is installed the source is shown instead.
+- The PPT/PPTX slide renderer draws clustered-column, clustered/stacked/percent-
+  stacked bar, stacked/percent-stacked column, and pie charts, with configurable
+  legend positions.
+- PPTX parsing can render embedded WMF/EMF metafiles through an optional host
+  `renderMetafile` hook, distinguishes corrupted from invalid packages, and
+  enforces cooperative input/entry/time limits with typed diagnostics, including
+  an unsupported-object notice.
+- The PPT viewer accepts host `renderElement`/`renderChart` overrides, custom
+  `toolbarActions`, and `onSlideChange`/`onDiagnostics` callbacks, and reports
+  typed failures through `PptViewerError`.
+- The Proto viewer syntax-highlights its source panel (keywords, builtin types,
+  literals, strings, numbers, and comments).
+- Legacy DOC parsing distinguishes password-protected and corrupted OLE files
+  and recovers partial text from a damaged piece table, reported through a
+  `recovered-corruption` diagnostic.
+- Archive decoders can report archive-wide encryption through
+  `OpenArchiveHandle.encrypted`, alongside entry-level `ArchiveEntry.encrypted`;
+  the archive viewer displays both states and blocks unavailable extraction.
+- Archive hosts can optionally delegate extracted entries to their own viewer
+  router, preserving PDF, Office, HWP, Parquet, and nested-archive previews
+  without importing those viewers from the archive bundle.
+- Archive adapters can expose compression metadata and decoder capabilities,
+  retry open/extract/save operations through a host-owned password prompt, and
+  opt into view-only implicit directory synthesis when a decoder omits folders.
+
+### Changed
+
+- Word self-loading now imports `xlsx` only after an embedded workbook is
+  discovered and supports `embeddedSheets: false`; legacy DOC rendering now
+  reports a typed parse outcome without discarding its richer layout path.
+- The minimum supported `dompurify` peer version is now 3.4.12.
+
+### Fixed
+
+- Aborted or superseded Word renders can no longer overwrite a newer mount,
+  and Word disposal now removes injected styles, listeners, and blob URLs.
+- JSONL details and editing once again use the cursor-positioned hover popup
+  instead of expanding rows inline, and inline edits now reject records that
+  contain newlines, keeping each entry on one physical line.
+- PDF text annotations preserve multiline content and non-hex CSS colors when
+  edited, and multiline flattening renders every line.
+- Late archive save results no longer overwrite the UI for a subsequently
+  selected entry.
+
 ## [0.7.0] - 2026-07-22
 
 ### Added

@@ -58,6 +58,33 @@ describe('PdfController', () => {
         expect(colorOf()).toBe('#ffc9c9');
     });
 
+    it('updates text annotations and tracks the change in history', () => {
+        const c = createPdfController(1);
+        c.dispatch({
+            type: 'add-annotation',
+            annotation: { kind: 'text', page: 1, x: 10, y: 20, text: 'before', size: 12, color: '#000000' }
+        });
+        const id = c.state.annotations[0]!.id;
+        c.dispatch({
+            type: 'update-text-annotation',
+            id,
+            text: 'after',
+            size: 18,
+            color: '#ff0000',
+            rasterDataUrl: 'data:image/png;base64,AAAA',
+            rasterWidth: 50,
+            rasterHeight: 24
+        });
+        expect(c.state.annotations[0]).toMatchObject({
+            id, kind: 'text', text: 'after', size: 18, color: '#ff0000',
+            rasterWidth: 50, rasterHeight: 24
+        });
+        c.dispatch({ type: 'undo' });
+        expect(c.state.annotations[0]).toMatchObject({ text: 'before', size: 12, color: '#000000' });
+        c.dispatch({ type: 'redo' });
+        expect(c.state.annotations[0]).toMatchObject({ text: 'after', size: 18, color: '#ff0000' });
+    });
+
     it('rehydrates existing markup when merged pages are appended', () => {
         const beforeMerge = createPdfController(2);
         beforeMerge.dispatch({

@@ -1,5 +1,7 @@
-import type { Diagnostic, ParseOutcome, ParseResult } from '../types.js';
+import type { Diagnostic, ParseOptions, ParseOutcome, ParseResult } from '../types.js';
+import { DocBinaryParser, type DocBinaryRuntimeDeps } from './vscode-parser.js';
 export { DocBinaryParser } from './vscode-parser.js';
+export type { DocBinaryRuntimeDeps } from './vscode-parser.js';
 
 const FREESECT = 0xffffffff;
 const ENDOFCHAIN = 0xfffffffe;
@@ -12,6 +14,15 @@ export interface DocImage { kind: 'image'; mimeType: string; data: Uint8Array; a
 export type DocBlock = DocParagraph | DocTable | DocImage;
 export interface DocSection { blocks: DocBlock[]; header?: string; footer?: string }
 export interface DocBinaryDocument { sections: DocSection[]; text: string }
+/**
+ * Compatibility document used by the feature-complete legacy DOC renderer.
+ *
+ * The older parser currently preserves substantially more layout information
+ * than {@link DocBinaryDocument}. Wrapping its output in ParseOutcome keeps
+ * failures and diagnostics typed while the semantic parser catches up, without
+ * regressing tables, columns, images, and section layout.
+ */
+export interface DocBinaryHtmlDocument { html: string }
 
 interface CfbEntry { name: string; type: number; startSector: number; size: number }
 interface CfbReader { getStream(name: string): Uint8Array | null; listStreams(): CfbEntry[] }
@@ -35,12 +46,20 @@ export function parseDocBinary(input: Uint8Array): ParseOutcome<DocBinaryDocumen
         const fib = parseFib(word);
         const table = cfb.getStream(fib.tableStreamName);
         if (!table) return failed('corrupted');
-        const pieces = parsePieceTable(table, fib);
+        const pieceTable = parsePieceTable(table, fib);
+        const pieces = pieceTable.pieces;
         if (pieces.length === 0) return failed('corrupted');
         const decoded = decodePieces(word, pieces);
         const mainText = normalize(decoded.slice(0, fib.ccpText || decoded.length));
         const headerText = fib.ccpHdd > 0 ? normalize(decoded.slice(fib.ccpText, fib.ccpText + fib.ccpHdd)) : '';
         const diagnostics: Diagnostic[] = [];
+        if (pieceTable.recovered) {
+            diagnostics.push({
+                severity: 'warning',
+                code: 'recovered-corruption',
+                messageKey: 'diag.word.recovered-corruption'
+            });
+        }
         const blocks = buildBlocks(mainText);
         const images = extractImages(cfb);
         if (images.length) blocks.push(...images);
@@ -54,8 +73,135 @@ export function parseDocBinary(input: Uint8Array): ParseOutcome<DocBinaryDocumen
         }
         return outcome({ status: diagnostics.length ? 'partial' : 'ok', document: { sections: [section], text: mainText }, diagnostics });
     } catch (error) {
+        if (error instanceof DocPasswordRequiredError) {
+            return outcome({
+                status: 'failed',
+                failure: {
+                    code: 'password-required',
+                    retryable: true,
+                    messageKey: 'diag.word.password-required'
+                },
+                diagnostics: []
+            });
+        }
         return outcome({ status: 'failed', failure: { code: 'invalid-format', retryable: false, messageKey: 'diag.word.invalid-format' }, diagnostics: [{ severity: 'error', code: 'parse-error', messageKey: 'diag.word.invalid-format', location: error instanceof Error ? error.message : String(error) }] });
     }
+}
+
+/**
+ * Typed bridge for the feature-complete legacy DOC parser.
+ *
+ * Input-caused failures are returned rather than thrown. The viewer owns the
+ * separate HTML-to-DOM rendering and sanitization step.
+ */
+export async function parseDocBinaryHtml(
+    input: Uint8Array,
+    deps: DocBinaryRuntimeDeps = {},
+    options: ParseOptions = {}
+): Promise<ParseOutcome<DocBinaryHtmlDocument>> {
+    const started = Date.now();
+    const finish = (result: ParseResult<DocBinaryHtmlDocument>): ParseOutcome<DocBinaryHtmlDocument> => ({
+        result,
+        execution: {
+            workerUsed: false,
+            hardLimitEnforced: false,
+            elapsedMillis: Date.now() - started
+        }
+    });
+    if (options.signal?.aborted) {
+        return finish({
+            status: 'failed',
+            failure: { code: 'aborted', retryable: true, messageKey: 'diag.aborted' },
+            diagnostics: []
+        });
+    }
+    if (
+        options.limits?.maxInputBytes !== undefined &&
+        input.byteLength > options.limits.maxInputBytes
+    ) {
+        return finish({
+            status: 'failed',
+            failure: {
+                code: 'limit-exceeded',
+                retryable: false,
+                messageKey: 'diag.word.limit-exceeded'
+            },
+            diagnostics: []
+        });
+    }
+    if (isEncryptedDocBinary(input)) {
+        return finish({
+            status: 'failed',
+            failure: {
+                code: 'password-required',
+                retryable: true,
+                messageKey: 'diag.word.password-required'
+            },
+            diagnostics: []
+        });
+    }
+    const diagnostics: Diagnostic[] = [];
+    if (hasRecoveredPieceTable(input)) {
+        diagnostics.push({
+            severity: 'warning',
+            code: 'recovered-corruption',
+            messageKey: 'diag.word.recovered-corruption'
+        });
+    }
+    const hasWorkbook = hasEmbeddedDocWorkbook(input);
+    if (hasWorkbook && !deps.xlsx) {
+        diagnostics.push({
+            severity: 'warning',
+            code: 'embedded-workbook-disabled',
+            messageKey: 'diag.word.embedded-workbook-disabled',
+            location: 'Workbook'
+        });
+    }
+    try {
+        const html = await DocBinaryParser.parseBytes(input, deps);
+        if (options.signal?.aborted) {
+            return finish({
+                status: 'failed',
+                failure: { code: 'aborted', retryable: true, messageKey: 'diag.aborted' },
+                diagnostics
+            });
+        }
+        return finish({
+            status: diagnostics.length ? 'partial' : 'ok',
+            document: { html },
+            diagnostics
+        });
+    } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        const passwordRequired = /password|encrypted|encryption/i.test(detail);
+        const corrupted = OLE_MAGIC.every((byte, index) => input[index] === byte) &&
+            /corrupt|invalid.*(?:cfb|ole)|missing .*stream|sector|fat|chain/i.test(detail);
+        const code = passwordRequired ? 'password-required' : corrupted ? 'corrupted' : 'invalid-format';
+        const messageKey = passwordRequired
+            ? 'diag.word.password-required'
+            : corrupted ? 'diag.word.corrupted' : 'diag.word.invalid-format';
+        diagnostics.push({ severity: 'error', code, messageKey, location: detail });
+        return finish({
+            status: 'failed',
+            failure: { code, retryable: passwordRequired, messageKey },
+            diagnostics
+        });
+    }
+}
+
+/** Cheap CFB directory-name probe used to keep xlsx lazy for ordinary DOC. */
+export function hasEmbeddedDocWorkbook(input: Uint8Array): boolean {
+    return containsAscii(input, 'Workbook') || containsUtf16Le(input, 'Workbook');
+}
+
+function containsAscii(input: Uint8Array, text: string): boolean {
+    const needle = [...text].map((char) => char.charCodeAt(0));
+    return indexOf(input, needle) >= 0;
+}
+
+function containsUtf16Le(input: Uint8Array, text: string): boolean {
+    const needle = [...text].flatMap((char) => [char.charCodeAt(0), 0]);
+    return indexOf(input, needle) >= 0;
 }
 
 function failed(code: 'invalid-format' | 'corrupted'): ParseOutcome<DocBinaryDocument> {
@@ -65,6 +211,9 @@ function failed(code: 'invalid-format' | 'corrupted'): ParseOutcome<DocBinaryDoc
 function parseFib(word: Uint8Array): FibInfo {
     if (word.length < 64 || u16(word, 0) !== 0xa5ec) throw new Error('invalid FIB');
     const flags = u16(word, 10);
+    if ((flags & 0x0100) !== 0 || (flags & 0x8000) !== 0) {
+        throw new DocPasswordRequiredError();
+    }
     const tableStreamName = ((flags >> 9) & 1) ? '1Table' : '0Table';
     let offset = 32;
     const csw = u16(word, offset); offset += 2 + csw * 2;
@@ -79,14 +228,55 @@ function parseFib(word: Uint8Array): FibInfo {
     return { tableStreamName, ccpText, ccpHdd, fcClx, lcbClx };
 }
 
-function parsePieceTable(table: Uint8Array, fib: FibInfo): Piece[] {
-    if (fib.lcbClx <= 0 || fib.fcClx + fib.lcbClx > table.length) return scanPieceTables(table);
+class DocPasswordRequiredError extends Error {
+    constructor() {
+        super('password required');
+        this.name = 'DocPasswordRequiredError';
+    }
+}
+
+function isEncryptedDocBinary(input: Uint8Array): boolean {
+    try {
+        const word = parseCfb(input).getStream('WordDocument');
+        if (!word || word.length < 12 || u16(word, 0) !== 0xa5ec) return false;
+        const flags = u16(word, 10);
+        return (flags & 0x0100) !== 0 || (flags & 0x8000) !== 0;
+    } catch {
+        return false;
+    }
+}
+
+function parsePieceTable(table: Uint8Array, fib: FibInfo): { pieces: Piece[]; recovered: boolean } {
+    if (fib.lcbClx <= 0 || fib.fcClx + fib.lcbClx > table.length) {
+        return { pieces: scanPieceTables(table), recovered: true };
+    }
     const clx = table.subarray(fib.fcClx, fib.fcClx + fib.lcbClx);
     let offset = 0;
-    while (offset < clx.length && clx[offset] === 1) { if (offset + 3 > clx.length) return []; offset += 3 + u16(clx, offset + 1); }
-    if (clx[offset] !== 2 || offset + 5 > clx.length) return scanPieceTables(table);
+    while (offset < clx.length && clx[offset] === 1) {
+        if (offset + 3 > clx.length) return { pieces: [], recovered: false };
+        offset += 3 + u16(clx, offset + 1);
+    }
+    if (clx[offset] !== 2 || offset + 5 > clx.length) {
+        return { pieces: scanPieceTables(table), recovered: true };
+    }
     const length = u32(clx, offset + 1);
-    return decodePlc(clx.subarray(offset + 5, offset + 5 + length));
+    const pieces = decodePlc(clx.subarray(offset + 5, offset + 5 + length));
+    if (pieces.length) return { pieces, recovered: false };
+    const recovered = scanPieceTables(table);
+    return { pieces: recovered, recovered: recovered.length > 0 };
+}
+
+function hasRecoveredPieceTable(input: Uint8Array): boolean {
+    try {
+        const cfb = parseCfb(input);
+        const word = cfb.getStream('WordDocument');
+        if (!word) return false;
+        const fib = parseFib(word);
+        const table = cfb.getStream(fib.tableStreamName);
+        return table ? parsePieceTable(table, fib).recovered : false;
+    } catch {
+        return false;
+    }
 }
 
 function scanPieceTables(table: Uint8Array): Piece[] {

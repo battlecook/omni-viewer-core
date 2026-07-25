@@ -77,3 +77,23 @@ export function declaredZipUncompressedBytes(input: Uint8Array): number | null {
     if (p !== centralEnd) return Number.POSITIVE_INFINITY;
     return total;
 }
+
+/**
+ * Entry count declared by a structurally valid ZIP central directory.
+ *
+ * `null` means the input is not a ZIP and `Infinity` means the directory is
+ * malformed, ZIP64, multi-disk, or otherwise cannot be bounded safely.
+ */
+export function declaredZipEntryCount(input: Uint8Array): number | null {
+    const declaredBytes = declaredZipUncompressedBytes(input);
+    if (declaredBytes === null) return null;
+    if (!Number.isFinite(declaredBytes)) return Number.POSITIVE_INFINITY;
+
+    const view = new DataView(input.buffer, input.byteOffset, input.byteLength);
+    for (let p = input.length - 22; p >= Math.max(0, input.length - EOCD_SEARCH_SPAN); p--) {
+        if (view.getUint32(p, true) !== EOCD) continue;
+        if (p + 22 + view.getUint16(p + 20, true) !== input.length) continue;
+        return view.getUint16(p + 10, true);
+    }
+    return Number.POSITIVE_INFINITY;
+}

@@ -21,6 +21,27 @@ describe('parseArchive', () => {
         expect(parsed.outcome.result).toMatchObject({ status: 'failed', failure: { code: 'password-required' } });
     });
 
+    it('passes an optional password through open and extraction', async () => {
+        const seen: Array<string | undefined> = [];
+        const decoder: ArchiveDecoder = { openArchive: async (_data, options) => {
+            seen.push(options?.password);
+            return { entries: [{ entryId: 0, path: 'secret.txt', isDirectory: false }], extract: async (_id, extractOptions) => {
+                seen.push(extractOptions.password);
+                return new TextEncoder().encode('secret');
+            }, close() {} };
+        } };
+        const parsed = await parseArchive(new Uint8Array([1]), decoder, { password: 'open-sesame' });
+        await parsed.handle?.extract(0, { maxBytes: 32, password: 'open-sesame' });
+        expect(seen).toEqual(['open-sesame', 'open-sesame']);
+    });
+
+    it('preserves archive-wide and entry-level encryption metadata', async () => {
+        const decoder: ArchiveDecoder = { openArchive: async () => ({ encrypted: true, entries: [{ entryId: 0, path: 'secret.txt', isDirectory: false, encrypted: true }], extract: async () => new Uint8Array(), close() {} }) };
+        const parsed = await parseArchive(new Uint8Array(), decoder);
+        expect(parsed.outcome.result).toMatchObject({ status: 'ok', document: { encrypted: true, entries: [{ encrypted: true }] } });
+        expect(parsed.handle?.encrypted).toBe(true);
+    });
+
     it('counts every completed extraction, including one whose caller aborted', async () => {
         const decoder: ArchiveDecoder = { openArchive: async () => ({ entries: [], extract: async () => new Uint8Array(6), close() {} }) };
         const parsed = await parseArchive(new Uint8Array([1]), decoder, { limits: { maxDecompressedBytes: 10 } });

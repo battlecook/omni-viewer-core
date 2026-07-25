@@ -154,8 +154,8 @@ export const BLF_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'blf',displayNameKey:
 export const MF4_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'mf4',displayNameKey:'mf4.title',extensions:['mf4'],priority:20,magicSignatures:MF4_MAGIC_SIGNATURES,requiredServices:[],optionalServices:['clipboard']};
 export const PCAP_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'pcap',displayNameKey:'pcap.title',extensions:['pcap'],priority:20,magicSignatures:PCAP_MAGIC_SIGNATURES,requiredServices:[],optionalServices:['clipboard']};
 export const PCAPNG_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'pcapng',displayNameKey:'pcapng.title',extensions:['pcapng'],priority:20,magicSignatures:PCAPNG_MAGIC_SIGNATURES,requiredServices:[],optionalServices:['clipboard']};
-export const MERMAID_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'mermaid',displayNameKey:'mermaid.title',extensions:['mmd','mermaid'],priority:20,requiredServices:[],optionalServices:[]};
-export const PLANTUML_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'plantuml',displayNameKey:'plantuml.title',extensions:['puml','plantuml','iuml'],priority:20,requiredServices:[],optionalServices:[]};
+export const MERMAID_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'mermaid',displayNameKey:'mermaid.title',extensions:['mmd','mermaid'],priority:20,requiredServices:[],optionalServices:['clipboard','writeback','save']};
+export const PLANTUML_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'plantuml',displayNameKey:'plantuml.title',extensions:['puml','plantuml','iuml'],priority:20,requiredServices:[],optionalServices:['clipboard','writeback','save']};
 export const SHAPEFILE_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'shapefile',displayNameKey:'shapefile.title',extensions:['shp'],priority:20,magicSignatures:SHAPEFILE_MAGIC_SIGNATURES,requiredServices:[],optionalServices:[]};
 export const PSD_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'psd',displayNameKey:'psd.title',extensions:['psd'],priority:20,magicSignatures:PSD_MAGIC_SIGNATURES,requiredServices:[],optionalServices:[]};
 

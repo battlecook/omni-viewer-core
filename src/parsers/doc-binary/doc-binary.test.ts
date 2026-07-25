@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { parseDocBinary } from './index.js';
+import {
+    hasEmbeddedDocWorkbook,
+    parseDocBinary,
+    parseDocBinaryHtml
+} from './index.js';
 
 const writeName = (dir: Uint8Array, offset: number, name: string, type: number, sector: number, size: number): void => {
     const view = new DataView(dir.buffer, dir.byteOffset, dir.byteLength); for (let i = 0; i < name.length; i++) view.setUint16(offset + i * 2, name.charCodeAt(i), true);
@@ -36,5 +40,58 @@ describe('parseDocBinary', () => {
 
     it('rejects non-CFB bytes', () => {
         expect(parseDocBinary(new Uint8Array([1, 2, 3])).result.status).toBe('failed');
+    });
+
+    it('wraps the feature-complete HTML parser in a typed outcome', async () => {
+        const parsed = await parseDocBinaryHtml(fixture('Hello\rWorld'));
+        expect(parsed.result.status, JSON.stringify(parsed.result)).not.toBe('failed');
+        if (parsed.result.status === 'failed') throw new Error('expected document');
+        expect(parsed.result.document.html).toContain('ov-doc-legacy');
+    });
+
+    it('returns typed failures instead of throwing for invalid input', async () => {
+        const parsed = await parseDocBinaryHtml(new Uint8Array([1, 2, 3]));
+        expect(parsed.result).toMatchObject({
+            status: 'failed',
+            failure: { code: 'invalid-format', retryable: false }
+        });
+    });
+
+    it('detects a CFB Workbook directory name without loading xlsx', () => {
+        const input = new Uint8Array(32);
+        'Workbook'.split('').forEach((char, index) => {
+            input[index * 2] = char.charCodeAt(0);
+        });
+        expect(hasEmbeddedDocWorkbook(input)).toBe(true);
+    });
+
+    it('reports the DOC FIB encryption flag as password-required', async () => {
+        const encrypted = fixture('secret');
+        const view = new DataView(encrypted.buffer);
+        view.setUint16(1536 + 10, (1 << 9) | 0x0100, true);
+        expect(parseDocBinary(encrypted).result).toMatchObject({
+            status: 'failed',
+            failure: { code: 'password-required', retryable: true }
+        });
+        expect((await parseDocBinaryHtml(encrypted)).result).toMatchObject({
+            status: 'failed',
+            failure: { code: 'password-required', retryable: true }
+        });
+    });
+
+    it('reports recovery when the declared CLX is damaged but a piece table is found', async () => {
+        const recovered = fixture('Recovered text');
+        const view = new DataView(recovered.buffer);
+        view.setUint32(1536 + 62 + 33 * 8 + 4, 0, true);
+        const semantic = parseDocBinary(recovered).result;
+        expect(semantic.status).toBe('partial');
+        expect(semantic.diagnostics).toEqual(expect.arrayContaining([
+            expect.objectContaining({ code: 'recovered-corruption' })
+        ]));
+        const html = (await parseDocBinaryHtml(recovered)).result;
+        expect(html.status).toBe('partial');
+        expect(html.diagnostics).toEqual(expect.arrayContaining([
+            expect.objectContaining({ code: 'recovered-corruption' })
+        ]));
     });
 });

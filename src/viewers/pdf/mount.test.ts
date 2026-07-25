@@ -589,6 +589,115 @@ describe('mountPdfViewer host contracts', () => {
         }
     });
 
+    it('edits an added text annotation on double click', async () => {
+        const getContext = vi.mocked(HTMLCanvasElement.prototype.getContext);
+        const toDataUrl = vi.spyOn(HTMLCanvasElement.prototype, 'toDataURL')
+            .mockReturnValue('data:image/png;base64,AAAA');
+        getContext.mockReturnValue({
+            measureText: () => ({ width: 40 }),
+            scale: vi.fn(),
+            fillText: vi.fn()
+        } as unknown as CanvasRenderingContext2D);
+        try {
+            const container = document.createElement('div');
+            const handle = await mountPdfViewer(
+                { fileName: 'sample.pdf', data: new Uint8Array([1]) },
+                container, ctx(), deps
+            );
+            const root = container.shadowRoot!;
+            await flush();
+            handle.controller.dispatch({
+                type: 'add-annotation',
+                annotation: { kind: 'text', page: 1, x: 10, y: 20, text: 'before', size: 12, color: '#000000' }
+            });
+
+            root.querySelector<HTMLElement>('.omni-pdf__text-annotation')!.dispatchEvent(
+                new MouseEvent('dblclick', { bubbles: true, detail: 2 })
+            );
+            const input = root.querySelector<HTMLTextAreaElement>('.omni-pdf__text-input')!;
+            expect(input.value).toBe('before');
+            input.value = 'after';
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true }));
+
+            expect(root.querySelector('.omni-pdf__text-editor')).toBeNull();
+            expect(root.querySelector('.omni-pdf__text-annotation')?.textContent).toContain('after');
+            expect(handle.controller.state.annotations[0]).toMatchObject({ text: 'after', size: 12, color: '#000000' });
+            handle.controller.dispatch({ type: 'undo' });
+            expect(handle.controller.state.annotations[0]).toMatchObject({ text: 'before' });
+            handle.dispose();
+        } finally {
+            getContext.mockReturnValue(null);
+            toDataUrl.mockRestore();
+        }
+    });
+
+    it('preserves multiline text and arbitrary CSS colors until the color is changed', async () => {
+        const getContext = vi.mocked(HTMLCanvasElement.prototype.getContext);
+        const toDataUrl = vi.spyOn(HTMLCanvasElement.prototype, 'toDataURL').mockReturnValue('data:image/png;base64,AAAA');
+        getContext.mockReturnValue({
+            measureText: (text: string) => ({ width: text.length * 8 }), scale: vi.fn(), fillText: vi.fn()
+        } as unknown as CanvasRenderingContext2D);
+        try {
+            const container = document.createElement('div');
+            const handle = await mountPdfViewer({ fileName: 'sample.pdf', data: new Uint8Array([1]) }, container, ctx(), deps);
+            const root = container.shadowRoot!; await flush();
+            handle.controller.dispatch({
+                type: 'add-annotation',
+                annotation: { kind: 'text', page: 1, x: 10, y: 20, text: 'line one\nline two', size: 12, color: 'red' }
+            });
+
+            const openEditor = () => {
+                root.querySelector<HTMLElement>('.omni-pdf__text-annotation')!.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, detail: 2 }));
+                return root.querySelector<HTMLTextAreaElement>('.omni-pdf__text-input')!;
+            };
+            const first = openEditor(); expect(first.tagName).toBe('TEXTAREA'); expect(first.value).toBe('line one\nline two');
+            first.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: document.body }));
+            expect(handle.controller.state.annotations[0]).toMatchObject({ text: 'line one\nline two', color: 'red' });
+
+            const edited = openEditor(); edited.value = 'line one\nline two edited'; edited.dispatchEvent(new Event('input', { bubbles: true }));
+            edited.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true }));
+            expect(handle.controller.state.annotations[0]).toMatchObject({ text: 'line one\nline two edited', color: 'red' });
+
+            const recolored = openEditor(); const color = root.querySelector<HTMLInputElement>('.omni-pdf__color-input')!;
+            color.value = '#123456'; color.dispatchEvent(new Event('input', { bubbles: true }));
+            recolored.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true }));
+            expect(handle.controller.state.annotations[0]).toMatchObject({ color: '#123456' });
+            handle.dispose();
+        } finally {
+            getContext.mockReturnValue(null); toDataUrl.mockRestore();
+        }
+    });
+
+    it('opens text annotation editing with Enter, Space, and F2', async () => {
+        const getContext = vi.mocked(HTMLCanvasElement.prototype.getContext);
+        getContext.mockReturnValue({} as unknown as CanvasRenderingContext2D);
+        try {
+            const container = document.createElement('div');
+            const handle = await mountPdfViewer(
+                { fileName: 'sample.pdf', data: new Uint8Array([1]) },
+                container, ctx(), deps
+            );
+            const root = container.shadowRoot!; await flush();
+            handle.controller.dispatch({
+                type: 'add-annotation',
+                annotation: { kind: 'text', page: 1, x: 10, y: 20, text: 'keyboard note', size: 12, color: '#000000' }
+            });
+            for (const key of ['Enter', ' ', 'F2']) {
+                const overlay = root.querySelector<HTMLElement>('.omni-pdf__text-annotation')!;
+                const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+                expect(overlay.dispatchEvent(event)).toBe(false);
+                const input = root.querySelector<HTMLTextAreaElement>('.omni-pdf__text-input')!;
+                expect(input.value).toBe('keyboard note');
+                input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+                expect(root.querySelector('.omni-pdf__text-editor')).toBeNull();
+            }
+            handle.dispose();
+        } finally {
+            getContext.mockReturnValue(null);
+        }
+    });
+
     it('turns text selections into highlight, underline and strikeout annotations', async () => {
         const container = document.createElement('div');
         const handle = await mountPdfViewer(

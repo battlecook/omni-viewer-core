@@ -62,6 +62,8 @@ export interface ResourceLimits {
     maxDecompressedBytes?: number;
     /** Archive entries / table rows cap. */
     maxEntries?: number;
+    /** Bytes buffered for one inline/delegated entry preview. */
+    maxPreviewBytes?: number;
     /** Soft unless running in a terminatable Worker (DESIGN.md §3-①). */
     maxParseMillis?: number;
 }

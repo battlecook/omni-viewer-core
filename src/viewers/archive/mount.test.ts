@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from 'vitest';
 import { createCatalogI18n } from '../../i18n/index.js';
-import { mountArchiveViewer } from './index.js';
+import { ArchiveError, mountArchiveViewer } from './index.js';
 
 const context = { assets: { resolveAssetUrl: async (path: string) => path }, i18n: createCatalogI18n(), logger: { log: () => undefined } };
 
@@ -20,6 +20,149 @@ describe('mountArchiveViewer', () => {
         expect(root.querySelector('.omni-archive__preview')?.textContent).toBe('hello archive');
         expect(root.querySelector('.omni-archive__entry')?.classList.contains('is-selected')).toBe(true);
         mounted.dispose(); expect(close).toHaveBeenCalledOnce();
+    });
+
+    it('delegates an extracted entry to a host viewer and disposes it with the archive viewer', async () => {
+        const delegatedDispose = vi.fn(); const delegatedMount = vi.fn(async ({ input, container }: { input: { fileName: string; data: Uint8Array }; container: HTMLElement }) => {
+            expect(container.isConnected).toBe(true);
+            container.textContent = `PDF:${input.fileName}:${input.data.byteLength}`;
+            return { dispose: delegatedDispose };
+        });
+        const container = document.createElement('div'); document.body.append(container);
+        const mounted = await mountArchiveViewer(
+            { fileName: 'bundle.zip', data: new Uint8Array(1) },
+            container,
+            context,
+            { openArchive: async () => ({ entries: [{ entryId: 3, path: 'docs/report.pdf', isDirectory: false, uncompressedSize: 4 }], extract: async () => new Uint8Array([1, 2, 3, 4]), close() {} }) },
+            { previewEntry: { maxBytes: () => 16, mount: delegatedMount }, includeImplicitDirectories: true }
+        );
+        container.shadowRoot!.querySelector<HTMLElement>('[data-entry-id="3"]')!.click();
+        await vi.waitFor(() => expect(container.shadowRoot!.querySelector('.omni-archive__delegated-preview')?.textContent).toBe('PDF:docs/report.pdf:4'));
+        expect(delegatedMount).toHaveBeenCalledWith(expect.objectContaining({ archiveFileName: 'bundle.zip', maxBytes: 16 }));
+        mounted.dispose();
+        expect(delegatedDispose).toHaveBeenCalledOnce();
+        container.remove();
+    });
+
+    it('falls back to the built-in preview when the host delegate declines an entry', async () => {
+        const container = document.createElement('div');
+        await mountArchiveViewer(
+            { fileName: 'bundle.zip', data: new Uint8Array(1) },
+            container,
+            context,
+            { openArchive: async () => ({ entries: [{ entryId: 1, path: 'notes.txt', isDirectory: false }], extract: async () => new TextEncoder().encode('fallback body'), close() {} }) },
+            { previewEntry: { mount: async () => null } }
+        );
+        container.shadowRoot!.querySelector<HTMLElement>('[data-entry-id="1"]')!.click();
+        await vi.waitFor(() => expect(container.shadowRoot!.querySelector('.omni-archive__preview')?.textContent).toBe('fallback body'));
+        expect(container.shadowRoot!.querySelector<HTMLElement>('.omni-archive__preview')!.style.display).toBe('');
+    });
+
+    it('retries archive opening through the optional host password prompt', async () => {
+        const replacement = new Uint8Array([7, 8]);
+        const openArchive = vi.fn(async (data: Uint8Array, options?: { password?: string }) => {
+            if (options?.password !== 'correct') throw new ArchiveError('password-required', 'archive.encrypted');
+            expect(data).toBe(replacement);
+            return { entries: [{ entryId: 0, path: 'readme.txt', isDirectory: false }], extract: async () => new TextEncoder().encode('opened'), close() {} };
+        });
+        const requestPassword = vi.fn(async () => 'correct');
+        const reloadInput = vi.fn(async () => replacement);
+        const container = document.createElement('div');
+        await mountArchiveViewer({ fileName: 'secret.zip', data: new Uint8Array(1) }, container, context, { openArchive }, { requestPassword, reloadInput });
+        expect(openArchive).toHaveBeenCalledTimes(2);
+        expect(reloadInput).toHaveBeenCalledOnce();
+        expect(requestPassword).toHaveBeenCalledWith(expect.objectContaining({ archiveFileName: 'secret.zip', attempt: 1 }));
+    });
+
+    it('retries encrypted entry extraction with a host-provided password', async () => {
+        const extract = vi.fn(async (_id: number, options: { password?: string }) => {
+            if (options.password !== 'entry-secret') throw new ArchiveError('password-required', 'archive.encrypted');
+            return new TextEncoder().encode('decrypted body');
+        });
+        const requestPassword = vi.fn(async () => 'entry-secret');
+        const container = document.createElement('div');
+        await mountArchiveViewer(
+            { fileName: 'mixed.zip', data: new Uint8Array(1) },
+            container,
+            context,
+            { openArchive: async () => ({ entries: [{ entryId: 9, path: 'secret.txt', isDirectory: false, encrypted: true }], extract, close() {} }) },
+            { requestPassword }
+        );
+        container.shadowRoot!.querySelector<HTMLElement>('[data-entry-id="9"]')!.click();
+        await vi.waitFor(() => expect(container.shadowRoot!.querySelector('.omni-archive__preview')?.textContent).toBe('decrypted body'));
+        expect(extract).toHaveBeenLastCalledWith(9, expect.objectContaining({ password: 'entry-secret' }));
+        expect(requestPassword).toHaveBeenCalledWith(expect.objectContaining({ entry: expect.objectContaining({ entryId: 9 }), attempt: 1 }));
+    });
+
+    it('shows optional compression metadata and can opt into implicit directories', async () => {
+        const container = document.createElement('div');
+        await mountArchiveViewer(
+            { fileName: 'bundle.zip', data: new Uint8Array(1) },
+            container,
+            context,
+            { openArchive: async () => ({ entries: [{ entryId: 5, path: 'docs/report.txt', isDirectory: false, compressionMethod: 'deflate' }], extract: async () => new Uint8Array(), close() {} }) },
+            { includeImplicitDirectories: true }
+        );
+        const rows = [...container.shadowRoot!.querySelectorAll<HTMLElement>('.omni-archive__entry')];
+        expect(rows.map(row => row.querySelector('.omni-archive__path')?.textContent)).toEqual(['▾ docs/', 'docs/report.txt']);
+        expect(rows[1]?.children[1]?.textContent).toBe('FILE · deflate');
+    });
+
+    it('warns for archive-wide and entry encryption without attempting extraction or save', async () => {
+        const extract = vi.fn(async () => new Uint8Array()); const saveFile = vi.fn(async () => undefined);
+        const container = document.createElement('div');
+        await mountArchiveViewer({ fileName: 'secret.zip', data: new Uint8Array(1) }, container, { ...context, save: { saveFile } }, { openArchive: async () => ({ encrypted: true, entries: [{ entryId: 0, path: 'secret.txt', isDirectory: false, encrypted: true }], extract, close() {} }) });
+        const root = container.shadowRoot!;
+        expect(root.querySelector('.omni-archive__encryption-warning')?.textContent).toBe('This archive is encrypted.');
+        const row = root.querySelector<HTMLElement>('.omni-archive__entry')!; expect(row.classList.contains('is-encrypted')).toBe(true); expect(row.textContent).toContain('🔒');
+        row.click(); await Promise.resolve();
+        expect(root.querySelector('.omni-archive__preview')?.textContent).toContain('cannot be previewed or saved');
+        expect(root.querySelector<HTMLButtonElement>('.omni-archive__save')!.disabled).toBe(true);
+        expect(extract).not.toHaveBeenCalled(); expect(saveFile).not.toHaveBeenCalled();
+    });
+
+    it('warns when only individual entries are encrypted', async () => {
+        const container = document.createElement('div');
+        await mountArchiveViewer({ fileName: 'mixed.zip', data: new Uint8Array(1) }, container, context, { openArchive: async () => ({ entries: [{ entryId: 0, path: 'secret.txt', isDirectory: false, encrypted: true }, { entryId: 1, path: 'public.txt', isDirectory: false }], extract: async () => new Uint8Array(), close() {} }) });
+        expect(container.shadowRoot?.querySelector('.omni-archive__encryption-warning')?.textContent).toBe('This archive contains 1 encrypted entries.');
+    });
+
+    it('persists encryption discovered during extraction and disables saving', async () => {
+        const extract = vi.fn(async () => { throw new ArchiveError('password-required', 'archive.encrypted'); }); const saveFile = vi.fn(async () => undefined);
+        const container = document.createElement('div');
+        await mountArchiveViewer({ fileName: 'unknown.zip', data: new Uint8Array(1) }, container, { ...context, save: { saveFile } }, { openArchive: async () => ({ entries: [{ entryId: 4, path: 'secret.txt', isDirectory: false }], extract, close() {} }) });
+        const root = container.shadowRoot!; const row = root.querySelector<HTMLElement>('[data-entry-id="4"]')!;
+        expect(root.querySelector<HTMLElement>('.omni-archive__encryption-warning')!.hidden).toBe(true);
+        row.click();
+        await vi.waitFor(() => expect(root.querySelector<HTMLButtonElement>('.omni-archive__save')!.disabled).toBe(true));
+        expect(row.classList.contains('is-encrypted')).toBe(true); expect(row.querySelector('.omni-archive__path')?.textContent).toContain('🔒');
+        expect(root.querySelector<HTMLElement>('.omni-archive__encryption-warning')!.hidden).toBe(false);
+        expect(root.querySelector('.omni-archive__preview')?.textContent).toContain('cannot be previewed or saved');
+        root.querySelector<HTMLButtonElement>('.omni-archive__save')!.click(); await Promise.resolve();
+        expect(extract).toHaveBeenCalledOnce(); expect(saveFile).not.toHaveBeenCalled();
+    });
+
+    it('does not let a late save failure overwrite a newly selected entry', async () => {
+        let rejectSave!: (reason: unknown) => void; const pendingSave = new Promise<Uint8Array>((_resolve, reject) => { rejectSave = reject; });
+        let firstEntryExtractions = 0;
+        const extract = vi.fn(async (entryId: number) => {
+            if (entryId === 1 && ++firstEntryExtractions === 2) return pendingSave;
+            return new TextEncoder().encode(entryId === 1 ? 'entry A' : 'entry B');
+        });
+        const saveFile = vi.fn(async () => undefined); const container = document.createElement('div');
+        await mountArchiveViewer({ fileName: 'race.zip', data: new Uint8Array(1) }, container, { ...context, save: { saveFile } }, { openArchive: async () => ({ entries: [{ entryId: 1, path: 'a.txt', isDirectory: false, uncompressedSize: 7 }, { entryId: 2, path: 'b.txt', isDirectory: false, uncompressedSize: 7 }], extract, close() {} }) });
+        const root = container.shadowRoot!;
+        root.querySelector<HTMLElement>('[data-entry-id="1"]')!.click(); await vi.waitFor(() => expect(root.querySelector('.omni-archive__preview')?.textContent).toBe('entry A'));
+        root.querySelector<HTMLButtonElement>('.omni-archive__save')!.click();
+        root.querySelector<HTMLElement>('[data-entry-id="2"]')!.click(); await vi.waitFor(() => expect(root.querySelector('.omni-archive__preview')?.textContent).toBe('entry B'));
+        rejectSave(new ArchiveError('password-required', 'archive.encrypted'));
+        await vi.waitFor(() => expect(root.querySelector<HTMLElement>('[data-entry-id="1"]')!.classList.contains('is-encrypted')).toBe(true));
+        expect(root.querySelector('.omni-archive__preview-header h2')?.textContent).toBe('b.txt');
+        expect(root.querySelector('.omni-archive__preview')?.textContent).toBe('entry B');
+        expect(root.querySelector<HTMLButtonElement>('.omni-archive__save')!.disabled).toBe(false);
+        expect(root.querySelector<HTMLButtonElement>('.omni-archive__save')!.textContent).toBe('Save entry');
+        expect(root.querySelector<HTMLElement>('[data-entry-id="2"]')!.classList.contains('is-selected')).toBe(true);
+        expect(saveFile).not.toHaveBeenCalled();
     });
 
     it('filters rows and activates a row with the keyboard', async () => {

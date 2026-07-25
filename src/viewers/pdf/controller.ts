@@ -143,6 +143,16 @@ export type PdfAction =
     | { type: 'reset-pages' }
     | { type: 'add-annotation'; annotation: PdfAnnotationInput }
     | { type: 'move-annotation'; id: string; x: number; y: number }
+    | {
+        type: 'update-text-annotation';
+        id: string;
+        text: string;
+        size: number;
+        color: string;
+        rasterDataUrl?: string;
+        rasterWidth?: number;
+        rasterHeight?: number;
+    }
     | { type: 'set-annotation-color'; id: string; color: string }
     | { type: 'remove-annotation'; id: string }
     | { type: 'select-annotation'; id: string | null }
@@ -281,6 +291,7 @@ export function createPdfController(
                 || action.type === 'reset-pages'
                 || action.type === 'add-annotation'
                 || action.type === 'move-annotation'
+                || action.type === 'update-text-annotation'
                 || action.type === 'set-annotation-color'
                 || action.type === 'remove-annotation';
             const before = tracksHistory ? snapshot() : undefined;
@@ -321,6 +332,26 @@ export function createPdfController(
                     break;
                 }
                 case 'move-annotation': annotations = annotations.map((a) => a.id === action.id ? { ...a, x: action.x, y: action.y } : a); break;
+                case 'update-text-annotation':
+                    annotations = annotations.map((annotation) => {
+                        if (annotation.id !== action.id || annotation.kind !== 'text') return annotation;
+                        const {
+                            rasterDataUrl: _previousDataUrl,
+                            rasterWidth: _previousWidth,
+                            rasterHeight: _previousHeight,
+                            ...base
+                        } = annotation;
+                        return {
+                            ...base,
+                            text: action.text,
+                            size: action.size,
+                            color: action.color,
+                            ...(action.rasterDataUrl === undefined ? {} : { rasterDataUrl: action.rasterDataUrl }),
+                            ...(action.rasterWidth === undefined ? {} : { rasterWidth: action.rasterWidth }),
+                            ...(action.rasterHeight === undefined ? {} : { rasterHeight: action.rasterHeight })
+                        };
+                    });
+                    break;
                 case 'set-annotation-color': annotations = annotations.map((a) => a.id === action.id ? { ...a, color: action.color } : a); break;
                 case 'remove-annotation': annotations = annotations.filter((a) => a.id !== action.id); if (selectedAnnotationId === action.id) selectedAnnotationId = null; break;
                 case 'select-annotation': selectedAnnotationId = action.id; break;

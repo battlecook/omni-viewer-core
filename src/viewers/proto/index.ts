@@ -8,6 +8,28 @@ export const PROTO_VIEWER_META = { id: 'proto', displayNameKey: 'proto.title', e
 export type ProtoViewerContext = HostContext & { clipboard?: ClipboardService };
 type Panel = 'tree' | 'types' | 'relationships' | 'reverse' | 'json' | 'breaking' | 'imports' | 'grpc' | 'docs';
 type Declaration = ProtoMessage | ProtoEnum | ProtoService;
+type ProtoToken = { cls?: string | undefined; text: string };
+
+const PROTO_KEYWORDS = new Set(['syntax', 'package', 'import', 'public', 'weak', 'option', 'message', 'enum', 'service', 'rpc', 'returns', 'stream', 'repeated', 'optional', 'required', 'oneof', 'map', 'reserved', 'extend', 'extensions', 'to', 'max', 'group', 'default']);
+const PROTO_TYPES = new Set(['double', 'float', 'int32', 'int64', 'uint32', 'uint64', 'sint32', 'sint64', 'fixed32', 'fixed64', 'sfixed32', 'sfixed64', 'bool', 'string', 'bytes']);
+const PROTO_LITERALS = new Set(['true', 'false']);
+
+/** Tokenize a single proto source line, threading block-comment state across lines. */
+function tokenizeProtoLine(line: string, inBlock: boolean): { tokens: ProtoToken[]; inBlock: boolean } {
+    const tokens: ProtoToken[] = []; let i = 0;
+    if (inBlock) { const end = line.indexOf('*/'); if (end === -1) { if (line) tokens.push({ cls: 'comment', text: line }); return { tokens, inBlock: true }; } tokens.push({ cls: 'comment', text: line.slice(0, end + 2) }); i = end + 2; inBlock = false; }
+    while (i < line.length) {
+        const rest = line.slice(i); const ch = line[i]!;
+        if (rest.startsWith('//')) { tokens.push({ cls: 'comment', text: rest }); break; }
+        if (rest.startsWith('/*')) { const end = line.indexOf('*/', i + 2); if (end === -1) { tokens.push({ cls: 'comment', text: rest }); return { tokens, inBlock: true }; } tokens.push({ cls: 'comment', text: line.slice(i, end + 2) }); i = end + 2; continue; }
+        if (ch === '"' || ch === "'") { let j = i + 1; while (j < line.length && line[j] !== ch) j += line[j] === '\\' ? 2 : 1; j = Math.min(j + 1, line.length); tokens.push({ cls: 'str', text: line.slice(i, j) }); i = j; continue; }
+        if (/[0-9]/.test(ch) || (ch === '.' && /[0-9]/.test(line[i + 1] ?? ''))) { const match = /^[-+]?(?:0x[0-9a-fA-F]+|\d[\d.eE+-]*)/.exec(rest)!; tokens.push({ cls: 'num', text: match[0] }); i += match[0].length; continue; }
+        if (/[A-Za-z_]/.test(ch)) { const match = /^[A-Za-z_][A-Za-z0-9_]*/.exec(rest)!; const word = match[0]; const cls = PROTO_KEYWORDS.has(word) ? 'kw' : PROTO_TYPES.has(word) ? 'type' : PROTO_LITERALS.has(word) ? 'num' : undefined; tokens.push({ cls, text: word }); i += word.length; continue; }
+        if (/[{}()[\]<>=;,]/.test(ch)) { tokens.push({ cls: 'punct', text: ch }); i += 1; continue; }
+        tokens.push({ text: ch }); i += 1;
+    }
+    return { tokens, inBlock };
+}
 
 export async function mountProtoViewer(input: ViewerInput, container: HTMLElement, ctx: ProtoViewerContext, options: MountOptions = {}): Promise<ViewerHandle> {
     if (options.signal?.aborted) throw new MountAbortedError();
@@ -25,7 +47,7 @@ export async function mountProtoViewer(input: ViewerInput, container: HTMLElemen
     const toolbar = el('div', 'omni-proto__toolbar'); const search = el('input', 'omni-proto__search') as HTMLInputElement; search.type = 'search'; search.placeholder = t('proto.search'); search.setAttribute('aria-label', t('proto.search')); toolbar.append(search);
     const panelDefs: Array<[Panel, string]> = [['tree','proto.panel.tree'],['types','proto.panel.types'],['relationships','proto.panel.relationships'],['reverse','proto.panel.reverse'],['json','proto.panel.json'],['breaking','proto.panel.breaking'],['imports','proto.panel.imports'],['grpc','proto.panel.grpc'],['docs','proto.panel.docs']]; let active: Panel = 'tree'; let selectedType = flattenProtoMessages(model.messages)[0]?.fullName ?? '';
     const copy = el('button', undefined, t('proto.copyPanel')); copy.type = 'button'; copy.disabled = !ctx.clipboard; copy.title = ctx.clipboard ? '' : t('common.noClipboard'); toolbar.append(copy);
-    const sourceView = el('pre', 'omni-proto__source'); source.replace(/\r\n?|\n/g, '\n').split('\n').forEach((text, i) => { const line = el('span', 'omni-proto__line', text || ' '); line.dataset.line = String(i + 1); sourceView.append(line); });
+    const sourceView = el('pre', 'omni-proto__source'); let inBlock = false; source.replace(/\r\n?|\n/g, '\n').split('\n').forEach((text, i) => { const line = el('span', 'omni-proto__line'); line.dataset.line = String(i + 1); const result = tokenizeProtoLine(text, inBlock); inBlock = result.inBlock; if (!result.tokens.length) line.textContent = ' '; else result.tokens.forEach(token => line.append(token.cls ? el('span', `omni-proto__tok--${token.cls}`, token.text) : document.createTextNode(token.text))); sourceView.append(line); });
     const panel = el('section', 'omni-proto__panel'); const workspace = el('main', 'omni-proto__workspace'); workspace.append(sourceView, panel);
     const reveal = (line?: number): void => { if (!line) return; sourceView.querySelectorAll('.is-selected').forEach(node => node.classList.remove('is-selected')); const target = sourceView.querySelector<HTMLElement>(`[data-line="${line}"]`); target?.classList.add('is-selected'); target?.scrollIntoView({ block: 'center' }); };
     const row = (badge: string, text: string, line?: number): HTMLElement => { const node = el('div', 'omni-proto__row'); node.append(el('span', 'omni-proto__badge', badge), el('span', 'omni-proto__code', text)); node.dataset.search = `${badge} ${text}`.toLowerCase(); if (line) { node.dataset.line = String(line); onPanel(node, 'click', () => reveal(line)); } return node; };
@@ -65,7 +87,7 @@ export async function mountProtoViewer(input: ViewerInput, container: HTMLElemen
         else if (active === 'breaking') { const textarea = el('textarea', 'omni-proto__baseline') as HTMLTextAreaElement; textarea.placeholder = t('proto.breaking.placeholder'); const compare = el('button', undefined, t('proto.breaking.compare')); compare.type = 'button'; const result = el('div'); onPanel(compare, 'click', () => { const findings = breakingFindings(parseProto(textarea.value, input.fileName)); result.replaceChildren(...(findings.length ? findings.map(value => row(t('proto.breaking.breaking'), value)) : [el('div', 'omni-proto__empty', t('proto.breaking.none'))])); }); panel.append(textarea, compare, result); }
         else if (active === 'imports') model.imports.forEach(value => panel.append(row(kind('import'), `${input.fileName} → ${value}`)));
         else if (active === 'grpc') model.services.forEach(service => panel.append(declaration(service)));
-        else allProtoTypes(model).forEach(item => { const card = el('article', 'omni-proto__card'); card.dataset.search = `${item.fullName} ${item.documentation}`.toLowerCase(); card.append(el('strong', undefined, item.fullName), el('pre', 'omni-proto__muted', item.documentation || t('proto.noDocumentation'))); panel.append(card); });
+        else allProtoTypes(model).forEach(item => { const card = el('article', 'omni-proto__card'); const body = [item.documentation || t('proto.noDocumentation')]; if (item.kind === 'message') item.fields.forEach(field => body.push(`${field.name}: ${field.documentation || field.type}`)); else if (item.kind === 'service') item.rpcs.forEach(rpc => body.push(`${rpc.name}: ${rpc.documentation || `${rpc.requestType} → ${rpc.responseType}`}`)); card.dataset.search = `${item.fullName} ${body.join(' ')}`.toLowerCase(); card.append(el('strong', undefined, item.fullName), el('pre', 'omni-proto__muted', body.join('\n'))); panel.append(card); });
         applySearch(search.value.trim().toLowerCase()); if (!panel.children.length) panel.append(el('div', 'omni-proto__empty', t('proto.noDeclarations')));
     };
     panelDefs.forEach(([key, labelKey]) => { const button = el('button', undefined, t(labelKey)); button.type = 'button'; button.dataset.panel = key; button.setAttribute('aria-pressed', String(key === active)); on(button, 'click', () => { active = key; toolbar.querySelectorAll<HTMLElement>('[data-panel]').forEach(node => node.setAttribute('aria-pressed', String(node.dataset.panel === active))); render(); }); toolbar.insertBefore(button, copy); });

@@ -46,6 +46,28 @@ describe('mountMarkdownViewer', () => {
         expect(root.querySelector('.omni-markdown')).toBeNull();
     });
 
+    it('highlights the source into a spans-only overlay as it is edited', async () => {
+        const container = document.createElement('div');
+        await mountMarkdownViewer({ fileName: 'readme.md', data: new TextEncoder().encode('# Hello') }, container, ctx(), deps);
+        const root = container.shadowRoot!;
+        const overlay = root.querySelector('.omni-markdown__source-highlight code') as HTMLElement;
+        expect(overlay.querySelector('.hljs-keyword')?.textContent).toBe('# Hello');
+        const source = root.querySelector('textarea')!;
+        source.value = '# Changed'; source.dispatchEvent(new Event('input'));
+        expect(overlay.querySelector('.hljs-keyword')?.textContent).toBe('# Changed');
+    });
+
+    it('re-renders the preview live while editing, without saving', async () => {
+        const write = vi.fn(async () => undefined);
+        const container = document.createElement('div');
+        await mountMarkdownViewer({ fileName: 'readme.md', data: new TextEncoder().encode('# Hello') }, container, ctx(write), deps);
+        const root = container.shadowRoot!; const source = root.querySelector('textarea')!;
+        source.value = '# Live edit'; source.dispatchEvent(new Event('input'));
+        await new Promise(resolve => setTimeout(resolve, 320));
+        expect(root.querySelector('.omni-markdown__preview')?.textContent).toContain('Live edit');
+        expect(write).not.toHaveBeenCalled();
+    });
+
     it('renders, writes back, highlights code, and copies source', async () => {
         const write = vi.fn(async () => undefined); const copy = vi.fn(async () => undefined);
         const container = document.createElement('div');
@@ -83,17 +105,32 @@ describe('mountMarkdownViewer', () => {
         await mountMarkdownViewer({ fileName: 'readme.md', data: new TextEncoder().encode('# Hello') }, container, context, deps);
         const root = container.shadowRoot!; const source = root.querySelector('textarea')!;
         source.value = '# Changed'; source.dispatchEvent(new Event('input'));
-        source.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true }));
+        source.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true, bubbles: true }));
         await new Promise(resolve => setTimeout(resolve, 0));
         expect(saveFile).toHaveBeenCalledWith('readme.md', new TextEncoder().encode('# Changed'), 'text/markdown');
         expect(root.querySelector('.omni-markdown__status')?.textContent).toBe('Saved');
+    });
+
+    it('saves via Ctrl+S even when focus is outside the textarea', async () => {
+        const saveFile = vi.fn(async () => undefined);
+        const context: MarkdownViewerContext = { ...readonlyCtx(), save: { saveFile } };
+        const container = document.createElement('div');
+        await mountMarkdownViewer({ fileName: 'readme.md', data: new TextEncoder().encode('# Hello') }, container, context, deps);
+        const root = container.shadowRoot!;
+        const source = root.querySelector('textarea')!;
+        source.value = '# Elsewhere'; source.dispatchEvent(new Event('input'));
+        // Fire the shortcut from a non-editor element (the preview) — it must
+        // still be caught by the viewer-wide save handler on the shell.
+        root.querySelector('.omni-markdown__preview')!.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true, bubbles: true }));
+        await new Promise(resolve => setTimeout(resolve, 0));
+        expect(saveFile).toHaveBeenCalledWith('readme.md', new TextEncoder().encode('# Elsewhere'), 'text/markdown');
     });
 
     it('reports the missing-writeback message when neither save service exists', async () => {
         const container = document.createElement('div');
         await mountMarkdownViewer({ fileName: 'readme.md', data: new TextEncoder().encode('# Hello') }, container, readonlyCtx(), deps);
         const root = container.shadowRoot!; const source = root.querySelector('textarea')!;
-        source.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true }));
+        source.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true, bubbles: true }));
         await new Promise(resolve => setTimeout(resolve, 0));
         expect(root.querySelector('.omni-markdown__status')?.textContent).toBe('Save failed');
         expect(root.querySelector('.omni-markdown__message')?.textContent).toContain('unavailable');

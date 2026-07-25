@@ -97,6 +97,7 @@ export async function mountMarkdownViewer(
     let renderVersion = 0;
     let renderedHtml = '';
     let diagramCount = 0;
+    let liveTimer: ReturnType<typeof setTimeout> | undefined;
     const el = <K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] => {
         const node = document.createElement(tag); if (className) node.className = className; if (text !== undefined) node.textContent = text; return node;
     };
@@ -137,8 +138,16 @@ export async function mountMarkdownViewer(
     const sourceHeader = el('div', 'omni-markdown__panel-header');
     const sourceCaption = el('span', 'omni-markdown__caption', t('markdown.editable'));
     sourceHeader.append(el('span', undefined, t('markdown.source')), sourceCaption);
+    // The textarea stays the editable surface; a highlighted <pre> is layered
+    // behind it (transparent textarea text, visible caret) so the source shows
+    // syntax highlighting while keeping native editing/selection behaviour.
+    const sourceWrap = el('div', 'omni-markdown__source-wrap');
+    const sourceHighlight = el('pre', 'omni-markdown__source-highlight'); sourceHighlight.setAttribute('aria-hidden', 'true');
+    const sourceHighlightCode = el('code');
+    sourceHighlight.append(sourceHighlightCode);
     const source = el('textarea', 'omni-markdown__source'); source.spellcheck = false; source.value = doc.text;
-    sourcePanel.append(sourceHeader, source);
+    sourceWrap.append(sourceHighlight, source);
+    sourcePanel.append(sourceHeader, sourceWrap);
     workspace.append(previewPanel, sourcePanel);
     const message = el('div', 'omni-markdown__message'); message.hidden = true;
     shell.append(header, toolbar, workspace, message); root.append(shell);
@@ -241,6 +250,7 @@ export async function mountMarkdownViewer(
     };
 
     const renderMarkdown = async (save: boolean): Promise<void> => {
+        if (liveTimer) { clearTimeout(liveTimer); liveTimer = undefined; }
         const version = ++renderVersion; releaseAssets(); setStatus('markdown.rendering'); showMessage('');
         try {
             // Re-apply the parser limits on every render: the editor may have
@@ -292,31 +302,71 @@ export async function mountMarkdownViewer(
         try { await ctx.clipboard.writeText(value); setStatus(successKey, 'valid'); } catch (error) { ctx.logger.log('error', `markdown copy failed: ${String(error)}`); }
     };
 
+    // Paint the highlight overlay from the current textarea value. Highlight.js
+    // markup is sanitized to spans-only before insertion; the trailing newline
+    // keeps the final source line at full height so the overlay never clips.
+    const highlightSource = (): void => {
+        const text = source.value;
+        let html: string;
+        if (deps.highlighter && deps.highlighter.getLanguage('markdown')) {
+            try {
+                const result = deps.highlighter.highlight(text, { language: 'markdown', ignoreIllegals: true });
+                html = deps.createDOMPurify(window).sanitize(result.value, { ALLOWED_TAGS: ['span'], ALLOWED_ATTR: ['class'] });
+            } catch { html = escapeHtml(text); }
+        } else {
+            html = escapeHtml(text);
+        }
+        sourceHighlightCode.innerHTML = `${html}\n`;
+    };
+    // Debounced live preview: typing (or undo/redo) refreshes the rendered
+    // panel without saving, so the split view stays in sync as you edit.
+    const scheduleLiveRender = (): void => {
+        if (liveTimer) clearTimeout(liveTimer);
+        liveTimer = setTimeout(() => { liveTimer = undefined; void renderMarkdown(false); }, 250);
+    };
+    const syncSourceFromState = (): void => {
+        source.value = controller.state.source; highlightSource(); scheduleLiveRender();
+    };
+    // Save is a document-level action, so it is handled on the shell (below)
+    // rather than only inside the textarea — otherwise Ctrl/Cmd+S while focus
+    // sits on a toolbar button or the preview would fall through to the host's
+    // native "save page" dialog. Writeback overwrites the original; without it
+    // we fall back to a downloaded copy via saveSource().
+    const saveDocument = (): void => {
+        if (ctx.writeback) void renderMarkdown(true); else void saveSource();
+    };
+
     for (const [mode, node] of modeButtons) on(node, 'click', (() => controller.dispatch({ type: 'set-mode', mode })) as EventListener);
-    on(source, 'input', (() => controller.dispatch({ type: 'edit-source', source: source.value })) as EventListener);
+    on(source, 'input', (() => { controller.dispatch({ type: 'edit-source', source: source.value }); highlightSource(); scheduleLiveRender(); }) as EventListener);
+    on(source, 'scroll', (() => { sourceHighlight.scrollTop = source.scrollTop; sourceHighlight.scrollLeft = source.scrollLeft; }) as EventListener);
     on(source, 'keydown', (event => {
         const keyboard = event as KeyboardEvent; const key = keyboard.key.toLowerCase(); const command = keyboard.metaKey || keyboard.ctrlKey;
-        if (command && key === 'z') { keyboard.preventDefault(); controller.dispatch({ type: keyboard.shiftKey ? 'redo' : 'undo' }); source.value = controller.state.source; }
-        else if (command && key === 'y') { keyboard.preventDefault(); controller.dispatch({ type: 'redo' }); source.value = controller.state.source; }
-        else if (command && key === 's') {
-            keyboard.preventDefault();
-            if (ctx.writeback) void renderMarkdown(true); else void saveSource();
-        } else if (keyboard.shiftKey && keyboard.key === 'Enter') {
+        if (command && key === 'z') { keyboard.preventDefault(); controller.dispatch({ type: keyboard.shiftKey ? 'redo' : 'undo' }); syncSourceFromState(); }
+        else if (command && key === 'y') { keyboard.preventDefault(); controller.dispatch({ type: 'redo' }); syncSourceFromState(); }
+        else if (keyboard.shiftKey && keyboard.key === 'Enter') {
             keyboard.preventDefault(); void renderMarkdown(Boolean(ctx.writeback));
+        }
+    }) as EventListener);
+    // Viewer-wide save: catches Ctrl/Cmd+S bubbling from anywhere inside the
+    // viewer (textarea, toolbar, preview) so the host's page-save never wins.
+    on(shell, 'keydown', (event => {
+        const keyboard = event as KeyboardEvent;
+        if ((keyboard.metaKey || keyboard.ctrlKey) && keyboard.key.toLowerCase() === 's') {
+            keyboard.preventDefault(); saveDocument();
         }
     }) as EventListener);
     // Render remains useful in read-only adapters. Saving is coupled only when
     // the host actually advertised and supplied writeback.
     on(renderButton, 'click', (() => void renderMarkdown(Boolean(ctx.writeback))) as EventListener);
-    on(undoButton, 'click', (() => { controller.dispatch({ type: 'undo' }); source.value = controller.state.source; }) as EventListener);
-    on(redoButton, 'click', (() => { controller.dispatch({ type: 'redo' }); source.value = controller.state.source; }) as EventListener);
+    on(undoButton, 'click', (() => { controller.dispatch({ type: 'undo' }); syncSourceFromState(); }) as EventListener);
+    on(redoButton, 'click', (() => { controller.dispatch({ type: 'redo' }); syncSourceFromState(); }) as EventListener);
     on(copyHtmlButton, 'click', (() => void copy(renderedHtml, 'markdown.htmlCopied')) as EventListener);
     on(copySourceButton, 'click', (() => void copy(source.value, 'markdown.sourceCopied')) as EventListener);
     if (!ctx.clipboard) { for (const node of [copyHtmlButton, copySourceButton]) { node.disabled = true; node.title = t('common.noClipboard'); } }
     const off = controller.subscribe(syncState); disposers.push(off);
-    syncState(); await renderMarkdown(false);
+    syncState(); highlightSource(); await renderMarkdown(false);
     if (options.signal?.aborted) { shell.remove(); releaseAssets(); throw new MountAbortedError(); }
-    return { dispose() { disposed = true; renderVersion++; releaseAssets(); for (const dispose of disposers.splice(0)) dispose(); shell.remove(); } };
+    return { dispose() { disposed = true; renderVersion++; if (liveTimer) clearTimeout(liveTimer); releaseAssets(); for (const dispose of disposers.splice(0)) dispose(); shell.remove(); } };
 }
 
 function codeLanguage(block: Element): string {
@@ -324,6 +374,9 @@ function codeLanguage(block: Element): string {
     return '';
 }
 function errorText(error: unknown, fallback: string): string { return error instanceof Error ? error.message : fallback; }
+function escapeHtml(value: string): string {
+    return value.replace(/[&<>]/g, ch => (ch === '&' ? '&amp;' : ch === '<' ? '&lt;' : '&gt;'));
+}
 function validRelativeAsset(path: string): boolean {
     try { const decoded = decodeURIComponent(path); return !!decoded && !/^(?:[a-z][a-z0-9+.-]*:|[\\/])|(?:^|[\\/])\.\.(?:[\\/]|$)/i.test(decoded); }
     catch { return false; }

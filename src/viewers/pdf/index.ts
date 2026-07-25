@@ -994,8 +994,10 @@ export async function mountPdfViewer(
             return { rasterDataUrl: '', rasterWidth: 0, rasterHeight: 0 };
         }
         measure.font = `${size}px sans-serif`;
-        const width = Math.ceil(measure.measureText(text).width + padding * 2);
-        const height = Math.ceil(size * 1.3 + padding * 2);
+        const lines = text.split(/\r\n|\r|\n/);
+        const lineHeight = size * 1.3;
+        const width = Math.ceil(Math.max(0, ...lines.map(line => measure.measureText(line).width)) + padding * 2);
+        const height = Math.ceil(lineHeight * Math.max(1, lines.length) + padding * 2);
         const canvas = document.createElement('canvas');
         canvas.width = Math.ceil(width * scale);
         canvas.height = Math.ceil(height * scale);
@@ -1005,32 +1007,58 @@ export async function mountPdfViewer(
         context.font = `${size}px sans-serif`;
         context.textBaseline = 'top';
         context.fillStyle = color;
-        context.fillText(text, padding, padding);
+        lines.forEach((line, index) => context.fillText(line, padding, padding + index * lineHeight));
         return { rasterDataUrl: canvas.toDataURL('image/png'), rasterWidth: width, rasterHeight: height };
     }
 
     // -------------------------------------------------------- text overlay
-    /** Inline text-annotation controls (window.prompt is blocked in webviews). */
-    function openTextInput(wrapper: HTMLElement, pageNumber: number, x: number, y: number): void {
+    type TextAnnotation = Extract<PdfAnnotation, { kind: 'text' }>;
+    let activeTextEditor: HTMLElement | null = null;
+
+    /** Inline controls used both to add and edit text annotations. */
+    function openTextInput(
+        wrapper: HTMLElement,
+        pageNumber: number,
+        x: number,
+        y: number,
+        annotation?: TextAnnotation
+    ): void {
+        if (activeTextEditor?.isConnected) {
+            const activeInput = activeTextEditor.querySelector<HTMLTextAreaElement>('.omni-pdf__text-input');
+            activeInput?.focus();
+            activeInput?.select();
+            return;
+        }
+        activeTextEditor = null;
+        if (annotation && controller.state.selectedAnnotationId !== annotation.id) {
+            controller.dispatch({ type: 'select-annotation', id: annotation.id });
+        }
         const scale = controller.state.zoom / 100;
         const editor = el('div', 'omni-pdf__text-editor');
-        const inputEl = el('input', 'omni-pdf__text-input');
-        inputEl.type = 'text';
+        const inputEl = el('textarea', 'omni-pdf__text-input');
+        inputEl.value = annotation?.text ?? '';
         inputEl.placeholder = t('pdf.annotationText');
         inputEl.setAttribute('aria-label', t('pdf.annotationText'));
+        let textChanged = false;
+        inputEl.addEventListener('input', () => { textChanged = true; });
         const sizeInput = el('input') as HTMLInputElement;
         sizeInput.type = 'number';
         sizeInput.min = '8';
         sizeInput.max = '96';
         sizeInput.step = '1';
-        sizeInput.value = '16';
+        sizeInput.value = String(annotation?.size ?? 16);
         sizeInput.className = 'omni-pdf__text-size-input';
         sizeInput.setAttribute('aria-label', t('pdf.annotationSize'));
         const colorInput = el('input') as HTMLInputElement;
         colorInput.type = 'color';
-        colorInput.value = '#000000';
+        const originalColor = annotation?.color;
+        colorInput.value = originalColor && /^#[0-9a-f]{6}$/i.test(originalColor) ? originalColor : '#000000';
         colorInput.className = 'omni-pdf__color-input';
         colorInput.setAttribute('aria-label', t('pdf.annotationColor'));
+        let colorChanged = false;
+        const markColorChanged = () => { colorChanged = true; };
+        colorInput.addEventListener('input', markColorChanged);
+        colorInput.addEventListener('change', markColorChanged);
         editor.style.left = `${x * scale}px`;
         editor.style.top = `${y * scale}px`;
         editor.append(inputEl, sizeInput, colorInput);
@@ -1038,31 +1066,50 @@ export async function mountPdfViewer(
         const finish = (commit: boolean) => {
             if (done) return;
             done = true;
-            const text = inputEl.value.trim();
+            const text = annotation && !textChanged ? annotation.text : inputEl.value;
             editor.remove();
+            activeTextEditor = null;
             tool = 'view';
             syncToolButtons();
-            if (commit && text) {
+            if (commit && text.trim()) {
                 const size = Math.min(96, Math.max(8, Number(sizeInput.value) || 16));
-                const raster = rasterizeText(text, size, colorInput.value);
-                controller.dispatch({
-                    type: 'add-annotation',
-                    annotation: { kind: 'text', page: pageNumber, x, y, text, size, color: colorInput.value, ...raster }
-                });
+                const color = annotation && !colorChanged ? annotation.color : colorInput.value;
+                if (annotation
+                    && annotation.text === text
+                    && annotation.size === size
+                    && annotation.color.toLowerCase() === color.toLowerCase()) return;
+                const raster = rasterizeText(text, size, color);
+                if (annotation) {
+                    controller.dispatch({
+                        type: 'update-text-annotation',
+                        id: annotation.id,
+                        text,
+                        size,
+                        color,
+                        ...raster
+                    });
+                } else {
+                    controller.dispatch({
+                        type: 'add-annotation',
+                        annotation: { kind: 'text', page: pageNumber, x, y, text, size, color, ...raster }
+                    });
+                }
             }
         };
         inputEl.addEventListener('keydown', (e) => {
             e.stopPropagation();
-            if (e.key === 'Enter') finish(true);
+            if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); finish(true); }
             if (e.key === 'Escape') finish(false);
         });
-        inputEl.addEventListener('blur', (event) => {
+        editor.addEventListener('focusout', (event) => {
             const next = event.relatedTarget;
             if (next instanceof Node && editor.contains(next)) return;
             finish(true);
         });
         wrapper.appendChild(editor);
+        activeTextEditor = editor;
         inputEl.focus();
+        if (annotation) inputEl.select();
     }
 
     // ------------------------------------------------------- highlight tool
@@ -1225,7 +1272,12 @@ export async function mountPdfViewer(
                 }
                 continue;
             }
-            const overlay = el('div', 'omni-pdf__annotation');
+            const overlay = el(
+                'div',
+                annotation.kind === 'text'
+                    ? 'omni-pdf__annotation omni-pdf__text-annotation'
+                    : 'omni-pdf__annotation'
+            );
             overlay.dataset.annotationId = annotation.id;
             overlay.tabIndex = 0;
             overlay.setAttribute('role', 'button');
@@ -1248,10 +1300,19 @@ export async function mountPdfViewer(
                 overlay.appendChild(image);
             }
             let dragStart: { x: number; y: number; clientX: number; clientY: number } | undefined;
+            const beginTextEdit = (event: Event): void => {
+                if (annotation.kind !== 'text') return;
+                event.preventDefault(); event.stopPropagation(); dragStart = undefined;
+                openTextInput(record.wrapper, annotation.page, annotation.x, annotation.y, annotation);
+            };
             overlay.addEventListener('pointerdown', (event) => {
                 if ((event.target as HTMLElement).closest('.omni-pdf__annotation-delete')) return;
                 event.preventDefault();
                 event.stopPropagation();
+                if (annotation.kind === 'text' && event.detail >= 2) {
+                    beginTextEdit(event);
+                    return;
+                }
                 dragStart = {
                     x: annotation.x,
                     y: annotation.y,
@@ -1272,11 +1333,20 @@ export async function mountPdfViewer(
                 if (!dragStart) return;
                 const x = dragStart.x + (event.clientX - dragStart.clientX) / scale;
                 const y = dragStart.y + (event.clientY - dragStart.clientY) / scale;
+                const moved = x !== dragStart.x || y !== dragStart.y;
                 dragStart = undefined;
                 overlay.focus({ preventScroll: true });
-                controller.dispatch({ type: 'move-annotation', id: annotation.id, x, y });
-                controller.dispatch({ type: 'select-annotation', id: annotation.id });
+                if (moved) controller.dispatch({ type: 'move-annotation', id: annotation.id, x, y });
+                if (controller.state.selectedAnnotationId !== annotation.id) {
+                    controller.dispatch({ type: 'select-annotation', id: annotation.id });
+                }
             });
+            if (annotation.kind === 'text') {
+                overlay.addEventListener('dblclick', beginTextEdit);
+                overlay.addEventListener('keydown', (event) => {
+                    if (event.key === 'Enter' || event.key === ' ' || event.key === 'F2') beginTextEdit(event);
+                });
+            }
             const deleteButton = el('button', 'omni-pdf__annotation-delete', '×');
             deleteButton.type = 'button';
             deleteButton.setAttribute('aria-label', t('pdf.deleteAnnotation'));

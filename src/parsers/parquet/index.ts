@@ -18,21 +18,39 @@ export interface ParquetDocument {
 
 export interface ParquetParseOptions { maxPreviewBytes?: number; previewRows?: number; rowStart?: number; signal?: AbortSignal }
 
+/**
+ * Random-access source: hyparquet's `AsyncBuffer` shape. The decoder consumes it
+ * natively, so a lazy host (Blob range reads, Node `fs.open/read`) can supply one
+ * directly and only the footer + requested row-group pages are ever read
+ * (DESIGN.md 메모리 규율 — 랜덤액세스 입력). {@link parseParquet} remains the
+ * compatibility entry point for callers that already hold the whole file.
+ */
+export interface ParquetSource {
+    byteLength: number;
+    slice(start: number, end?: number): ArrayBuffer | Promise<ArrayBuffer>;
+}
+
+/** Parses from a fully in-memory buffer. Wraps the bytes into a {@link ParquetSource}. */
 export async function parseParquet(data: Uint8Array, options: ParquetParseOptions = {}): Promise<ParquetDocument> {
-    if (options.signal?.aborted) throw new DOMException('Parsing was cancelled.', 'AbortError');
-    const file = {
+    const source: ParquetSource = {
         byteLength: data.byteLength,
-        async slice(start: number, end?: number): Promise<ArrayBuffer> {
-            if (options.signal?.aborted) throw new DOMException('Parsing was cancelled.', 'AbortError');
+        slice(start, end) {
             const part = data.subarray(start, end);
             return part.buffer.slice(part.byteOffset, part.byteOffset + part.byteLength) as ArrayBuffer;
         }
     };
+    return parseParquetSource(source, options);
+}
+
+/** Parses from a random-access source, materializing only the footer + preview pages. */
+export async function parseParquetSource(source: ParquetSource, options: ParquetParseOptions = {}): Promise<ParquetDocument> {
+    if (options.signal?.aborted) throw new DOMException('Parsing was cancelled.', 'AbortError');
+    const file = options.signal ? withAbort(source, options.signal) : source;
     const metadata = await parquetMetadataAsync(file);
     const schema = parquetSchema(metadata);
     const totalRows = Number(metadata.num_rows ?? 0);
     const rowStart = Math.max(0, options.rowStart ?? 0);
-    const shouldChunk = data.byteLength >= (options.maxPreviewBytes ?? PARQUET_PREVIEW_BYTES);
+    const shouldChunk = source.byteLength >= (options.maxPreviewBytes ?? PARQUET_PREVIEW_BYTES);
     const readOptions: Parameters<typeof parquetReadObjects>[0] = { file, metadata, compressors };
     if (shouldChunk) {
         readOptions.rowStart = rowStart;
@@ -45,7 +63,18 @@ export async function parseParquet(data: Uint8Array, options: ParquetParseOption
     const types = collectColumnTypes(schema);
     const rows = objects.map((row) => headers.map((header) => convertValue(row[header], types.get(header))));
     return { headers, rows, schema: convertValue(schema), totalRows, loadedRows: rows.length,
-        fileSizeBytes: data.byteLength, isLimited: shouldChunk && rowStart + rows.length < totalRows };
+        fileSizeBytes: source.byteLength, isLimited: shouldChunk && rowStart + rows.length < totalRows };
+}
+
+/** Wraps a source so each range read observes cancellation (parity with the buffer path). */
+function withAbort(source: ParquetSource, signal: AbortSignal): ParquetSource {
+    return {
+        byteLength: source.byteLength,
+        slice(start, end) {
+            if (signal.aborted) throw new DOMException('Parsing was cancelled.', 'AbortError');
+            return source.slice(start, end);
+        }
+    };
 }
 
 interface ColumnType { logicalType?: string; convertedType?: string }

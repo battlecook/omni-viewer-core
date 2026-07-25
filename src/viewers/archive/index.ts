@@ -5,7 +5,7 @@ import { audioMimeType } from '../../parsers/audio/index.js';
 import { videoMimeType } from '../../parsers/video/index.js';
 import { detectImageMime } from '../image/decode.js';
 import { MountAbortedError, VIEWER_ROOT_CLASS, type MountOptions, type ViewerHandle, type ViewerInput } from '../types.js';
-import { createArchiveController } from './controller.js';
+import { addImplicitArchiveDirectories, createArchiveController } from './controller.js';
 import { tryDecodeArchiveEntryPreview } from './archive-preview-decoder.js';
 import { hexPreview, isText } from './preview.js';
 import { archiveViewerCss } from './styles.js';
@@ -24,7 +24,48 @@ export type ArchiveViewerContext = HostContext & {
      *  when present. */
     saveEntry?: ArchiveEntrySaver;
 };
-export interface ArchiveMountOptions extends MountOptions { limits?: ResourceLimits; createObjectUrl?(blob: Blob): string; revokeObjectUrl?(url: string): void; }
+export interface ArchiveEntryPreviewRequest {
+    /** The containing archive's display name. */
+    archiveFileName: string;
+    entry: ArchiveEntry;
+    /** Extracted entry bytes, bounded by `maxBytes`. */
+    input: ViewerInput;
+    /** Host element connected to the preview panel during mount so delegated
+     * viewers can measure layout. It stays hidden until mount succeeds. */
+    container: HTMLElement;
+    signal: AbortSignal;
+    maxBytes: number;
+}
+export interface ArchiveEntryPreviewDelegate {
+    /** Per-entry extraction ceiling. Core still applies the cumulative archive
+     * decompression budget. Omit to use the normal archive preview limit. */
+    maxBytes?(entry: ArchiveEntry): number | undefined;
+    /** Return null to fall back to core's media/text/hex preview. */
+    mount(request: ArchiveEntryPreviewRequest): Promise<ViewerHandle | null>;
+}
+export interface ArchivePasswordRequest {
+    archiveFileName: string;
+    entry?: ArchiveEntry;
+    /** One-based attempt number for this open/extract/save operation. */
+    attempt: number;
+    signal?: AbortSignal;
+}
+export interface ArchiveMountOptions extends MountOptions {
+    limits?: ResourceLimits;
+    createObjectUrl?(blob: Blob): string;
+    revokeObjectUrl?(url: string): void;
+    /** Optional host router for PDF, Office, HWP, Parquet, nested archives, etc. */
+    previewEntry?: ArchiveEntryPreviewDelegate;
+    /** Optional host-owned password prompt. Returning null cancels retry. */
+    requestPassword?(request: ArchivePasswordRequest): Promise<string | null>;
+    /** Re-read buffered input before an open retry when the decoder consumed or
+     * transferred the previous Uint8Array. Streaming sources do not use this. */
+    reloadInput?(signal?: AbortSignal): Promise<Uint8Array>;
+    /** Defaults to 3 for each open/extract/save operation. */
+    maxPasswordAttempts?: number;
+    /** Opt-in compatibility mode for decoders that omit directory records. */
+    includeImplicitDirectories?: boolean;
+}
 
 /** Lazy streaming input: the adapter's path-based decoder opens the archive
  *  without core ever holding the full file bytes (opt-in, opposite the buffered
@@ -76,16 +117,25 @@ export async function mountArchiveViewer(inputOrSource: ViewerInput | ArchiveStr
     const streaming = !('data' in inputOrSource);
     const options: ArchiveMountOptions = ((streaming ? depsOrOptions : maybeOptions) as ArchiveMountOptions | undefined) ?? {};
     if (options.signal?.aborted) throw new MountAbortedError();
-    let fileName: string; let totalBytes: number | undefined;
-    let parsed: { outcome: ParseOutcome<ArchiveDocument>; handle?: OpenArchiveHandle };
-    if (streaming) {
-        const source = inputOrSource as ArchiveStreamingSource;
-        fileName = source.fileName; totalBytes = source.totalSize;
-        parsed = await openArchiveStream(source, { fileName, ...(source.totalSize !== undefined ? { totalSize: source.totalSize } : {}), ...(options.signal ? { signal: options.signal } : {}), ...(options.limits ? { limits: options.limits } : {}) });
-    } else {
-        const input = inputOrSource as ViewerInput;
-        fileName = input.fileName; totalBytes = input.data.byteLength;
-        parsed = await parseArchive(input.data, depsOrOptions as ArchiveViewerDeps, { fileName, ...(options.signal ? { signal: options.signal } : {}), ...(options.limits ? { limits: options.limits } : {}) });
+    const fileName = inputOrSource.fileName;
+    const totalBytes = streaming ? (inputOrSource as ArchiveStreamingSource).totalSize : (inputOrSource as ViewerInput).data.byteLength;
+    const maxPasswordAttempts = Math.max(1, Math.floor(options.maxPasswordAttempts ?? 3));
+    let activePassword: string | undefined;
+    let bufferedData = streaming ? undefined : (inputOrSource as ViewerInput).data;
+    const open = (password?: string): Promise<{ outcome: ParseOutcome<ArchiveDocument>; handle?: OpenArchiveHandle }> => {
+        if (streaming) {
+            const source = inputOrSource as ArchiveStreamingSource;
+            return openArchiveStream(source, { fileName, ...(source.totalSize !== undefined ? { totalSize: source.totalSize } : {}), ...(options.signal ? { signal: options.signal } : {}), ...(options.limits ? { limits: options.limits } : {}), ...(password !== undefined ? { password } : {}) });
+        }
+        return parseArchive(bufferedData!, depsOrOptions as ArchiveViewerDeps, { fileName, ...(options.signal ? { signal: options.signal } : {}), ...(options.limits ? { limits: options.limits } : {}), ...(password !== undefined ? { password } : {}) });
+    };
+    let parsed = await open();
+    for (let attempt = 1; parsed.outcome.result.status === 'failed' && parsed.outcome.result.failure.code === 'password-required' && options.requestPassword && attempt <= maxPasswordAttempts; attempt++) {
+        const password = await options.requestPassword({ archiveFileName: fileName, attempt, ...(options.signal ? { signal: options.signal } : {}) });
+        if (password === null || options.signal?.aborted) break;
+        activePassword = password;
+        if (!streaming && options.reloadInput) bufferedData = await options.reloadInput(options.signal);
+        parsed = await open(password);
     }
     if (parsed.outcome.result.status === 'failed') throw new Error(parsed.outcome.result.failure.messageKey);
     if (options.signal?.aborted) { await parsed.handle?.close(); throw new MountAbortedError(); }
@@ -95,14 +145,24 @@ export async function mountArchiveViewer(inputOrSource: ViewerInput | ArchiveStr
     else { const style = element('style'); style.textContent = archiveViewerCss; root.append(style); }
 
     const t = (key: string, args?: Record<string, string | number>) => ctx.i18n.t(key, args);
-    const entries = parsed.outcome.result.document.entries;
+    const archiveDocument = parsed.outcome.result.document;
+    const entries = options.includeImplicitDirectories
+        ? addImplicitArchiveDirectories(archiveDocument.entries, options.limits?.maxEntries ?? ARCHIVE_DEFAULT_LIMITS.maxEntries)
+        : archiveDocument.entries;
+    const archiveEncrypted = archiveDocument.encrypted === true;
+    let encryptedEntryCount = entries.filter(entry => entry.encrypted && !entry.isDirectory).length;
     const controller = createArchiveController(entries);
     const wrap = element('section', `${VIEWER_ROOT_CLASS} omni-viewer--archive`);
     const hero = element('header', 'omni-archive__hero');
     const heading = element('div'); heading.append(element('div', 'omni-archive__eyebrow', t('archive.preview')), element('h1', '', fileName), element('p', 'omni-archive__subtitle', t('archive.summary')));
     const pills = element('div', 'omni-archive__pills');
-    pills.append(element('span', 'omni-archive__pill', archiveFormat(fileName)), element('span', 'omni-archive__pill', t('archive.entries', { count: entries.length })), element('span', 'omni-archive__pill', formatSize(totalBytes)));
+    const encryptionPill = element('span', 'omni-archive__pill omni-archive__pill--warning', '🔒'); encryptionPill.title = t('archive.encryptedStatus');
+    encryptionPill.hidden = !archiveEncrypted && encryptedEntryCount === 0;
+    pills.append(element('span', 'omni-archive__pill', archiveFormat(fileName)), element('span', 'omni-archive__pill', t('archive.entries', { count: entries.length })), element('span', 'omni-archive__pill', formatSize(totalBytes)), encryptionPill);
     hero.append(heading, pills);
+
+    const encryptionWarning = element('div', 'omni-archive__encryption-warning', t(archiveEncrypted ? 'archive.encrypted' : 'archive.encryptedEntries', { count: encryptedEntryCount }));
+    encryptionWarning.setAttribute('role', 'alert'); encryptionWarning.hidden = !archiveEncrypted && encryptedEntryCount === 0;
 
     const controls = element('section', 'omni-archive__controls');
     const label = element('label', 'omni-archive__search-label', t('archive.filter'));
@@ -132,18 +192,70 @@ export async function mountArchiveViewer(inputOrSource: ViewerInput | ArchiveStr
     const saveButton = element('button', 'omni-archive__save', t('archive.saveEntry')) as HTMLButtonElement;
     saveButton.type = 'button'; saveButton.hidden = !ctx.save && !ctx.saveEntry; saveButton.disabled = true;
     previewPanel.append(previewHeader, previewMeta, preview, previewMedia, saveButton); workspace.append(tableWrap, previewPanel);
-    wrap.append(hero, controls, stats, workspace); root.append(wrap);
+    wrap.append(hero, encryptionWarning, controls, stats, workspace); root.append(wrap);
 
-    let ticket = 0; let extraction: AbortController | undefined; let saveExtraction: AbortController | undefined; let selectedEntry: ArchiveEntry | undefined;
-    let previewUrl: string | undefined;
+    let ticket = 0; let saveTicket = 0; let extraction: AbortController | undefined; let saveExtraction: AbortController | undefined; let selectedEntry: ArchiveEntry | undefined;
+    let previewUrl: string | undefined; let delegatedPreviewHandle: ViewerHandle | undefined;
     const createUrl = options.createObjectUrl ?? URL.createObjectURL.bind(URL);
     const revokeUrl = options.revokeObjectUrl ?? URL.revokeObjectURL.bind(URL);
     // Inline display beats author CSS (.omni-archive__preview-media sets display:flex,
     // which would otherwise override the [hidden] attribute), so the text preview and
     // the media preview stay reliably mutually exclusive.
-    const clearPreviewMedia = () => { if (previewUrl) { revokeUrl(previewUrl); previewUrl = undefined; } previewMedia.replaceChildren(); previewMedia.style.display = 'none'; preview.style.display = ''; };
+    const clearPreviewMedia = () => {
+        delegatedPreviewHandle?.dispose(); delegatedPreviewHandle = undefined;
+        if (previewUrl) { revokeUrl(previewUrl); previewUrl = undefined; }
+        previewMedia.replaceChildren(); previewMedia.style.display = 'none'; previewMedia.style.visibility = ''; preview.style.display = '';
+    };
     const setPreview = (entry: ArchiveEntry | undefined, status: string, meta: string, content: string) => { clearPreviewMedia(); previewTitle.textContent = entry?.path ?? t('archive.chooseFile'); previewStatus.textContent = status; previewMeta.textContent = meta; preview.textContent = content; };
+    const markEntryEncrypted = (entry: ArchiveEntry): void => {
+        entry.encrypted = true; encryptedEntryCount = entries.filter(candidate => candidate.encrypted && !candidate.isDirectory).length;
+        encryptionPill.hidden = false; encryptionWarning.hidden = false; encryptionWarning.textContent = archiveEncrypted ? t('archive.encrypted') : t('archive.encryptedEntries', { count: encryptedEntryCount });
+        if (selectedEntry === entry && !options.requestPassword) saveButton.disabled = true;
+        const row = tbody.querySelector<HTMLElement>(`[data-entry-id="${entry.entryId}"]`); row?.classList.add('is-encrypted'); if (row) row.title = t('archive.encryptedEntry');
+        const path = row?.querySelector<HTMLElement>('.omni-archive__path'); if (path && !path.textContent?.startsWith('🔒 ')) path.prepend('🔒 ');
+    };
     const MEDIA_META: Record<'audio' | 'image' | 'video', string> = { audio: 'archive.audioReady', image: 'archive.imageReady', video: 'archive.videoReady' };
+    const withPasswordRetry = async <T>(entry: ArchiveEntry, signal: AbortSignal, operation: (password: string | undefined) => Promise<T>): Promise<T> => {
+        let password = activePassword;
+        for (let attempt = 1; ; attempt++) {
+            try {
+                const value = await operation(password);
+                activePassword = password;
+                return value;
+            } catch (error) {
+                if (!(error instanceof ArchiveError) || error.code !== 'password-required') throw error;
+                markEntryEncrypted(entry);
+                if (!options.requestPassword || attempt > maxPasswordAttempts || signal.aborted) throw error;
+                const requested = await options.requestPassword({ archiveFileName: fileName, entry, attempt, signal });
+                if (requested === null || signal.aborted) throw error;
+                password = requested;
+            }
+        }
+    };
+    const extractEntry = (entry: ArchiveEntry, maxBytes: number, signal: AbortSignal): Promise<Uint8Array> => {
+        if (!handle) throw new ArchiveError('invalid-format', 'diag.archive.invalid-format');
+        if (!options.requestPassword && activePassword === undefined) return handle.extract(entry.entryId, { signal, maxBytes });
+        return withPasswordRetry(entry, signal, password => handle!.extract(entry.entryId, { signal, maxBytes, ...(password !== undefined ? { password } : {}) }));
+    };
+    const showDelegatedPreview = async (entry: ArchiveEntry, data: Uint8Array, maxBytes: number, signal: AbortSignal): Promise<boolean> => {
+        if (!options.previewEntry) return false;
+        const delegatedContainer = element('div', 'omni-archive__delegated-preview');
+        clearPreviewMedia();
+        previewMedia.replaceChildren(delegatedContainer); previewMedia.style.display = 'block'; previewMedia.style.visibility = 'hidden'; preview.style.display = 'none';
+        const mounted = await options.previewEntry.mount({
+            archiveFileName: fileName,
+            entry,
+            input: { fileName: entry.path, data, ...(entry.modifiedAt !== undefined ? { lastModified: new Date(entry.modifiedAt).getTime() } : {}) },
+            container: delegatedContainer,
+            signal,
+            maxBytes
+        });
+        if (signal.aborted) { mounted?.dispose(); return false; }
+        if (!mounted) { clearPreviewMedia(); return false; }
+        delegatedPreviewHandle = mounted; previewMedia.style.visibility = '';
+        previewTitle.textContent = entry.path; previewStatus.textContent = t('archive.ready'); previewMeta.textContent = t('archive.delegatedReady');
+        return true;
+    };
     const showMediaPreview = (entry: ArchiveEntry, data: Uint8Array, kind: 'audio' | 'image' | 'video', mimeType: string): void => {
         clearPreviewMedia();
         let objectUrl: string;
@@ -158,21 +270,28 @@ export async function mountArchiveViewer(inputOrSource: ViewerInput | ArchiveStr
     };
     const select = async (entry: ArchiveEntry): Promise<void> => {
         extraction?.abort(); extraction = undefined; const local = ++ticket;
-        selectedEntry = entry; saveButton.disabled = entry.isDirectory;
+        const encrypted = archiveEncrypted || entry.encrypted === true;
+        selectedEntry = entry; saveButton.disabled = entry.isDirectory || (encrypted && !options.requestPassword); saveButton.textContent = t('archive.saveEntry');
         if (entry.isDirectory) controller.dispatch({ type: 'toggle-directory', path: entry.path });
         controller.dispatch({ type: 'select', entryId: entry.entryId });
         if (entry.isDirectory) { setPreview(entry, t('archive.directory'), t('archive.directoryHint'), t('archive.directoryContent')); return; }
+        if (encrypted && !options.requestPassword) { setPreview(entry, t('archive.encryptedStatus'), t('archive.encryptedEntry'), t('archive.encryptedEntry')); return; }
         if (!handle) return;
         extraction = new AbortController(); const request = extraction;
         setPreview(entry, t('archive.loading'), t('archive.loadingHint'), t('archive.loadingContent'));
         const audioMime = audioMimeType(entry.path);
         const videoMime = !audioMime ? videoMimeType(entry.path) : undefined;
         const imageCandidate = !audioMime && !videoMime && hasImageExtension(entry.path);
-        const maxPreview = audioMime ? ARCHIVE_AUDIO_PREVIEW_BYTES : videoMime ? ARCHIVE_VIDEO_PREVIEW_BYTES : imageCandidate ? ARCHIVE_IMAGE_PREVIEW_BYTES : ARCHIVE_DEFAULT_LIMITS.maxPreviewBytes;
+        const builtInMax = audioMime ? ARCHIVE_AUDIO_PREVIEW_BYTES : videoMime ? ARCHIVE_VIDEO_PREVIEW_BYTES : imageCandidate ? ARCHIVE_IMAGE_PREVIEW_BYTES : ARCHIVE_DEFAULT_LIMITS.maxPreviewBytes;
+        const delegatedMax = options.previewEntry?.maxBytes?.(entry);
+        const requestedMax = delegatedMax !== undefined && Number.isFinite(delegatedMax) ? Math.max(1, Math.floor(delegatedMax)) : builtInMax;
+        const maxPreview = options.limits?.maxPreviewBytes !== undefined ? Math.min(requestedMax, options.limits.maxPreviewBytes) : requestedMax;
         if (entry.uncompressedSize !== undefined && entry.uncompressedSize > maxPreview) { setPreview(entry, t('archive.previewUnavailable'), t('diag.archive.limit-exceeded'), t('archive.previewUnavailable')); return; }
         try {
-            const data = await handle.extract(entry.entryId, { signal: request.signal, maxBytes: maxPreview });
-            if (local !== ticket) return;
+            const data = await extractEntry(entry, maxPreview, request.signal);
+            if (local !== ticket || request.signal.aborted) return;
+            if (options.previewEntry && await showDelegatedPreview(entry, data, maxPreview, request.signal)) return;
+            if (local !== ticket || request.signal.aborted) return;
             if (audioMime) { showMediaPreview(entry, data, 'audio', audioMime); return; }
             if (videoMime) { showMediaPreview(entry, data, 'video', videoMime); return; }
             if (imageCandidate) { const imageMime = detectImageMime(data, entry.path); if (imageMime) { showMediaPreview(entry, data, 'image', imageMime); return; } }
@@ -180,33 +299,38 @@ export async function mountArchiveViewer(inputOrSource: ViewerInput | ArchiveStr
             const text = isText(data);
             setPreview(entry, t('archive.ready'), t(decoded ? 'archive.androidBinaryXmlReady' : text ? 'archive.textReady' : 'archive.binaryReady'), decoded?.content ?? (text ? new TextDecoder().decode(data) : hexPreview(data)));
         } catch (error) {
-            if (local === ticket && !request.signal.aborted) setPreview(entry, t('archive.previewUnavailable'), t(error instanceof ArchiveError && error.code === 'limit-exceeded' ? 'diag.archive.limit-exceeded' : 'archive.previewUnavailable'), t('archive.previewUnavailable'));
+            if (local === ticket && !request.signal.aborted) {
+                const encrypted = error instanceof ArchiveError && error.code === 'password-required'; if (encrypted) markEntryEncrypted(entry);
+                setPreview(entry, t(encrypted ? 'archive.encryptedStatus' : 'archive.previewUnavailable'), t(encrypted ? 'archive.encryptedEntry' : error instanceof ArchiveError && error.code === 'limit-exceeded' ? 'diag.archive.limit-exceeded' : 'archive.previewUnavailable'), t(encrypted ? 'archive.encryptedEntry' : 'archive.previewUnavailable'));
+            }
         }
     };
     saveButton.addEventListener('click', async () => {
         const entry = selectedEntry;
-        if (!entry || entry.isDirectory || !handle || (!ctx.save && !ctx.saveEntry)) return;
-        saveExtraction?.abort(); saveExtraction = new AbortController(); const request = saveExtraction;
+        if (!entry || entry.isDirectory || ((archiveEncrypted || entry.encrypted) && !options.requestPassword) || !handle || (!ctx.save && !ctx.saveEntry)) return;
+        saveExtraction?.abort(); saveExtraction = new AbortController(); const request = saveExtraction; const localSave = ++saveTicket;
+        const isCurrentSave = () => localSave === saveTicket && selectedEntry === entry && !request.signal.aborted;
         saveButton.disabled = true; saveButton.textContent = t('archive.savingEntry');
         const suggestedName = entry.path.split('/').filter(Boolean).pop() ?? 'archive-entry';
         try {
             // Streaming save (adapter pipes the entry to disk) is preferred: a
             // multi-GB entry never lands in memory. Buffered save is the fallback.
             if (ctx.saveEntry) {
-                const savedName = await ctx.saveEntry.saveEntry(entry, { signal: request.signal });
-                if (!request.signal.aborted && savedName) previewMeta.textContent = t('common.saved', { name: savedName });
+                const savedName = await withPasswordRetry(entry, request.signal, password => ctx.saveEntry!.saveEntry(entry, { signal: request.signal, ...(password !== undefined ? { password } : {}) }));
+                if (isCurrentSave() && savedName) previewMeta.textContent = t('common.saved', { name: savedName });
             } else {
                 const configuredLimit = options.limits?.maxDecompressedBytes ?? ARCHIVE_DEFAULT_LIMITS.maxDecompressedBytes;
                 const maxBytes = Math.max(1, Math.min(entry.uncompressedSize ?? configuredLimit, configuredLimit));
-                const data = await handle.extract(entry.entryId, { signal: request.signal, maxBytes });
+                const data = await extractEntry(entry, maxBytes, request.signal);
                 if (request.signal.aborted) return;
                 await ctx.save!.saveFile(suggestedName, data, entry.mimeType ?? 'application/octet-stream');
-                if (!request.signal.aborted) previewMeta.textContent = t('common.saved', { name: suggestedName });
+                if (isCurrentSave()) previewMeta.textContent = t('common.saved', { name: suggestedName });
             }
-        } catch {
-            if (!request.signal.aborted) previewMeta.textContent = t('archive.saveFailed');
+        } catch (error) {
+            if (localSave === saveTicket && !request.signal.aborted && error instanceof ArchiveError && error.code === 'password-required') markEntryEncrypted(entry);
+            if (isCurrentSave()) { if (error instanceof ArchiveError && error.code === 'password-required') setPreview(entry, t('archive.encryptedStatus'), t('archive.encryptedEntry'), t('archive.encryptedEntry')); else previewMeta.textContent = t('archive.saveFailed'); }
         } finally {
-            if (!request.signal.aborted) { saveButton.disabled = false; saveButton.textContent = t('archive.saveEntry'); }
+            if (isCurrentSave()) { saveButton.disabled = (archiveEncrypted || Boolean(entry.encrypted)) && !options.requestPassword; saveButton.textContent = t('archive.saveEntry'); }
         }
     });
     const ROW_HEIGHT = 43; const OVERSCAN = 8; const FALLBACK_VIEWPORT_HEIGHT = 600;
@@ -253,10 +377,14 @@ export async function mountArchiveViewer(inputOrSource: ViewerInput | ArchiveStr
         const rows: HTMLTableRowElement[] = [];
         if (start > 0) rows.push(spacer(start * ROW_HEIGHT));
         for (const entry of visible.slice(start, end)) {
-            const row = element('tr', `omni-archive__entry${controller.state.selectedId === entry.entryId ? ' is-selected' : ''}`); row.tabIndex = 0; row.dataset.entryId = String(entry.entryId);
-            const path = element('td', 'omni-archive__path', `${entry.isDirectory ? (controller.state.expanded.has(entry.path) ? '▾ ' : '▸ ') : ''}${entry.path}`);
+            const encrypted = archiveEncrypted || entry.encrypted === true;
+            const row = element('tr', `omni-archive__entry${controller.state.selectedId === entry.entryId ? ' is-selected' : ''}${encrypted ? ' is-encrypted' : ''}`); row.tabIndex = 0; row.dataset.entryId = String(entry.entryId); if (encrypted) row.title = t('archive.encryptedEntry');
+            const path = element('td', 'omni-archive__path', `${encrypted ? '🔒 ' : ''}${entry.isDirectory ? (controller.state.expanded.has(entry.path) ? '▾ ' : '▸ ') : ''}${entry.path}`);
             path.style.paddingInlineStart = `${Math.max(0, entry.path.split('/').filter(Boolean).length - 1) * 12 + 14}px`;
-            row.append(path, element('td', '', t(entry.isDirectory ? 'archive.directory' : 'archive.file')), element('td', '', formatSize(entry.compressedSize)), element('td', '', formatSize(entry.uncompressedSize)), element('td', '', formatDate(entry.modifiedAt)));
+            const compression = entry.compressionMethod?.trim()
+                || (entry.compressed === true ? t('archive.compressedStatus') : entry.compressed === false ? t('archive.storedStatus') : '');
+            const type = `${t(entry.isDirectory ? 'archive.directory' : 'archive.file')}${!entry.isDirectory && compression ? ` · ${compression}` : ''}`;
+            row.append(path, element('td', '', type), element('td', '', formatSize(entry.compressedSize)), element('td', '', formatSize(entry.uncompressedSize)), element('td', '', formatDate(entry.modifiedAt)));
             row.addEventListener('click', () => void select(entry));
             row.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); void select(entry); } });
             rows.push(row);

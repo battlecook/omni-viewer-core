@@ -19,7 +19,8 @@ describe('JsonlController', () => {
         preview.dispatch({ type: 'insert' }); expect(preview.state.entries).toHaveLength(1);
         const c = createJsonlController('{"a":1}\n{"b":2}\n{"c":3}'); const [a, , cId] = c.state.entries.map(entry => entry.id);
         c.dispatch({ type: 'select', id: a! }); c.dispatch({ type: 'select', id: cId!, range: true }); expect(c.state.selected.size).toBe(3);
-        c.dispatch({ type: 'edit', id: a!, raw: '{bad' }); expect(c.canSave()).toBe(false);
+        c.dispatch({ type: 'deselect' }); expect(c.state.selected.size).toBe(0);
+        c.dispatch({ type: 'select', id: a! }); c.dispatch({ type: 'edit', id: a!, raw: '{bad' }); expect(c.canSave()).toBe(false);
     });
 
     it('uses stable ids after deletion and insertion', () => {

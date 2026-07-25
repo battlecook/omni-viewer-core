@@ -83,6 +83,38 @@ Node hosts can use `parseSafetensorsFile` from
 with `mountSafetensorsDocument`. The legacy `Uint8Array` input remains
 available, but it requires the host to load the complete file first.
 
+### Archive host integration
+
+Archive decompression remains adapter-owned: pass an `ArchiveDecoder` to
+`mountArchiveViewer`, retaining JSZip or libarchive according to the formats
+the platform supports. All parity extensions are optional. `previewEntry`
+delegates extracted PDF, Office, HWP, Parquet, or nested-archive entries to a
+host viewer router; `requestPassword` retries decoder open/extract/save calls;
+and `includeImplicitDirectories` synthesizes view-only folders for decoders
+that omit directory records. Hosts that omit these options keep the existing
+media/text/hex preview and encrypted-entry blocking behavior.
+
+### Word host integration
+
+`mountWordViewer` exposes a typed `status`, `subscribeStatus`, `contentElement`,
+and `viewportElement`. Hosts can use `onStatusChange` to observe the initial
+`loading` state, inspect structured diagnostics, and distinguish `ready`,
+`partial`, `failed`, and `aborted` outcomes. A host-owned
+`fallbackRenderer` can render Mammoth HTML into the stable content root after a
+core failure; successful fallback is reported as `ready` with
+`renderer: 'fallback'`.
+
+`toolbarActions` adds host operations such as “Save as PDF” without adding PDF
+or download dependencies to core. The handle's `refreshToolbarActions()`
+re-evaluates dynamic disabled states, while core manages in-progress disabling
+and reports rejected actions through `onToolbarActionError`.
+
+Hosts may tighten `limits` and tune the safe `docxRenderOptions` subset.
+`inWrapper` is always kept enabled for the DOM contract. The self-loading entry
+imports `xlsx` only when an embedded workbook is discovered; pass
+`loadWordViewerDeps({ embeddedSheets: false })` to disable that path entirely.
+All element accessors become invalid when the handle is disposed.
+
 ### PDF host integration
 
 The PDF viewer asks `ctx.assets.resolveAssetUrl` for the exact key
