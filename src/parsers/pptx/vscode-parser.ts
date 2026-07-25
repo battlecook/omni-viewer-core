@@ -2404,45 +2404,45 @@ export class PptxXmlParser {
             };
         }
 
-        if (!context.deps.renderMetafile) {
-            this.addObjectDiagnostic(context, 'image', 'placeholder', frame, {
-                reason: 'metafile-converter-missing',
-                type: sourceExt.slice(1)
-            });
-            return undefined;
-        }
-
-        try {
-            context.guard.checkpoint(target);
-            const bytes = await media.async('uint8array');
-            const converted = await context.deps.renderMetafile(
-                bytes,
-                sourceExt.slice(1) as 'wmf' | 'emf',
-                context.guard.options.signal
-            );
-            context.guard.checkpoint(target);
-            if (typeof converted === 'string' && converted) {
-                if (/^(?:data:|blob:|https?:)/i.test(converted)) {
-                    return { src: converted };
+        // Preferred: convert the actual metafile to a raster/vector via the injected renderer.
+        if (context.deps.renderMetafile) {
+            try {
+                context.guard.checkpoint(target);
+                const bytes = await media.async('uint8array');
+                const converted = await context.deps.renderMetafile(
+                    bytes,
+                    sourceExt.slice(1) as 'wmf' | 'emf',
+                    context.guard.options.signal
+                );
+                context.guard.checkpoint(target);
+                if (typeof converted === 'string' && converted) {
+                    if (/^(?:data:|blob:|https?:)/i.test(converted)) {
+                        return { src: converted };
+                    }
+                    if (converted.trimStart().startsWith('<svg')) {
+                        return {
+                            src: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(converted)}`
+                        };
+                    }
+                } else if (converted instanceof Uint8Array && converted.byteLength > 0) {
+                    let binary = '';
+                    for (let i = 0; i < converted.length; i += 0x8000) {
+                        binary += String.fromCharCode(...converted.subarray(i, i + 0x8000));
+                    }
+                    return { src: `data:image/png;base64,${btoa(binary)}` };
                 }
-                if (converted.trimStart().startsWith('<svg')) {
-                    return {
-                        src: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(converted)}`
-                    };
-                }
-            } else if (converted instanceof Uint8Array && converted.byteLength > 0) {
-                let binary = '';
-                for (let i = 0; i < converted.length; i += 0x8000) {
-                    binary += String.fromCharCode(...converted.subarray(i, i + 0x8000));
-                }
-                return { src: `data:image/png;base64,${btoa(binary)}` };
+            } catch (error) {
+                if (error?.name === 'PptxLimitError') throw error;
             }
-        } catch (error) {
-            if (error?.name === 'PptxLimitError') throw error;
         }
 
+        // No conversion available/successful: a clean placeholder is safer than
+        // substituting an unrelated same-directory raster (in PPTX every image lives
+        // in ppt/media/, so a name-mismatched raster is almost certainly a different asset).
         this.addObjectDiagnostic(context, 'image', 'placeholder', frame, {
-            reason: 'metafile-conversion-failed',
+            reason: context.deps.renderMetafile
+                ? 'metafile-conversion-failed'
+                : 'metafile-converter-missing',
             type: sourceExt.slice(1)
         });
         return undefined;
@@ -2461,11 +2461,7 @@ export class PptxXmlParser {
         for (const candidate of exactCandidates) {
             if (zip.file(candidate)) return candidate;
         }
-
-        const anyRaster = Object.keys(zip.files)
-            .filter((name) => name.startsWith(`${dir}/`) && /\.(png|jpe?g|webp|gif|svg)$/i.test(name))
-            .sort();
-        return anyRaster[0] || target;
+        return target;
     }
 
     private static getMimeTypeByExtension(filePath: string): string {

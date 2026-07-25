@@ -1,6 +1,6 @@
 {
   "name": "omni-viewer-core",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Shared parsing + rendering core for Omni Viewer (vscode / chrome / obsidian / web)",
   "type": "module",
   "license": "MIT",
@@ -297,6 +297,9 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "verify:pdf-package": "node scripts/verify-pdf-package.mjs",
     "prepublishOnly": "npm run build && npm test"
+  },
+  "dependencies": {
+    "emf-converter": "^2.0.0"
   },
   "devDependencies": {
     "@rhwp/core": "0.7.3",

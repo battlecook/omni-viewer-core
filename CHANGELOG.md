@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-07-26
+
+### Added
+
+- The PPT viewer's self-loading entry now bundles a default EMF/WMF rasterizer:
+  `emf-converter` is a runtime dependency wired into `renderMetafile` via
+  `selfLoadingPptPdfDeps`/`mountSelfLoadingPptViewer`, so embedded metafile logos
+  and diagrams render without any host configuration. The reusable
+  `renderPptMetafile` adapter is exported from `viewers/ppt/self-loading` for hosts
+  that mount the core PPT viewer directly.
+
+### Changed
+
+- Metafile image resolution now prefers an exact-basename raster sibling, then the
+  `renderMetafile` converter, and no longer substitutes an arbitrary same-directory
+  raster (which usually surfaced an unrelated image such as a logo). Metafiles that
+  cannot be converted fall back to a clean, diagnosed placeholder.
+
 ## [0.8.0] - 2026-07-25
 
 ### Added

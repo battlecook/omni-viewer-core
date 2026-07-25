@@ -95,7 +95,7 @@ describe('PPTX review regressions', () => {
         });
     });
 
-    it('substitutes any same-directory raster for a metafile without an exact-basename match', async () => {
+    it('does not substitute an unrelated raster for a metafile and exposes a placeholder diagnostic', async () => {
         const input = await pptx({
             slideXml: pictureSlide,
             slideRelationships: pictureRelationships,
@@ -107,13 +107,18 @@ describe('PPTX review regressions', () => {
         const parsed = await parsePptxVscode(input);
         expect(parsed.result.status).toBe('ok');
         if (parsed.result.status !== 'ok') return;
-        expect(parsed.result.document.slides[0]?.elements[0]).toMatchObject({
-            type: 'image',
-            vectorFallback: true,
-            src: expect.stringMatching(/^data:image\/png;base64,/)
-        });
-        expect(parsed.result.diagnostics).not.toContainEqual(expect.objectContaining({
-            objectKind: 'image'
+        expect(parsed.result.document.slides[0]?.elements).toMatchObject([
+            { type: 'shape', fillColor: '#f7f7f7' }
+        ]);
+        expect(parsed.result.document.slides[0]?.elements.some((element) =>
+            element.src?.includes('unrelated')
+        )).toBe(false);
+        expect(parsed.result.diagnostics).toContainEqual(expect.objectContaining({
+            code: 'pptx.image.placeholder',
+            slideNumber: 1,
+            objectKind: 'image',
+            handling: 'placeholder',
+            frame: { x: 1, y: 2, width: 100, height: 50 }
         }));
     });
 
