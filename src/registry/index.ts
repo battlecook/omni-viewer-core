@@ -184,7 +184,7 @@ export const YAML_VIEWER_DESCRIPTOR: ViewerDescriptor = {
 };
 export const PROTO_VIEWER_DESCRIPTOR: ViewerDescriptor = {
     id: 'proto', displayNameKey: 'proto.title', extensions: ['proto'], priority: 10,
-    requiredServices: [], optionalServices: ['clipboard']
+    requiredServices: [], optionalServices: ['clipboard', 'save', 'writeback']
 };
 
 /**

@@ -1438,6 +1438,10 @@ export async function mountPdfViewer(
     function setMarkupListOpen(open: boolean): void {
         markupListOpen = open;
         markupList.classList.toggle('is-open', open);
+        // The Annotations panel is a left sidebar that sits directly under the
+        // thumbnail toggle; hide the toggle while it is open so the two do not
+        // overlap.
+        thumbsToggleBtn.hidden = open;
         if (open) renderMarkupList();
     }
 

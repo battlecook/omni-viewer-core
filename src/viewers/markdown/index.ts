@@ -2,6 +2,7 @@ import type { ClipboardService, DocumentAssetsService, FileSaveService, FileWrit
 import { ALLOWED_LINK_SCHEMES } from '../../host/index.js';
 import { parseMarkdown, type MarkdownDocument, type MarkdownParseOptions } from '../../parsers/markdown/index.js';
 import type { ResourceLimits } from '../../parsers/types.js';
+import { bindFragmentAnchor, classifyAnchorTarget } from '../anchors.js';
 import { MountAbortedError, VIEWER_ROOT_CLASS, type MountOptions, type ViewerHandle, type ViewerInput } from '../types.js';
 import { createMarkdownController, type MarkdownViewMode } from './controller.js';
 import { maskMathSegments, mathSegmentLiteral, type MathSegment } from './math.js';
@@ -170,13 +171,13 @@ export async function mountMarkdownViewer(
     const hardenContent = (version: number): void => {
         preview.querySelectorAll('a').forEach(anchor => {
             const href = anchor.getAttribute('href') ?? ''; anchor.removeAttribute('href');
-            if (href.startsWith('#')) { anchor.setAttribute('href', href); return; }
-            try {
-                const url = new URL(href);
-                if (!ALLOWED_LINK_SCHEMES.includes(url.protocol) || !ctx.navigation) throw new Error('blocked');
-                anchor.setAttribute('role', 'link'); anchor.tabIndex = 0;
-                on(anchor, 'click', (() => void ctx.navigation!.openExternalUrl(href)) as EventListener);
-            } catch { anchor.setAttribute('aria-disabled', 'true'); }
+            const target = classifyAnchorTarget(href);
+            // Restoring `href` would not scroll anything under the default shadow
+            // isolation, where document-level fragment lookup cannot see the target.
+            if (target.kind === 'fragment' && bindFragmentAnchor(anchor, target.name, preview, preview, disposers)) return;
+            if (target.kind !== 'absolute' || !ALLOWED_LINK_SCHEMES.includes(target.url.protocol) || !ctx.navigation) { anchor.setAttribute('aria-disabled', 'true'); return; }
+            anchor.setAttribute('role', 'link'); anchor.tabIndex = 0;
+            on(anchor, 'click', (() => void ctx.navigation!.openExternalUrl(href)) as EventListener);
         });
         preview.querySelectorAll('img').forEach(image => {
             const path = image.getAttribute('src') ?? ''; image.removeAttribute('src');
@@ -265,7 +266,19 @@ export async function mountMarkdownViewer(
             preview.replaceChildren();
             const holder = new DOMParser().parseFromString(sanitizedHtml, 'text/html');
             while (holder.body.firstChild) preview.append(holder.body.firstChild);
-            preview.querySelectorAll('h1,h2,h3,h4,h5,h6').forEach((heading, index) => heading.id = `heading-${index}`);
+            // Every heading gets a stable id, but a slug the renderer already
+            // emitted wins: in-document `#slug` links are written against those.
+            // These ids are the preview's own; MarkdownHeading.id from the parser
+            // is a source-order handle and is not expected to match them.
+            const takenIds = new Set([...preview.querySelectorAll('[id]')].map(node => node.id));
+            preview.querySelectorAll('h1,h2,h3,h4,h5,h6').forEach((heading, index) => {
+                if (heading.id) return;
+                // A renderer slug can itself be `heading-2`; duplicate ids would send
+                // `#heading-2` to whichever element comes first in document order.
+                let id = `heading-${index}`;
+                for (let suffix = 1; takenIds.has(id); suffix++) id = `heading-${index}-${suffix}`;
+                heading.id = id; takenIds.add(id);
+            });
             hardenContent(version); await renderEnhancements(version);
             if (disposed || version !== renderVersion) return;
             applyMath(masked.segments);

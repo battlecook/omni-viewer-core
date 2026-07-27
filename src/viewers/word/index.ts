@@ -1,4 +1,5 @@
 import { ALLOWED_LINK_SCHEMES, type HostContext, type NavigationService, type PrintService } from '../../host/index.js';
+import { bindFragmentAnchor, classifyAnchorTarget } from '../anchors.js';
 import {
     hasEmbeddedDocWorkbook,
     parseDocBinaryHtml,
@@ -587,7 +588,7 @@ export async function mountWordViewer(
             paginateLegacyDocument(content);
         }
         ensureActive();
-        const securityDiagnostics = secureWordDom(content, ctx, disposers);
+        const securityDiagnostics = secureWordDom(content, ctx, disposers, viewport);
         if (securityDiagnostics.length) {
             diagnostics.push(...securityDiagnostics);
             partial = true;
@@ -677,7 +678,7 @@ export async function mountWordViewer(
                 messageKey: 'diag.word.fallback-renderer-used',
                 recoverable: true
             });
-            diagnostics.push(...secureWordDom(content, ctx, disposers));
+            diagnostics.push(...secureWordDom(content, ctx, disposers, viewport));
             emitStatus({
                 state: 'ready',
                 format,
@@ -1048,7 +1049,8 @@ function pieColors(chart: ChartModel): string[] {
 function secureWordDom(
     root: HTMLElement,
     ctx: WordViewerContext,
-    disposers: Array<() => void>
+    disposers: Array<() => void>,
+    viewport: HTMLElement | null
 ): WordDiagnostic[] {
     const diagnostics: WordDiagnostic[] = [];
     root.querySelectorAll('img,source,video,audio').forEach((node) => {
@@ -1069,12 +1071,15 @@ function secureWordDom(
         const href = anchor.getAttribute('href') ?? '';
         anchor.removeAttribute('href');
         anchor.removeAttribute('target');
-        let allowed = false;
-        try {
-            allowed = ALLOWED_LINK_SCHEMES.includes(new URL(href).protocol);
-        } catch {
-            allowed = false;
-        }
+        const target = classifyAnchorTarget(href);
+        // Bookmarks, table-of-contents entries and note back-references stay usable
+        // without a navigation service: they never leave the document.
+        if (
+            target.kind === 'fragment' &&
+            bindFragmentAnchor(anchor, target.name, root, viewport, disposers)
+        ) return;
+        const allowed = target.kind === 'absolute' &&
+            ALLOWED_LINK_SCHEMES.includes(target.url.protocol);
         if (!allowed || !ctx.navigation) {
             anchor.setAttribute('aria-disabled', 'true');
             if (/^(?:https?:)?\/\//i.test(href)) {

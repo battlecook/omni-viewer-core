@@ -337,18 +337,23 @@ describe('mountPdfViewer host contracts', () => {
             expect(writeText).toHaveBeenCalledWith('knives and forks');
 
             // Leftmost tool opens the markup list sidebar with the annotation text.
+            const thumbsToggle = root.querySelector<HTMLButtonElement>('.omni-pdf__thumbs-toggle')!;
+            expect(thumbsToggle.hidden).toBe(false);
             toolbar.querySelector<HTMLButtonElement>('.omni-pdf__markup-tool')!.click();
             expect(root.querySelector('.omni-pdf__markup-list')?.classList.contains('is-open')).toBe(true);
             expect(root.querySelector('.omni-pdf__markup-item-text')?.textContent).toBe('knives and forks');
+            // The thumbnail toggle hides while the Annotations panel overlaps it.
+            expect(thumbsToggle.hidden).toBe(true);
 
             // A palette swatch recolors the annotation.
             root.querySelectorAll<HTMLButtonElement>('.omni-pdf__markup-swatch')[1]!.click();
             const recolored = handle.controller.state.annotations[0]!;
             expect(recolored.kind === 'highlight' && recolored.color).toBe('#ffc9c9');
 
-            // Closing the sidebar hides it again.
+            // Closing the sidebar hides it again and restores the thumbnail toggle.
             root.querySelector<HTMLButtonElement>('.omni-pdf__markup-list-close')!.click();
             expect(root.querySelector('.omni-pdf__markup-list')?.classList.contains('is-open')).toBe(false);
+            expect(thumbsToggle.hidden).toBe(false);
 
             // Re-clicking the active markup dismisses the toolbar.
             root.querySelector<HTMLElement>('.omni-pdf__markup')!.click();

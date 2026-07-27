@@ -167,7 +167,7 @@ export async function preprocessDocx(
                 messageKey: 'diag.word.embedded-limit',
                 ...(relation ? { location: relation.target } : {})
             });
-            output += '<w:r/>';
+            // Dropping the drawing outright: an empty run here would nest inside one.
             changed = true;
             continue;
         }
@@ -183,7 +183,7 @@ export async function preprocessDocx(
         }
         const token = `__OMNI_WORD_CHART_${index++}__`;
         placeholders.push({ token, kind: 'chart', chart });
-        output += `<w:r><w:t xml:space="preserve">${token}</w:t></w:r>`;
+        output += runInnerText(token);
         changed = true;
     }
     documentXml = output + documentXml.slice(cursor);
@@ -215,7 +215,7 @@ export async function preprocessDocx(
                 messageKey: 'diag.word.embedded-limit',
                 ...(relation ? { location: relation.target } : {})
             });
-            output += '<w:r/>';
+            // Dropping the object outright: an empty run here would nest inside one.
             changed = true;
             continue;
         }
@@ -270,7 +270,7 @@ export async function preprocessDocx(
                 .map((row) => row.slice(0, 10).map((cell) => String(cell ?? '')));
             const token = `__OMNI_WORD_SHEET_${index++}__`;
             placeholders.push({ token, kind: 'sheet', title: name, rows });
-            output += `<w:r><w:t xml:space="preserve">${token}</w:t></w:r>`;
+            output += runInnerText(token);
             changed = true;
         } catch (error) {
             if (isAbortError(error) || options.signal?.aborted) throw error;
@@ -296,6 +296,17 @@ export async function preprocessDocx(
         };
     }
     return { data, placeholders, diagnostics, partial };
+}
+
+/**
+ * Placeholder markup substituted for a `w:drawing`/`w:object`.
+ *
+ * Both are run *inner* content, so the replacement is a bare `w:t` — wrapping it
+ * in another `w:r` would nest a run inside a run, which docx-preview's run parser
+ * does not recognise and silently drops along with the placeholder token.
+ */
+function runInnerText(token: string): string {
+    return `<w:t xml:space="preserve">${token}</w:t>`;
 }
 
 export function parseChart(xml: string): ChartModel | null {

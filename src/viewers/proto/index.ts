@@ -1,11 +1,11 @@
-import type { ClipboardService, HostContext } from '../../host/index.js';
+import type { ClipboardService, FileSaveService, FileWritebackService, HostContext } from '../../host/index.js';
 import { allProtoTypes, flattenProtoMessages, parseProto, type ProtoEnum, type ProtoMessage, type ProtoModel, type ProtoService } from '../../parsers/proto/index.js';
 import { MountAbortedError, VIEWER_ROOT_CLASS, type MountOptions, type ViewerHandle, type ViewerInput } from '../types.js';
 import { protoViewerCss } from './styles.js';
 export { protoViewerCss } from './styles.js';
 export { parseProto } from '../../parsers/proto/index.js';
-export const PROTO_VIEWER_META = { id: 'proto', displayNameKey: 'proto.title', extensions: ['proto'], priority: 10, requiredServices: [] as const, optionalServices: ['clipboard'] as const, inputOwnership: 'borrows' as const };
-export type ProtoViewerContext = HostContext & { clipboard?: ClipboardService };
+export const PROTO_VIEWER_META = { id: 'proto', displayNameKey: 'proto.title', extensions: ['proto'], priority: 10, requiredServices: [] as const, optionalServices: ['clipboard', 'save', 'writeback'] as const, inputOwnership: 'borrows' as const };
+export type ProtoViewerContext = HostContext & { clipboard?: ClipboardService; save?: FileSaveService; writeback?: FileWritebackService };
 type Panel = 'tree' | 'types' | 'relationships' | 'reverse' | 'json' | 'breaking' | 'imports' | 'grpc' | 'docs';
 type Declaration = ProtoMessage | ProtoEnum | ProtoService;
 type ProtoToken = { cls?: string | undefined; text: string };
@@ -33,7 +33,7 @@ function tokenizeProtoLine(line: string, inBlock: boolean): { tokens: ProtoToken
 
 export async function mountProtoViewer(input: ViewerInput, container: HTMLElement, ctx: ProtoViewerContext, options: MountOptions = {}): Promise<ViewerHandle> {
     if (options.signal?.aborted) throw new MountAbortedError();
-    const source = new TextDecoder().decode(input.data); const model = parseProto(source, input.fileName); const t = ctx.i18n.t.bind(ctx.i18n);
+    const source = new TextDecoder().decode(input.data); let model = parseProto(source, input.fileName); const t = ctx.i18n.t.bind(ctx.i18n);
     let root: HTMLElement | ShadowRoot;
     if ((options.styleIsolation ?? 'shadow') === 'shadow' && typeof container.attachShadow === 'function') { root = container.shadowRoot ?? container.attachShadow({ mode: 'open' }); const style = document.createElement('style'); style.textContent = protoViewerCss; root.append(style); }
     else { container.classList.add(VIEWER_ROOT_CLASS, 'omni-viewer--proto'); root = container; }
@@ -43,13 +43,24 @@ export async function mountProtoViewer(input: ViewerInput, container: HTMLElemen
     const on = (node: HTMLElement, type: string, listener: EventListener): void => listen(disposers, node, type, listener);
     const onPanel = (node: HTMLElement, type: string, listener: EventListener): void => listen(panelDisposers, node, type, listener);
     const frame = el('div', 'omni-proto'); const header = el('header', 'omni-proto__header');
-    header.append(el('strong', 'omni-proto__title', input.fileName), el('span', 'omni-proto__summary', t('proto.summary', { syntax: model.syntax || 'proto', package: model.packageName || t('proto.noPackage'), messages: model.stats.messages, services: model.stats.services })));
+    const summaryText = (): string => t('proto.summary', { syntax: model.syntax || 'proto', package: model.packageName || t('proto.noPackage'), messages: model.stats.messages, services: model.stats.services });
+    const summary = el('span', 'omni-proto__summary', summaryText());
+    header.append(el('strong', 'omni-proto__title', input.fileName), summary);
     const toolbar = el('div', 'omni-proto__toolbar'); const search = el('input', 'omni-proto__search') as HTMLInputElement; search.type = 'search'; search.placeholder = t('proto.search'); search.setAttribute('aria-label', t('proto.search')); toolbar.append(search);
     const panelDefs: Array<[Panel, string]> = [['tree','proto.panel.tree'],['types','proto.panel.types'],['relationships','proto.panel.relationships'],['reverse','proto.panel.reverse'],['json','proto.panel.json'],['breaking','proto.panel.breaking'],['imports','proto.panel.imports'],['grpc','proto.panel.grpc'],['docs','proto.panel.docs']]; let active: Panel = 'tree'; let selectedType = flattenProtoMessages(model.messages)[0]?.fullName ?? '';
-    const copy = el('button', undefined, t('proto.copyPanel')); copy.type = 'button'; copy.disabled = !ctx.clipboard; copy.title = ctx.clipboard ? '' : t('common.noClipboard'); toolbar.append(copy);
-    const sourceView = el('pre', 'omni-proto__source'); let inBlock = false; source.replace(/\r\n?|\n/g, '\n').split('\n').forEach((text, i) => { const line = el('span', 'omni-proto__line'); line.dataset.line = String(i + 1); const result = tokenizeProtoLine(text, inBlock); inBlock = result.inBlock; if (!result.tokens.length) line.textContent = ' '; else result.tokens.forEach(token => line.append(token.cls ? el('span', `omni-proto__tok--${token.cls}`, token.text) : document.createTextNode(token.text))); sourceView.append(line); });
+    const copy = el('button', undefined, t('proto.copyPanel')); copy.type = 'button'; copy.disabled = !ctx.clipboard; copy.title = ctx.clipboard ? '' : t('common.noClipboard');
+    const save = el('button', undefined, t('json.save')); save.type = 'button'; const saveAs = el('button', undefined, t('json.saveAs')); saveAs.type = 'button';
+    const status = el('span', 'omni-proto__status'); status.setAttribute('aria-live', 'polite');
+    toolbar.append(copy, save, saveAs, status);
+    const highlight = el('pre', 'omni-proto__highlight');
+    const highlightSource = (text: string): void => { highlight.replaceChildren(); let inBlock = false; text.replace(/\r\n?|\n/g, '\n').split('\n').forEach((lineText, i) => { const line = el('span', 'omni-proto__line'); line.dataset.line = String(i + 1); const result = tokenizeProtoLine(lineText, inBlock); inBlock = result.inBlock; if (!result.tokens.length) line.textContent = ' '; else result.tokens.forEach(token => line.append(token.cls ? el('span', `omni-proto__tok--${token.cls}`, token.text) : document.createTextNode(token.text))); highlight.append(line); }); };
+    const editor = el('textarea', 'omni-proto__editor') as HTMLTextAreaElement; editor.spellcheck = false; editor.value = source; editor.setAttribute('aria-label', t('json.editor.title'));
+    let savedText = source; let dirty = false;
+    const sourceView = el('div', 'omni-proto__source'); sourceView.append(highlight, editor);
+    const syncScroll = (): void => { highlight.scrollTop = editor.scrollTop; highlight.scrollLeft = editor.scrollLeft; };
+    on(editor, 'scroll', syncScroll); highlightSource(source);
     const panel = el('section', 'omni-proto__panel'); const workspace = el('main', 'omni-proto__workspace'); workspace.append(sourceView, panel);
-    const reveal = (line?: number): void => { if (!line) return; sourceView.querySelectorAll('.is-selected').forEach(node => node.classList.remove('is-selected')); const target = sourceView.querySelector<HTMLElement>(`[data-line="${line}"]`); target?.classList.add('is-selected'); target?.scrollIntoView({ block: 'center' }); };
+    const reveal = (line?: number): void => { if (!line) return; highlight.querySelectorAll('.is-selected').forEach(node => node.classList.remove('is-selected')); const target = highlight.querySelector<HTMLElement>(`[data-line="${line}"]`); target?.classList.add('is-selected'); const lineHeight = parseFloat(getComputedStyle(editor).lineHeight) || 18; editor.scrollTop = Math.max(0, (line - 1) * lineHeight - editor.clientHeight / 2); syncScroll(); };
     const row = (badge: string, text: string, line?: number): HTMLElement => { const node = el('div', 'omni-proto__row'); node.append(el('span', 'omni-proto__badge', badge), el('span', 'omni-proto__code', text)); node.dataset.search = `${badge} ${text}`.toLowerCase(); if (line) { node.dataset.line = String(line); onPanel(node, 'click', () => reveal(line)); } return node; };
     const kind = (value: string): string => t(`proto.kind.${value}`);
     const declaration = (item: Declaration): HTMLElement => { const wrap = el('div', 'omni-proto__card'); wrap.dataset.search = `${item.kind} ${item.fullName} ${item.documentation}`.toLowerCase(); wrap.append(row(kind(item.kind), item.fullName, item.range.startLine)); const children = el('div', 'omni-proto__children'); if (item.kind === 'message') { item.fields.forEach(field => children.append(row(field.oneof ? `${kind('oneof')} ${field.oneof}` : field.repeated ? kind('repeated') : kind('field'), `${field.name}: ${field.type} = ${field.number}`, field.line))); item.enums.forEach(value => children.append(declaration(value))); item.messages.forEach(value => children.append(declaration(value))); } else if (item.kind === 'enum') item.values.forEach(value => children.append(row(kind('value'), `${value.name} = ${value.number}`, value.line))); else item.rpcs.forEach(rpc => children.append(row(kind('rpc'), `${rpc.name}(${rpc.requestStream ? `${kind('stream')} ` : ''}${rpc.requestType}) → ${rpc.responseStream ? `${kind('stream')} ` : ''}${rpc.responseType}`, rpc.line))); wrap.append(children); return wrap; };
@@ -90,8 +101,27 @@ export async function mountProtoViewer(input: ViewerInput, container: HTMLElemen
         else allProtoTypes(model).forEach(item => { const card = el('article', 'omni-proto__card'); const body = [item.documentation || t('proto.noDocumentation')]; if (item.kind === 'message') item.fields.forEach(field => body.push(`${field.name}: ${field.documentation || field.type}`)); else if (item.kind === 'service') item.rpcs.forEach(rpc => body.push(`${rpc.name}: ${rpc.documentation || `${rpc.requestType} → ${rpc.responseType}`}`)); card.dataset.search = `${item.fullName} ${body.join(' ')}`.toLowerCase(); card.append(el('strong', undefined, item.fullName), el('pre', 'omni-proto__muted', body.join('\n'))); panel.append(card); });
         applySearch(search.value.trim().toLowerCase()); if (!panel.children.length) panel.append(el('div', 'omni-proto__empty', t('proto.noDeclarations')));
     };
+    const warning = el('div', 'omni-proto__warning');
+    const updateWarning = (): void => { warning.textContent = model.warnings.join(' · '); warning.style.display = model.warnings.length ? '' : 'none'; };
+    const updateSaveState = (): void => { save.disabled = !ctx.writeback || !dirty; save.title = ctx.writeback ? '' : t('common.noWriteback'); saveAs.disabled = !ctx.save; saveAs.title = ctx.save ? '' : t('common.noFileSave'); };
+    const bytes = (): Uint8Array => new TextEncoder().encode(editor.value);
+    // Heavy pass: full re-parse + panel rebuild. Debounced (below) so typing in
+    // a large schema stays responsive.
+    const reparse = (): void => { model = parseProto(editor.value, input.fileName); summary.textContent = summaryText(); updateWarning(); render(); };
+    let reparseTimer: ReturnType<typeof setTimeout> | undefined;
+    // Eager pass on every keystroke: cheap highlight + dirty/save state so the
+    // caret feedback and Save button react immediately; the parse/render is
+    // deferred to the debounced reparse.
+    const onEdit = (): void => { highlightSource(editor.value); dirty = editor.value !== savedText; status.textContent = ''; updateSaveState(); if (reparseTimer) clearTimeout(reparseTimer); reparseTimer = setTimeout(() => { reparseTimer = undefined; reparse(); }, 200); };
+    // Snapshot the text before the async write: reading editor.value again in
+    // the resolve handler would mark whatever the user typed meanwhile as saved.
+    const doSave = (): void => { if (!ctx.writeback) return; const text = editor.value; void ctx.writeback.write(new TextEncoder().encode(text)).then(() => { savedText = text; dirty = editor.value !== text; status.textContent = t('common.savedToOriginal'); updateSaveState(); }).catch(error => { ctx.logger.log('error', `proto save failed: ${String(error)}`); status.textContent = t('common.saveFailed'); }); };
+    const doSaveAs = (): void => { if (!ctx.save) return; void Promise.resolve(ctx.save.saveFile(input.fileName, bytes(), 'text/plain')).then(() => { status.textContent = t('common.saved', { name: input.fileName }); }).catch(error => { ctx.logger.log('error', `proto saveAs failed: ${String(error)}`); status.textContent = t('common.saveFailed'); }); };
     panelDefs.forEach(([key, labelKey]) => { const button = el('button', undefined, t(labelKey)); button.type = 'button'; button.dataset.panel = key; button.setAttribute('aria-pressed', String(key === active)); on(button, 'click', () => { active = key; toolbar.querySelectorAll<HTMLElement>('[data-panel]').forEach(node => node.setAttribute('aria-pressed', String(node.dataset.panel === active))); render(); }); toolbar.insertBefore(button, copy); });
     on(search, 'input', () => applySearch(search.value.trim().toLowerCase())); on(copy, 'click', () => { if (ctx.clipboard) void ctx.clipboard.writeText(panel.textContent ?? '').catch(error => ctx.logger.log('error', `proto copy failed: ${String(error)}`)); });
-    frame.append(header, toolbar, workspace); if (model.warnings.length) frame.append(el('div', 'omni-proto__warning', model.warnings.join(' · '))); root.append(frame); render();
-    return { dispose() { panelDisposers.splice(0).forEach(dispose => dispose()); disposers.splice(0).forEach(dispose => dispose()); frame.remove(); if (root instanceof ShadowRoot) root.replaceChildren(); else container.classList.remove(VIEWER_ROOT_CLASS, 'omni-viewer--proto'); } };
+    on(editor, 'input', onEdit); on(save, 'click', doSave); on(saveAs, 'click', doSaveAs);
+    on(editor, 'keydown', event => { const keyboard = event as KeyboardEvent; if ((keyboard.metaKey || keyboard.ctrlKey) && keyboard.key === 's') { keyboard.preventDefault(); if (ctx.writeback) doSave(); else doSaveAs(); } });
+    updateWarning(); updateSaveState();
+    frame.append(header, toolbar, workspace, warning); root.append(frame); render();
+    return { dispose() { if (reparseTimer) clearTimeout(reparseTimer); panelDisposers.splice(0).forEach(dispose => dispose()); disposers.splice(0).forEach(dispose => dispose()); frame.remove(); if (root instanceof ShadowRoot) root.replaceChildren(); else container.classList.remove(VIEWER_ROOT_CLASS, 'omni-viewer--proto'); } };
 }

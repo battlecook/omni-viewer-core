@@ -1,6 +1,25 @@
 import { decodeUtf8, type Diagnostic, type ParseOutcome, type ParseOptions } from '../types.js';
 
-export interface MarkdownHeading { level: number; text: string; id: string; start: number; end: number; }
+export interface MarkdownHeading {
+    level: number;
+    text: string;
+    /**
+     * Source-order handle (`heading-0`, `heading-1`, …), not a DOM anchor.
+     *
+     * Rendering is owned by the viewer's renderer, which may emit its own slug
+     * ids (`#introduction`), and those win over this handle in the preview. The
+     * line-scanner also disagrees with a full Markdown parser on which lines are
+     * headings — `#` inside a fenced code block is counted here but not rendered,
+     * setext headings (`Title\n=====`) are rendered but not counted — so ordinals
+     * cannot be assumed to line up with the rendered heading elements either.
+     *
+     * Build outline links from `start`/`end` (source spans, which are exact) and
+     * resolve the rendered target by text or by the renderer's own slugging.
+     */
+    id: string;
+    start: number;
+    end: number;
+}
 export interface MarkdownBlock { start: number; end: number; }
 export interface MarkdownDocument {
     /** Complete decoded source, retained for source view/edit/writeback. */

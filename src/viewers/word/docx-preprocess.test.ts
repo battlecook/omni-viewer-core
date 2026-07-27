@@ -80,6 +80,33 @@ describe('DOCX preprocessing', () => {
         ]));
     });
 
+    it('substitutes the chart placeholder as run content, not a nested run', async () => {
+        // A chart drawing always sits inside a `w:r`; docx-preview's run parser has
+        // no case for a nested `w:r` and would drop the token with it.
+        const zip = new JSZip();
+        zip.file(
+            'word/document.xml',
+            '<w:document><w:body><w:p><w:r><w:rPr></w:rPr><w:drawing><a:graphic><a:graphicData><c:chart r:id="rId3"/></a:graphicData></a:graphic></w:drawing></w:r></w:p></w:body></w:document>'
+        );
+        zip.file(
+            'word/_rels/document.xml.rels',
+            '<Relationships><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="charts/chart1.xml"/></Relationships>'
+        );
+        zip.file(
+            'word/charts/chart1.xml',
+            '<c:chartSpace><c:barChart><c:ser><c:tx><c:v>Column 1</c:v></c:tx><c:cat><c:pt idx="0"><c:v>Row 1</c:v></c:pt></c:cat><c:val><c:pt idx="0"><c:v>9.1</c:v></c:pt></c:val></c:ser></c:barChart></c:chartSpace>'
+        );
+        const result = await preprocessDocx(await zip.generateAsync({ type: 'uint8array' }), zipModule);
+
+        expect(result.placeholders).toEqual([
+            expect.objectContaining({ token: '__OMNI_WORD_CHART_0__', kind: 'chart' })
+        ]);
+        const documentXml = await (await JSZip.loadAsync(result.data)).file('word/document.xml')!.async('string');
+        expect(documentXml).toContain('<w:r><w:rPr></w:rPr><w:t xml:space="preserve">__OMNI_WORD_CHART_0__</w:t></w:r>');
+        // A `w:r` that opens another `w:r` before its own close tag.
+        expect(documentXml).not.toMatch(/<w:r(?:\s[^>]*)?>(?:(?!<\/w:r>)[\s\S])*?<w:r[\s>/]/);
+    });
+
     it('uses AlternateContent chart fallback and reports it', async () => {
         const data = await docxBytes(
             '<w:document><mc:AlternateContent><mc:Choice><w:drawing><c:chart r:id="r1"/></w:drawing></mc:Choice><mc:Fallback><w:p><w:r><w:t>fallback</w:t></w:r></w:p></mc:Fallback></mc:AlternateContent></w:document>'

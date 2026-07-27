@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] - 2026-07-27
+
+### Added
+
+- The Proto viewer's source pane is now an editor. The left pane became an
+  editable `<textarea>` overlaid with the syntax highlighter; edits re-parse the
+  schema (debounced) and refresh every navigation panel live, and the toolbar
+  gained Save (overwrite the original via `writeback`) and Save as (write a copy
+  via `save`) actions with a dirty-state indicator and `Ctrl/Cmd+S`. This adds
+  `save`/`writeback` to `ProtoViewerContext` and to the optional services on
+  `PROTO_VIEWER_META`/`PROTO_VIEWER_DESCRIPTOR`; hosts that want editing must now
+  inject those services (both remain optional — the viewer stays read-only
+  without them).
+
+### Fixed
+
+- Charts and embedded workbooks are no longer dropped from DOCX files. The
+  placeholder that replaces a `w:drawing`/`w:object` was emitted as a whole `w:r`,
+  but both are run *inner* content, so the result nested a run inside a run —
+  markup docx-preview's run parser does not recognise, silently discarding the
+  placeholder token and with it the rendered chart. The placeholder is now a bare
+  `w:t`. Affected every chart in a normally authored document. A drawing or object
+  skipped for exceeding the embedded-content limit is likewise dropped outright
+  instead of leaving an empty nested `w:r` behind.
+
+- The PDF viewer's thumbnail toggle no longer sits underneath the Annotations
+  panel: the toggle is hidden while that left sidebar is open and restored when it
+  closes.
+
+- In-document anchors (`<a href="#bookmark">`) now scroll to their target in the
+  Word and Markdown viewers instead of being disabled. Word tables of contents,
+  cross-references and footnote back-links were dead because fragment hrefs are not
+  absolute URLs and so never passed the external-link check. Resolution is scoped to
+  the viewer and shadow-root aware, needs no `ctx.navigation`, and scrolls only the
+  viewer's own scrollport; external-link and blocked-scheme policy is unchanged.
+  Anchors with no matching target stay `aria-disabled="true"` without a diagnostic.
+  The Markdown viewer also stops overwriting renderer-supplied heading ids — it now
+  only assigns `heading-<n>` to headings that have none.
+
 ## [0.9.0] - 2026-07-26
 
 ### Added
