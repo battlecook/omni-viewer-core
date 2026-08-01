@@ -456,10 +456,12 @@ export async function mountLatexViewer(
                 continue;
             }
             if (block.kind === 'float') {
-                const float = el('div', 'omni-latex__float');
-                float.append(el('div', 'omni-latex__badge', t('latex.floatCaptionOnly', { environment: block.environment })));
+                const float = el('figure', 'omni-latex__float');
+                const body = el('div', 'omni-latex__float-body');
+                renderBlocks(block.blocks, body);
+                float.append(body);
                 if (block.caption) {
-                    const caption = el('div', 'omni-latex__float-caption');
+                    const caption = el('figcaption', 'omni-latex__float-caption');
                     renderInline(block.caption, caption);
                     float.append(caption);
                 }
@@ -762,7 +764,7 @@ function hasMath(blocks: readonly LatexBlock[]): boolean {
         || (block.kind === 'theorem' && hasMath(block.body))
         || (block.kind === 'include' && hasMath(block.blocks))
         || (block.kind === 'table' && block.rows.some(row => row.some(cell => cell.content.some(node => node.kind === 'math'))))
-        || (block.kind === 'float' && (block.caption ?? []).some(node => node.kind === 'math'))
+        || (block.kind === 'float' && (hasMath(block.blocks) || (block.caption ?? []).some(node => node.kind === 'math')))
     );
 }
 

@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.1] - 2026-08-01
+
+### Fixed
+
+- The LaTeX viewer no longer loses a `tabular` that sits inside a `table` float.
+  Float handling extracted the caption and discarded the rest, which ran before
+  the table rendering added in 0.11.0 — so the most common way to write a table
+  left nothing on screen, not even its source. A `figure`/`table` float is now a
+  container: its body is scanned like any other content and the caption is lifted
+  out for display rather than standing in for it. The `\caption` copy left in the
+  body is consumed (including `\caption*` and the optional short form), floats
+  render as `<figure>`/`<figcaption>`, and the now-untrue "caption only" badge and
+  its `diag.latex.float-caption-only` diagnostic are gone from every catalog.
+
 ## [0.11.0] - 2026-08-01
 
 ### Added

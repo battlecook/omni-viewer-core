@@ -501,12 +501,34 @@ describe('parseLatex — unsupported and unresolved', () => {
         expect(table.rows[0]?.map(cell => plainText(cell.content))).toEqual(['a', 'b']);
     });
 
-    it('extracts only the caption from a float', () => {
+    it('keeps a float\u2019s body as well as its caption', () => {
         const document = parse(doc('\\begin{figure}\n\\includegraphics{plot.png}\n\\caption{A plot}\n\\end{figure}\n'));
         const float = document.body[0];
         if (float?.kind !== 'float') throw new Error('expected a float');
         expect(float.environment).toBe('figure');
         expect(plainText(float.caption ?? [])).toBe('A plot');
+        // The image reference stays visible as an unresolved reference rather
+        // than being replaced by the caption.
+        expect(float.blocks.map(b => b.kind)).toContain('unresolved');
+    });
+
+    it('renders a tabular that sits inside a table float', () => {
+        // Extracting only the caption dropped the `tabular` that is the whole
+        // point of a `table` float — and not even as source (L6/L22).
+        const document = parse(doc(
+            '\\begin{table}[h]\n\\centering\n\\begin{tabular}{lr}\nalpha & 1 \\\\\nbeta & 2 \\\\\n\\end{tabular}\n\\caption{Values}\n\\end{table}\n'
+        ));
+        const float = document.body[0];
+        if (float?.kind !== 'float') throw new Error('expected a float');
+        const table = float.blocks.find(b => b.kind === 'table');
+        if (table?.kind !== 'table') throw new Error('expected a table inside the float');
+        expect(table.rows.map(row => row.map(cell => plainText(cell.content))))
+            .toEqual([['alpha', '1'], ['beta', '2']]);
+        expect(plainText(float.caption ?? [])).toBe('Values');
+        // The caption must not also appear as prose in the body.
+        const prose = float.blocks.filter(b => b.kind === 'paragraph')
+            .map(b => b.kind === 'paragraph' ? plainText(b.content) : '').join(' ');
+        expect(prose).not.toContain('Values');
     });
 
     it('marks external file references unresolved without reading anything', () => {

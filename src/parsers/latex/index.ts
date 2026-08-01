@@ -70,7 +70,9 @@ export type LatexBlock =
     | { kind: 'theorem'; environment: string; title: string; note?: LatexInline[]; body: LatexBlock[]; label?: string; span: LatexSpan }
     | { kind: 'table'; columns: LatexColumnAlign[]; rows: LatexTableCell[][]; span: LatexSpan }
     | { kind: 'verbatim'; source: string; span: LatexSpan }
-    | { kind: 'float'; environment: string; caption?: LatexInline[]; span: LatexSpan }
+    /** A `figure`/`table` float. Its body is scanned like any other content —
+     *  the caption is lifted out for display, not used as a replacement for it. */
+    | { kind: 'float'; environment: string; caption?: LatexInline[]; blocks: LatexBlock[]; span: LatexSpan }
     | { kind: 'unresolved'; command: string; path: string; span: LatexSpan }
     /** A resolved `\input`/`\include`. Never produced by the parser — the core
      *  has no filesystem (L4); the viewer builds these from an injected
@@ -733,14 +735,16 @@ function readEnvironment(
     }
 
     if (FLOAT_ENVIRONMENTS.has(name)) {
-        // L7: floats are not typeset; the caption is the one piece of the float
-        // that carries meaning without layout, so it is extracted and the rest
-        // is reported rather than silently dropped.
+        // The caption is lifted out for display, but the body is scanned like
+        // any other content (L22). Extracting only the caption — the original
+        // L7 reading, from before tables rendered — discarded the `tabular` that
+        // is the whole point of a `table` float, and not even as source.
         const caption = readCaption(ctx, inner, depth);
-        const graphic = findCommand(inner, 'includegraphics', 0, inner.length);
-        if (graphic !== -1) addDiagnostic(ctx, 'warning', 'latex.unresolved-input', 'diag.latex.unresolved-input', { command: 'includegraphics', path: readGraphicPath(inner, graphic) });
-        addDiagnostic(ctx, 'info', 'latex.float-caption-only', 'diag.latex.float-caption-only', { environment: name });
-        return { blocks: made(ctx, { kind: 'float', environment: name, ...(caption ? { caption } : {}), span }), next: closing.after };
+        const blocks = scanBlocks(ctx, contentStart, closing.contentEnd, depth + 1);
+        return {
+            blocks: made(ctx, { kind: 'float', environment: name, ...(caption ? { caption } : {}), blocks, span }),
+            next: closing.after
+        };
     }
 
     addDiagnostic(ctx, 'warning', 'latex.unsupported-environment', 'diag.latex.unsupported-environment', { environment: name });
@@ -1216,6 +1220,18 @@ function readInlineCommand(
         const group = readGroup(source, control.end, source.length);
         return group ? group.end : control.end;
     }
+    // The float's caption is lifted out separately, so the copy in the body is
+    // consumed here. `\caption*` and the optional short form both occur, which
+    // is why this is not a plain entry in SILENT_COMMANDS.
+    if (control.value === 'caption') {
+        let cursor = control.end;
+        if (source[cursor] === '*') cursor++;
+        const optional = readOptional(source, cursor, source.length);
+        if (optional) cursor = optional.end;
+        const group = readGroup(source, skipSpace(source, cursor), source.length);
+        return group ? group.end : cursor;
+    }
+
     // `\let\abs=\envert` — the `=` is optional, so a fixed argument count would
     // leave part of it behind as prose.
     if (control.value === 'let') {
