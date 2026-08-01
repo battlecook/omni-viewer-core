@@ -3,15 +3,24 @@ import { ALLOWED_LINK_SCHEMES } from '../../host/index.js';
 import { parseMarkdown, type MarkdownDocument, type MarkdownParseOptions } from '../../parsers/markdown/index.js';
 import type { ResourceLimits } from '../../parsers/types.js';
 import { bindFragmentAnchor, classifyAnchorTarget } from '../anchors.js';
+import { MATH_SANITIZE_PROFILE, type DomPurify, type MathRenderer } from '../math.js';
 import { MountAbortedError, VIEWER_ROOT_CLASS, type MountOptions, type ViewerHandle, type ViewerInput } from '../types.js';
 import { createMarkdownController, type MarkdownViewMode } from './controller.js';
 import { maskMathSegments, mathSegmentLiteral, type MathSegment } from './math.js';
+import {
+    assignSourceLines, createScrollPairs, measureLineTops, projectScroll, scanSourceBlocks,
+    SOURCE_LINE_ATTRIBUTE, type ScrollPair
+} from './source-map.js';
 import { markdownViewerCss } from './styles.js';
 
 export { parseMarkdown, type MarkdownDocument } from '../../parsers/markdown/index.js';
 export { markdownViewerCss } from './styles.js';
 export { createMarkdownController, type MarkdownAction, type MarkdownController, type MarkdownViewMode, type MarkdownViewState } from './controller.js';
 export { maskMathSegments, mathSegmentLiteral, type MathSegment, type MaskedMathSource } from './math.js';
+export {
+    assignSourceLines, projectScroll, scanSourceBlocks, SOURCE_LINE_ATTRIBUTE,
+    type ScrollPair, type SourceBlock, type SourceBlockKind
+} from './source-map.js';
 
 export const MARKDOWN_VIEWER_META = {
     id: 'markdown', displayNameKey: 'markdown.title',
@@ -22,7 +31,7 @@ export const MARKDOWN_VIEWER_META = {
 };
 
 export interface MarkdownRenderer { parse(markdown: string): string; }
-export interface DomPurify { sanitize(html: string, options: Record<string, unknown>): string; }
+export { type DomPurify, type MathRenderer } from '../math.js';
 export interface MarkdownHighlighter {
     highlight(source: string, options: { language: string; ignoreIllegals: boolean }): { value: string; language?: string };
     highlightAuto(source: string): { value: string; language?: string };
@@ -32,11 +41,9 @@ export interface MarkdownDiagramRenderer {
     renderMermaid?(id: string, source: string): Promise<string>;
     renderPlantUml?(source: string, document: Document): SVGElement;
 }
-/** TeX → HTML (KaTeX renderToString shape). The output is sanitized before
- *  insertion, so the renderer does not need to be trusted with the DOM. */
-export interface MarkdownMathRenderer {
-    renderToHtml(source: string, displayMode: boolean): string;
-}
+/** @deprecated Use the shared `MathRenderer` (`../math.js`) — kept as an alias
+ *  so adapters written against this name keep compiling. */
+export type MarkdownMathRenderer = MathRenderer;
 export interface MarkdownViewerDeps {
     render: MarkdownRenderer;
     createDOMPurify(window: Window): DomPurify;
@@ -52,6 +59,10 @@ export type MarkdownViewerContext = HostContext & {
 export interface MarkdownMountOptions extends MountOptions {
     limits?: ResourceLimits;
     markdownLimits?: MarkdownParseOptions['markdownLimits'];
+    /** Whether split view keeps the two panes scrolled to the same place.
+     *  On by default, and not exposed in the viewer's own chrome — a host that
+     *  wants it configurable should drive this from its own settings. */
+    scrollSync?: boolean;
 }
 
 const SANITIZE = {
@@ -62,14 +73,6 @@ const SANITIZE = {
 const SVG_SANITIZE = {
     USE_PROFILES: { svg: true, svgFilters: true }, ADD_TAGS: ['foreignObject'],
     ADD_ATTR: ['dominant-baseline', 'text-anchor', 'viewBox', 'xmlns', 'role', 'aria-roledescription']
-};
-// KaTeX htmlAndMathml output: spans positioned via inline style, a MathML
-// twin for accessibility, and SVG for stretchy delimiters. `style` is allowed
-// only inside these fragments — the outer document keeps FORBID_ATTR:style.
-const MATH_SANITIZE = {
-    USE_PROFILES: { html: true, mathMl: true, svg: true },
-    ADD_ATTR: ['style', 'aria-hidden', 'encoding', 'definitionurl'],
-    FORBID_TAGS: ['script', 'iframe', 'object', 'embed', 'form', 'input', 'button', 'textarea', 'select', 'a', 'img']
 };
 
 export async function mountMarkdownViewer(
@@ -99,6 +102,27 @@ export async function mountMarkdownViewer(
     let renderedHtml = '';
     let diagramCount = 0;
     let liveTimer: ReturnType<typeof setTimeout> | undefined;
+    const scrollSyncEnabled = options.scrollSync ?? true;
+    // Rebuilt lazily on the first scroll after a render, edit, or mode change,
+    // because measuring anchors needs settled layout.
+    let scrollPairs: { toPreview: ScrollPair[]; toSource: ScrollPair[] } | undefined;
+    // Which pane drove the scroll currently being propagated. A programmatic
+    // scrollTop write echoes back one event on the other pane; that echo is
+    // swallowed here so the two panes cannot chase each other.
+    let scrollDriver: 'source' | 'preview' | undefined;
+    // Heading offsets share the scroll map's lifetime: both are pixel positions
+    // that only a layout change can move, and both are rebuilt on first use.
+    let headingOffsets: number[] | undefined;
+    // `undefined` means "follow the mode"; the toggle is what pins it.
+    let tocPreferred: boolean | undefined;
+    let tocEntries: Array<{ id: string; heading: HTMLElement; link: HTMLElement }> = [];
+    // Only a mode change moves the panels; heading selection must not invalidate
+    // the measured anchors, or every scroll-spy update would force a remeasure.
+    let lastMode: MarkdownViewMode = 'preview';
+    /** Drop every cached pixel position. Anything that can move content inside
+     *  the preview — a render, an edit, a panel resize, a late-arriving image —
+     *  has to come through here, or the anchors describe a stale layout. */
+    const invalidateMeasurements = (): void => { scrollPairs = undefined; headingOffsets = undefined; };
     const el = <K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] => {
         const node = document.createElement(tag); if (className) node.className = className; if (text !== undefined) node.textContent = text; return node;
     };
@@ -121,6 +145,8 @@ export async function mountMarkdownViewer(
     for (const [mode, key] of [['preview', 'markdown.preview'], ['split', 'markdown.split'], ['source', 'markdown.source']] as const) {
         const node = button(key); node.dataset.viewMode = mode; modeButtons.set(mode, node); modeGroup.append(node);
     }
+    const tocButton = button('markdown.toc');
+    modeGroup.append(tocButton);
     const actionGroup = el('div', 'omni-markdown__toolbar-group');
     const renderButton = button('markdown.render', 'omni-markdown__button omni-markdown__button--primary');
     const copyHtmlButton = button('markdown.copyHtml');
@@ -133,8 +159,16 @@ export async function mountMarkdownViewer(
     const previewHeader = el('div', 'omni-markdown__panel-header');
     const previewCaption = el('span', 'omni-markdown__caption', t('markdown.rendering'));
     previewHeader.append(el('span', undefined, t('markdown.preview')), previewCaption);
+    // The outline shares the preview panel's scroll region so it stays beside
+    // the prose it indexes rather than competing with the source pane.
+    const previewBody = el('div', 'omni-markdown__preview-body');
+    const toc = el('nav', 'omni-markdown__toc');
+    toc.setAttribute('aria-label', t('markdown.toc'));
+    const tocList = el('ul', 'omni-markdown__toc-list');
+    toc.append(tocList);
     const preview = el('article', 'omni-markdown__preview');
-    previewPanel.append(previewHeader, preview);
+    previewBody.append(toc, preview);
+    previewPanel.append(previewHeader, previewBody);
     const sourcePanel = el('section', 'omni-markdown__panel omni-markdown__source-panel');
     const sourceHeader = el('div', 'omni-markdown__panel-header');
     const sourceCaption = el('span', 'omni-markdown__caption', t('markdown.editable'));
@@ -158,8 +192,30 @@ export async function mountMarkdownViewer(
         status.textContent = t(key); status.className = `omni-markdown__status${kind ? ` is-${kind}` : ''}`;
     };
     const showMessage = (text: string): void => { message.textContent = text; message.hidden = !text; };
+    const highlightToc = (): void => {
+        for (const entry of tocEntries) {
+            const active = entry.id === controller.state.selectedHeading;
+            entry.link.classList.toggle('is-active', active);
+            if (active) entry.link.setAttribute('aria-current', 'true'); else entry.link.removeAttribute('aria-current');
+        }
+    };
+    // Split already divides the width two ways, so a third column makes both
+    // panes cramped. The outline steps aside there until the reader asks for it.
+    const tocShouldShow = (): boolean => tocPreferred ?? controller.state.mode !== 'split';
+    const applyTocVisibility = (): void => {
+        const shown = tocShouldShow() && tocEntries.length > 0;
+        tocButton.disabled = !tocEntries.length;
+        tocButton.classList.toggle('is-active', shown);
+        tocButton.setAttribute('aria-pressed', String(shown));
+        if (toc.hidden === !shown) return;
+        toc.hidden = !shown;
+        invalidateMeasurements(); // the preview's width just changed
+    };
     const syncState = (): void => {
         const state = controller.state;
+        if (state.mode !== lastMode) { lastMode = state.mode; invalidateMeasurements(); }
+        applyTocVisibility();
+        highlightToc();
         workspace.classList.toggle('is-split', state.mode === 'split');
         previewPanel.hidden = state.mode === 'source'; sourcePanel.hidden = state.mode === 'preview';
         for (const [mode, node] of modeButtons) node.classList.toggle('is-active', mode === state.mode);
@@ -187,7 +243,10 @@ export async function mountMarkdownViewer(
                 let released = false; const release = (): void => { if (!released) { released = true; assetReleases.delete(release); asset.dispose(); } };
                 if (disposed || version !== renderVersion) { release(); return; }
                 assetReleases.add(release); image.src = asset.url;
-                image.addEventListener('load', release, { once: true }); image.addEventListener('error', release, { once: true });
+                // An image settling changes the preview's height well after the
+                // anchors were measured, so the map has to be dropped with it.
+                const settle = (): void => { release(); invalidateMeasurements(); };
+                image.addEventListener('load', settle, { once: true }); image.addEventListener('error', settle, { once: true });
             }).catch(() => { if (!disposed && version === renderVersion) image.replaceWith(document.createTextNode(image.alt || t('markdown.assetUnavailable'))); });
         });
     };
@@ -236,12 +295,125 @@ export async function mountMarkdownViewer(
                 const segment = match ? segments[Number(match[1])] : undefined;
                 if (!segment) { if (part) fragment.append(document.createTextNode(part)); continue; }
                 const holder = el('span', `omni-markdown__math${segment.display ? ' omni-markdown__math--display' : ''}`);
-                try { holder.innerHTML = purifier.sanitize(math.renderToHtml(segment.source, segment.display), MATH_SANITIZE); }
+                try { holder.innerHTML = purifier.sanitize(math.renderToHtml(segment.source, segment.display), MATH_SANITIZE_PROFILE); }
                 catch { holder.classList.add('is-invalid'); holder.textContent = mathSegmentLiteral(segment); }
                 fragment.append(holder);
             }
             node.replaceWith(fragment);
         }
+    };
+
+    /** Distance from the preview's top within which a heading counts as current. */
+    const SPY_THRESHOLD_PX = 12;
+    const previewOffsetOf = (node: HTMLElement): number =>
+        node.getBoundingClientRect().top - preview.getBoundingClientRect().top + preview.scrollTop;
+    // Built from the rendered headings rather than the parser's source index:
+    // the index counts `#` inside fenced code and misses setext headings, and
+    // only the rendered element gives a scroll target and a `data-source-line`.
+    const buildToc = (): void => {
+        const found: Array<{ heading: HTMLElement; id: string; level: string; text: string }> = [];
+        for (const node of preview.querySelectorAll('h1,h2,h3,h4,h5,h6')) {
+            const heading = node as HTMLElement;
+            const text = headingLabel(heading);
+            if (text) found.push({ heading, id: heading.id, level: heading.tagName.slice(1), text });
+        }
+        const unchanged = found.length === tocEntries.length && found.every((item, index) => {
+            const entry = tocEntries[index]!;
+            return entry.id === item.id && entry.link.dataset.level === item.level && entry.link.textContent === item.text;
+        });
+        if (unchanged) {
+            // The live preview re-renders every 250ms while typing. Replacing
+            // entries that read the same would scroll the outline back to the
+            // top and throw keyboard focus out of it on every keystroke; only
+            // the heading elements behind them actually changed.
+            for (const [index, item] of found.entries()) tocEntries[index]!.heading = item.heading;
+        } else {
+            tocList.replaceChildren();
+            tocEntries = found.map(item => {
+                const link = el('button', 'omni-markdown__toc-link', item.text);
+                link.type = 'button'; link.title = item.text;
+                link.dataset.level = item.level; link.dataset.headingId = item.id;
+                const listItem = el('li'); listItem.append(link); tocList.append(listItem);
+                return { id: item.id, heading: item.heading, link };
+            });
+        }
+        applyTocVisibility();
+        highlightToc();
+    };
+    const revealHeading = (id: string): void => {
+        const entry = tocEntries.find(item => item.id === id);
+        if (!entry) return;
+        controller.dispatch({ type: 'select-heading', id });
+        // Left as a plain scrollTop write so the preview's own scroll handler
+        // still runs and carries the source pane along in split mode.
+        preview.scrollTop = Math.max(0, previewOffsetOf(entry.heading) - SPY_THRESHOLD_PX);
+    };
+    // Marks the last heading at or above the top of the viewport. Dispatches
+    // only on change, so scrolling does not churn controller subscribers.
+    // Offsets are cached because this runs on every scroll event: measuring each
+    // heading per frame reads the layout O(headings) times for a result that
+    // cannot have changed without an invalidation.
+    const spyHeading = (): void => {
+        if (!tocEntries.length) return;
+        if (!headingOffsets) {
+            const base = preview.getBoundingClientRect().top - preview.scrollTop;
+            headingOffsets = tocEntries.map(entry => entry.heading.getBoundingClientRect().top - base);
+        }
+        const top = preview.scrollTop;
+        let current;
+        if (preview.scrollHeight - preview.clientHeight - top <= 1) {
+            // The last screenful holds every heading that never reaches the top
+            // edge. Ranking by "has passed the top" freezes there on whichever
+            // one last did, leaving the closing sections unreachable however far
+            // down the reader is — at the end, the end of the outline is current.
+            current = tocEntries[tocEntries.length - 1]!.id;
+        } else {
+            current = tocEntries[0]!.id;
+            for (const [index, entry] of tocEntries.entries()) {
+                if (headingOffsets[index]! - top > SPY_THRESHOLD_PX) break;
+                current = entry.id;
+            }
+        }
+        if (current !== controller.state.selectedHeading) controller.dispatch({ type: 'select-heading', id: current });
+    };
+
+    // Pair every anchored preview element with the pixel offset of its source
+    // line, plus both scroll extents, so the ends of the two panes always meet.
+    const buildScrollPairs = (): { toPreview: ScrollPair[]; toSource: ScrollPair[] } => {
+        const anchored = [...preview.querySelectorAll(`[${SOURCE_LINE_ATTRIBUTE}]`)] as HTMLElement[];
+        const sourceTops = measureLineTops(sourceHighlight, source.value, anchored.map(node => Number(node.getAttribute(SOURCE_LINE_ATTRIBUTE))));
+        const previewBase = preview.getBoundingClientRect().top - preview.scrollTop;
+        const maxSource = Math.max(0, source.scrollHeight - source.clientHeight);
+        const maxPreview = Math.max(0, preview.scrollHeight - preview.clientHeight);
+        const collector = createScrollPairs();
+        collector.push(0, 0);
+        for (const [index, node] of anchored.entries()) {
+            const top = sourceTops[index];
+            if (top === undefined) continue;
+            const previewTop = node.getBoundingClientRect().top - previewBase;
+            // Anchors inside the last screenful sit past an extent. Clamping them
+            // here would occupy the terminal pair's `from`, and the extents that
+            // follow would then be dropped for not ascending — leaving the last
+            // screen of the document unreachable. The terminal pair covers them.
+            if (top >= maxSource || previewTop >= maxPreview) continue;
+            collector.push(top, previewTop);
+        }
+        collector.push(maxSource, maxPreview);
+        return { toPreview: collector.pairs, toSource: collector.pairs.map(({ from, to }) => ({ from: to, to: from })) };
+    };
+    const applyScroll = (target: HTMLElement, value: number, driver: 'source' | 'preview'): void => {
+        const next = Math.max(0, Math.min(Math.max(0, target.scrollHeight - target.clientHeight), Math.round(value)));
+        // A write that changes nothing emits no event, so claiming the driver
+        // slot here would swallow the other pane's next genuine scroll.
+        if (Math.abs(target.scrollTop - next) < 1) return;
+        scrollDriver = driver;
+        target.scrollTop = next;
+    };
+    const syncScroll = (from: 'source' | 'preview'): void => {
+        if (!scrollSyncEnabled || controller.state.mode !== 'split') return;
+        scrollPairs ??= buildScrollPairs();
+        if (from === 'source') applyScroll(preview, projectScroll(source.scrollTop, scrollPairs.toPreview), 'source');
+        else applyScroll(source, projectScroll(preview.scrollTop, scrollPairs.toSource), 'preview');
     };
 
     const boundedRenderSource = (sourceText: string): { source: string; partial: boolean } => {
@@ -282,6 +454,13 @@ export async function mountMarkdownViewer(
             hardenContent(version); await renderEnhancements(version);
             if (disposed || version !== renderVersion) return;
             applyMath(masked.segments);
+            // Anchored last: enhancers replace whole elements (a fenced block
+            // becomes a diagram frame), which would discard attributes set
+            // earlier. Lines come from the unmasked source so they address the
+            // editor's text, not the math-masked copy handed to the renderer.
+            assignSourceLines(preview, scanSourceBlocks(bounded.source));
+            invalidateMeasurements();
+            buildToc(); spyHeading();
             const lines = controller.state.source ? controller.state.source.split(/\r?\n/).length : 0;
             const words = controller.state.source.match(/\S+/g)?.length ?? 0;
             titleBox.querySelector('.omni-markdown__summary')!.textContent = t('markdown.summary', { lines, words });
@@ -290,7 +469,8 @@ export async function mountMarkdownViewer(
             if (bounded.partial) showMessage(t('diag.markdown.limit-exceeded'));
             if (save) await saveSource();
         } catch (error) {
-            preview.replaceChildren(); renderedHtml = ''; previewCaption.textContent = t('markdown.renderFailed');
+            preview.replaceChildren(); invalidateMeasurements(); buildToc();
+            renderedHtml = ''; previewCaption.textContent = t('markdown.renderFailed');
             setStatus('markdown.invalid', 'invalid'); showMessage(errorText(error, t('markdown.renderFailed')));
         }
     };
@@ -318,7 +498,18 @@ export async function mountMarkdownViewer(
     // Paint the highlight overlay from the current textarea value. Highlight.js
     // markup is sanitized to spans-only before insertion; the trailing newline
     // keeps the final source line at full height so the overlay never clips.
+    // The textarea scrolls and the overlay behind it does not, so a vertical
+    // scrollbar narrows only the textarea's content box. The two then wrap at
+    // different columns and the caret drifts away from the glyphs it sits
+    // between. `clientWidth` already excludes the scrollbar, whose width varies
+    // by platform and by whether it overlays, so the overlay is pinned to it
+    // rather than to a guess.
+    const matchOverlayWidth = (): void => {
+        const width = source.clientWidth;
+        if (width > 0) sourceHighlight.style.width = `${width}px`;
+    };
     const highlightSource = (): void => {
+        matchOverlayWidth();
         const text = source.value;
         let html: string;
         if (deps.highlighter && deps.highlighter.getLanguage('markdown')) {
@@ -334,6 +525,9 @@ export async function mountMarkdownViewer(
     // Debounced live preview: typing (or undo/redo) refreshes the rendered
     // panel without saving, so the split view stays in sync as you edit.
     const scheduleLiveRender = (): void => {
+        // The edit already moved the source lines the anchors were measured at,
+        // so drop them now rather than after the debounce settles.
+        invalidateMeasurements();
         if (liveTimer) clearTimeout(liveTimer);
         liveTimer = setTimeout(() => { liveTimer = undefined; void renderMarkdown(false); }, 250);
     };
@@ -351,7 +545,27 @@ export async function mountMarkdownViewer(
 
     for (const [mode, node] of modeButtons) on(node, 'click', (() => controller.dispatch({ type: 'set-mode', mode })) as EventListener);
     on(source, 'input', (() => { controller.dispatch({ type: 'edit-source', source: source.value }); highlightSource(); scheduleLiveRender(); }) as EventListener);
-    on(source, 'scroll', (() => { sourceHighlight.scrollTop = source.scrollTop; sourceHighlight.scrollLeft = source.scrollLeft; }) as EventListener);
+    on(source, 'scroll', (() => {
+        // The overlay tracks the textarea even for echoed scrolls — it is not a
+        // sync target, it is the same surface.
+        sourceHighlight.scrollTop = source.scrollTop; sourceHighlight.scrollLeft = source.scrollLeft;
+        if (scrollDriver === 'preview') { scrollDriver = undefined; return; }
+        syncScroll('source');
+    }) as EventListener);
+    on(preview, 'scroll', (() => {
+        // The outline tracks the viewport even for echoed scrolls — it reflects
+        // position rather than driving it.
+        spyHeading();
+        if (scrollDriver === 'source') { scrollDriver = undefined; return; }
+        syncScroll('preview');
+    }) as EventListener);
+    // Delegated so a re-render can replace every entry without accumulating
+    // listeners — the live preview rebuilds this list every 250ms while typing.
+    on(tocList, 'click', (event => {
+        const id = (event.target as HTMLElement | null)?.closest<HTMLElement>('.omni-markdown__toc-link')?.dataset.headingId;
+        if (id) revealHeading(id);
+    }) as EventListener);
+    on(tocButton, 'click', (() => { tocPreferred = !tocShouldShow(); applyTocVisibility(); }) as EventListener);
     on(source, 'keydown', (event => {
         const keyboard = event as KeyboardEvent; const key = keyboard.key.toLowerCase(); const command = keyboard.metaKey || keyboard.ctrlKey;
         if (command && key === 'z') { keyboard.preventDefault(); controller.dispatch({ type: keyboard.shiftKey ? 'redo' : 'undo' }); syncSourceFromState(); }
@@ -376,12 +590,29 @@ export async function mountMarkdownViewer(
     on(copyHtmlButton, 'click', (() => void copy(renderedHtml, 'markdown.htmlCopied')) as EventListener);
     on(copySourceButton, 'click', (() => void copy(source.value, 'markdown.sourceCopied')) as EventListener);
     if (!ctx.clipboard) { for (const node of [copyHtmlButton, copySourceButton]) { node.disabled = true; node.title = t('common.noClipboard'); } }
+    // Resizing the container or a late web font rewraps both panes, moving every
+    // measured position without touching the document.
+    if (typeof ResizeObserver === 'function') {
+        const observer = new ResizeObserver(() => { invalidateMeasurements(); matchOverlayWidth(); });
+        observer.observe(workspace);
+        // The textarea resizes on its own when the mode changes the grid.
+        observer.observe(source);
+        disposers.push(() => observer.disconnect());
+    }
     const off = controller.subscribe(syncState); disposers.push(off);
     syncState(); highlightSource(); await renderMarkdown(false);
     if (options.signal?.aborted) { shell.remove(); releaseAssets(); throw new MountAbortedError(); }
     return { dispose() { disposed = true; renderVersion++; if (liveTimer) clearTimeout(liveTimer); releaseAssets(); for (const dispose of disposers.splice(0)) dispose(); shell.remove(); } };
 }
 
+/** Flat text for an outline entry. Rendered math contributes twice to
+ *  `textContent` — KaTeX emits a visual copy alongside a MathML twin — so the
+ *  presentation copy, which is the `aria-hidden` one, is dropped first. */
+function headingLabel(heading: HTMLElement): string {
+    const clone = heading.cloneNode(true) as HTMLElement;
+    clone.querySelectorAll('[aria-hidden="true"]').forEach(node => node.remove());
+    return (clone.textContent ?? '').replace(/\s+/g, ' ').trim();
+}
 function codeLanguage(block: Element): string {
     for (const name of block.classList) if (name.startsWith('language-')) return name.slice(9).toLowerCase(); else if (name.startsWith('lang-')) return name.slice(5).toLowerCase();
     return '';

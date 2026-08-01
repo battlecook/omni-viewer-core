@@ -13,7 +13,7 @@ models, viewers mount into a DOM element, and everything host-specific
 ## Supported formats
 
 - **Documents** — PDF, Word (DOCX and legacy DOC), HWP, PowerPoint (PPTX and
-  legacy PPT), Markdown
+  legacy PPT), Markdown, LaTeX (structure and math preview, not typesetting)
 - **Data & spreadsheets** — Excel, CSV/TSV, JSON, JSONL/NDJSON, YAML, TOML,
   Parquet, Avro, HDF5, MATLAB MAT, Safetensors, Protocol Buffers, ReqIF, SQLite
 - **Media & graphics** — audio (waveform/spectrogram), video, images,

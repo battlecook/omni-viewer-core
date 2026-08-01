@@ -1,9 +1,13 @@
 name: Release npm package
 
-# Triggered when a `v*` tag is pushed (e.g. `v0.1.0`). The job verifies that
-# the tag matches package.json, validates and builds the package, attaches the
-# npm tarball to a GitHub Release, and uses the matching CHANGELOG section as
-# the release notes.
+# Triggered when a `v*` tag is pushed (e.g. `v0.1.0`). The `release` job verifies
+# that the tag matches package.json, validates and builds the package, attaches
+# the npm tarball to a GitHub Release, and uses the matching CHANGELOG section as
+# the release notes. The `publish` job then pushes the same commit to npm.
+#
+# Publishing lives here rather than in a workflow triggered by `release:
+# published`: the Release is created with GITHUB_TOKEN, and events raised by that
+# token do not trigger further workflow runs.
 #
 # To cut a release locally:
 #   1. Bump `version` in package.json and package-lock.json.
@@ -16,13 +20,12 @@ on:
     tags:
       - 'v*'
 
-permissions:
-  contents: write
-
 jobs:
   release:
     name: Build and publish package
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -113,3 +116,34 @@ jobs:
           generate_release_notes: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish:
+    name: Publish to npm
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # required for OIDC trusted publishing
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          registry-url: https://registry.npmjs.org
+
+      # Trusted publishing (OIDC) requires npm >= 11.5.1
+      - name: Upgrade npm
+        run: npm install -g npm@latest
+
+      - name: Install dependencies
+        # npm 12 blocks remote tarballs by default. Allow only URL dependencies
+        # declared directly by this package (currently the pinned SheetJS build).
+        run: npm ci --allow-remote=root
+
+      # `prepublishOnly` rebuilds dist and runs the test suite before upload.
+      # npm picks up the OIDC credentials automatically; no NODE_AUTH_TOKEN needed.
+      - name: Publish
+        run: npm publish --access public

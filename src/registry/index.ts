@@ -172,7 +172,7 @@ export const JSON_VIEWER_DESCRIPTOR: ViewerDescriptor = {
 
 export const TOML_VIEWER_DESCRIPTOR: ViewerDescriptor = {
     id: 'toml', displayNameKey: 'toml.treeView', extensions: ['toml'], priority: 10,
-    requiredServices: [], optionalServices: ['clipboard']
+    requiredServices: [], optionalServices: ['clipboard', 'save', 'writeback']
 };
 export const JSONL_VIEWER_DESCRIPTOR: ViewerDescriptor = {
     id: 'jsonl', displayNameKey: 'jsonl.title', extensions: ['jsonl', 'ndjson', 'jsonlines'], priority: 10,
@@ -180,11 +180,19 @@ export const JSONL_VIEWER_DESCRIPTOR: ViewerDescriptor = {
 };
 export const YAML_VIEWER_DESCRIPTOR: ViewerDescriptor = {
     id: 'yaml', displayNameKey: 'yaml.treeView', extensions: ['yaml', 'yml'], priority: 10,
-    requiredServices: [], optionalServices: ['clipboard']
+    requiredServices: [], optionalServices: ['clipboard', 'save', 'writeback']
 };
 export const PROTO_VIEWER_DESCRIPTOR: ViewerDescriptor = {
     id: 'proto', displayNameKey: 'proto.title', extensions: ['proto'], priority: 10,
     requiredServices: [], optionalServices: ['clipboard', 'save', 'writeback']
+};
+// `.tex` is shared with plain TeX and ConTeXt, which have no \documentclass;
+// the parser detects that and the viewer opens on the source instead
+// (docs/viewers/latex.md §1). Extensionless files are routed here by the
+// `\documentclass` text sniff (stage 2, sniff.ts).
+export const LATEX_VIEWER_DESCRIPTOR: ViewerDescriptor = {
+    id: 'latex', displayNameKey: 'latex.title', extensions: ['tex', 'latex', 'ltx'], priority: 10,
+    requiredServices: [], optionalServices: ['clipboard', 'navigation', 'writeback', 'save']
 };
 
 /**
@@ -278,10 +286,11 @@ export const CORE_VIEWER_DESCRIPTORS: readonly ViewerDescriptor[] = [
     JSONL_VIEWER_DESCRIPTOR,
     YAML_VIEWER_DESCRIPTOR,
     PROTO_VIEWER_DESCRIPTOR,
+    LATEX_VIEWER_DESCRIPTOR,
     FALLBACK_VIEWER_DESCRIPTOR
 ];
 
-export { looksLikeJsonDocument, looksLikeJsonl, looksLikeProto, sniffTextViewer } from './sniff.js';
+export { looksLikeJsonDocument, looksLikeJsonl, looksLikeLatex, looksLikeProto, sniffTextViewer } from './sniff.js';
 export {
     CONTAINER_SNIFF_BYTES,
     OFFICE_CONTAINER_BY_EXT,

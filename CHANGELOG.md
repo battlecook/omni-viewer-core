@@ -5,6 +5,99 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] - 2026-08-01
+
+### Added
+
+- **LaTeX viewer** (`omni-viewer-core/viewers/latex`, `.tex` / `.latex` / `.ltx`).
+  Structure navigation and math, not typesetting: the preview shows a sectioning
+  outline, prose, lists, theorem environments and formulas, and states on screen
+  that it is a partial render. Anything it cannot model — `tabular`, TikZ,
+  `algorithm` — is shown as its own source with a badge rather than dropped, and
+  `\input`/`\includegraphics` are reported as unresolved because the core never
+  reads external files. Math is rendered by an injected engine
+  (`loadLatexViewerDeps()` wires up KaTeX + DOMPurify) and renders progressively
+  as formulas approach the viewport; without the engine, formulas stay readable
+  as TeX. A renderer supplied without a DOMPurify factory is refused rather than
+  trusted with the DOM. Adds `omni-viewer-core/parsers/latex`,
+  `omni-viewer-core/viewers/latex/self-loading`, `dist/styles/latex.css`, and
+  `LATEX_VIEWER_DESCRIPTOR` in the registry. See `docs/viewers/latex.md`.
+  Tables (`tabular`/`array`/`longtable`/`tabularx`) render with column alignment
+  and `\multicolumn` spans; `\newtheorem`-declared theorem environments render
+  with their titles; `subequations`, beamer `frame`/`block`/`columns` and other
+  pure wrappers are seen through so their content is not buried. Extensionless
+  files are routed by a `\documentclass` text sniff. `\input`/`\include` are
+  resolved only when the adapter injects `resolveInclude`; the core enforces path
+  containment before asking, and included files become sub-documents so the
+  editor and writeback keep addressing the main file.
+  Preamble macros reach the math engine, including parameterized
+  `\newcommand`, `\DeclareMathOperator` and `\let` aliases; `\label`/`\ref` and
+  other commands that typeset nothing are dropped before rendering instead of
+  becoming the engine's red unknown-command marker, and `\ref` becomes a control
+  that scrolls to the labelled block.
+- `MathRenderer`, `DomPurify` and the KaTeX sanitize profile now live in
+  `viewers/math.ts` so the markdown and LaTeX viewers share one injection type
+  and one allow-list. `MarkdownMathRenderer` remains as an alias.
+
+- The Markdown viewer now shows a heading outline beside the preview, with a
+  `Contents` toggle. Entries are built from the rendered headings rather than the
+  parser's source index, so `#` inside fenced code is excluded and setext
+  headings are included; clicking one scrolls the preview (and, in split mode,
+  the source), and the current heading is tracked as you scroll. This wires up
+  the `select-heading` action and `selectedHeading` state that
+  `createMarkdownController` already exposed but nothing used. Adds
+  `.omni-markdown__preview-body`, `.omni-markdown__toc`, `.omni-markdown__toc-list`,
+  and `.omni-markdown__toc-link` to `markdownViewerCss`; uses the existing
+  `markdown.toc` message. The outline is shown in preview mode and hidden in
+  split mode, where the width is already divided two ways; using the toggle pins
+  it either way for the rest of the session.
+- The Markdown viewer's split view now scroll-syncs the preview and the source
+  editor in both directions. It is always on and has no button of its own —
+  hosts that want it configurable can pass `MarkdownMountOptions.scrollSync`.
+  Rendered top-level elements carry `data-source-line`, so hosts can build their
+  own outline or reveal-line behaviour on top of the same anchors. New
+  `viewers/markdown/source-map.ts` exports `scanSourceBlocks`,
+  `assignSourceLines`, `projectScroll`, and `SOURCE_LINE_ATTRIBUTE`.
+
+- The Parquet viewer now shows which column is sorted and in which direction.
+  The sorted header carries `aria-sort` and a ▲/▼ indicator, matching the CSV and
+  Excel viewers; the state was already tracked by the controller but was never
+  rendered. Adds `.omni-parquet__sort-indicator` to `parquetViewerCss`.
+- Parquet clipboard actions are guarded by
+  `PARQUET_COPY_PAYLOAD_LIMIT_BYTES` (1 MiB, parity with CSV/Excel) and now
+  confirm themselves with a toast. Oversized payloads are refused with
+  `common.copyTooLarge` and pointed at Export JSON, which stays unguarded. This
+  applies to Copy JSON and Copy table, so wide previews that previously wrote
+  multi-megabyte payloads to the clipboard are now refused. Adds
+  `.omni-parquet__toast` to `parquetViewerCss`.
+- `ParquetParseOptions.metadata` / `ParquetDocument.fileMetadata` let a chunked
+  read reuse the footer parsed by the previous chunk. The viewer's "load more"
+  now threads it through, so each chunk costs only its own page reads — free for
+  a buffer input, but one saved round trip per chunk when `slice()` is bridged to
+  another process.
+- The Parquet search input has an `aria-label`, and `Escape` now dismisses its
+  context menu from anywhere (parity with CSV/Excel).
+
+### Fixed
+
+- The Markdown viewer's panels now scroll internally instead of growing to fit
+  their content. `.omni-markdown__workspace` set only `min-height`, so its grid
+  row sized to the document and the preview's `overflow:auto` never engaged —
+  the page scrolled instead, leaving `preview.scrollTop` pinned at 0. Everything
+  built on the preview being the scrollport was inert as a result: clicking an
+  outline entry marked it current but moved nothing, the scroll spy never fired,
+  and split-view scroll sync clamped every projection to 0. The workspace now
+  takes `flex:1 1 68vh` with a `minmax(0,1fr)` row, so it fills a host that gives
+  the viewer a definite height and stays bounded in one that does not.
+
+- The Parquet viewer no longer leaks a mount that was aborted while parsing. A
+  signal firing between parse completion and return previously yielded a live
+  handle the host never disposed, stranding three `document`-level listeners;
+  mount now tears down and throws `MountAbortedError`, as CSV/Excel do.
+- `dispose()` now clears the root and removes `VIEWER_ROOT_CLASS` /
+  `omni-viewer--parquet` from the container instead of only detaching its own
+  frame, and is idempotent.
+
 ## [0.10.0] - 2026-07-27
 
 ### Added

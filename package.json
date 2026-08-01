@@ -1,6 +1,6 @@
 {
   "name": "omni-viewer-core",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "description": "Shared parsing + rendering core for Omni Viewer (vscode / chrome / obsidian / web)",
   "type": "module",
   "license": "MIT",
@@ -24,6 +24,8 @@
     "excel",
     "csv",
     "markdown",
+    "latex",
+    "tex",
     "shapefile"
   ],
   "sideEffects": false,
@@ -100,6 +102,10 @@
     "./parsers/markdown": {
       "types": "./dist/parsers/markdown/index.d.ts",
       "default": "./dist/parsers/markdown/index.js"
+    },
+    "./parsers/latex": {
+      "types": "./dist/parsers/latex/index.d.ts",
+      "default": "./dist/parsers/latex/index.js"
     },
     "./parsers/proto": {
       "types": "./dist/parsers/proto/index.d.ts",
@@ -243,6 +249,14 @@
     "./viewers/markdown/self-loading": {
       "types": "./dist/viewers/markdown/self-loading.d.ts",
       "default": "./dist/viewers/markdown/self-loading.js"
+    },
+    "./viewers/latex": {
+      "types": "./dist/viewers/latex/index.d.ts",
+      "default": "./dist/viewers/latex/index.js"
+    },
+    "./viewers/latex/self-loading": {
+      "types": "./dist/viewers/latex/self-loading.d.ts",
+      "default": "./dist/viewers/latex/self-loading.js"
     },
     "./viewers/archive": {
       "types": "./dist/viewers/archive/index.d.ts",

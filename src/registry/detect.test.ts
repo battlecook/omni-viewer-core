@@ -67,6 +67,9 @@ describe('detectViewer (stage 1)', () => {
             ['a.yaml', 'yaml'],
             ['a.yml', 'yaml'],
             ['a.proto', 'proto'],
+            ['a.tex', 'latex'],
+            ['a.latex', 'latex'],
+            ['a.ltx', 'latex'],
             ['DATA.JSON', 'json'],
             ['archive.tar.gz', 'archive'],
             ['noext', 'fallback'],
@@ -171,6 +174,15 @@ describe('detectViewer (stage 2 — content sniffing, J17)', () => {
 
     it('detects Protocol Buffer schemas by content', () => {
         expect(sniff('schema.txt', 'syntax = "proto3";\nmessage User { string id = 1; }').viewerId).toBe('proto');
+    });
+
+    it('detects LaTeX documents by their \\documentclass', () => {
+        expect(sniff('paper', '\\documentclass[11pt]{article}\n\\begin{document}\nHi\n\\end{document}').viewerId).toBe('latex');
+        // plain TeX and ConTeXt share .tex but have no \documentclass, so an
+        // extensionless one must not be claimed.
+        expect(sniff('plain', '\\hbox{x}\n\\bye\n').viewerId).not.toBe('latex');
+        // A commented-out declaration is not a declaration.
+        expect(sniff('commented', '% \\documentclass{article}\ntext\n').viewerId).not.toBe('latex');
     });
 
     it('detects a mislabeled JSON file by content', () => {

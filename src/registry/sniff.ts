@@ -41,14 +41,26 @@ export function looksLikeProto(text: string): boolean {
 }
 
 /**
+ * Conservative LaTeX detection for extensionless text. `\documentclass` is the
+ * one construct every LaTeX document has and neither plain TeX nor ConTeXt uses,
+ * so it is the whole test — matching on `\begin`/`\section` alone would claim
+ * plain TeX files the viewer cannot read structurally (docs/viewers/latex.md §1).
+ */
+export function looksLikeLatex(text: string): boolean {
+    const sample = text.slice(0, 64 * 1024).replace(/(^|[^\\])%.*$/gm, '$1');
+    return /(^|[^\\])\\documentclass\s*(\[[^\]]*\])?\s*\{[^}]+\}/.test(sample);
+}
+
+/**
  * Classify a text sample to a viewer id by content (JSONL is checked before
  * JSON — 부록 B-6). Returns null when nothing matches. JSONL wins over JSON for
  * multi-line object streams so a `{…}\n{…}` file is never mis-claimed as JSON;
  * if no jsonl viewer is registered the caller falls through to fallback.
  */
-export function sniffTextViewer(text: string): 'jsonl' | 'json' | 'proto' | null {
+export function sniffTextViewer(text: string): 'jsonl' | 'json' | 'proto' | 'latex' | null {
     if (looksLikeJsonl(text)) return 'jsonl';
     if (looksLikeJsonDocument(text)) return 'json';
     if (looksLikeProto(text)) return 'proto';
+    if (looksLikeLatex(text)) return 'latex';
     return null;
 }

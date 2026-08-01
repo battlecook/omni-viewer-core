@@ -6,6 +6,9 @@ export const PARQUET_PREVIEW_ROWS = 10_000;
 
 export type ParquetCell = null | boolean | number | string | ParquetCell[] | { [key: string]: ParquetCell };
 
+/** Raw hyparquet footer metadata, threaded back in to skip re-reading the footer. */
+export type ParquetFileMetadata = Awaited<ReturnType<typeof parquetMetadataAsync>>;
+
 export interface ParquetDocument {
     headers: string[];
     rows: ParquetCell[][];
@@ -14,9 +17,24 @@ export interface ParquetDocument {
     loadedRows: number;
     fileSizeBytes: number;
     isLimited: boolean;
+    /** Footer metadata of this parse, reusable as {@link ParquetParseOptions.metadata}. */
+    fileMetadata?: ParquetFileMetadata;
 }
 
-export interface ParquetParseOptions { maxPreviewBytes?: number; previewRows?: number; rowStart?: number; signal?: AbortSignal }
+export interface ParquetParseOptions {
+    maxPreviewBytes?: number;
+    previewRows?: number;
+    rowStart?: number;
+    signal?: AbortSignal;
+    /**
+     * Footer metadata from an earlier parse of the same source. Chunked loading
+     * re-enters this function once per "load more", and without this every chunk
+     * re-reads the footer — free for a buffer source, but a full extra round trip
+     * when `slice()` is bridged to another process (DESIGN.md 메모리 규율 —
+     * 랜덤액세스 입력).
+     */
+    metadata?: ParquetFileMetadata;
+}
 
 /**
  * Random-access source: hyparquet's `AsyncBuffer` shape. The decoder consumes it
@@ -46,7 +64,7 @@ export async function parseParquet(data: Uint8Array, options: ParquetParseOption
 export async function parseParquetSource(source: ParquetSource, options: ParquetParseOptions = {}): Promise<ParquetDocument> {
     if (options.signal?.aborted) throw new DOMException('Parsing was cancelled.', 'AbortError');
     const file = options.signal ? withAbort(source, options.signal) : source;
-    const metadata = await parquetMetadataAsync(file);
+    const metadata = options.metadata ?? await parquetMetadataAsync(file);
     const schema = parquetSchema(metadata);
     const totalRows = Number(metadata.num_rows ?? 0);
     const rowStart = Math.max(0, options.rowStart ?? 0);
@@ -63,7 +81,7 @@ export async function parseParquetSource(source: ParquetSource, options: Parquet
     const types = collectColumnTypes(schema);
     const rows = objects.map((row) => headers.map((header) => convertValue(row[header], types.get(header))));
     return { headers, rows, schema: convertValue(schema), totalRows, loadedRows: rows.length,
-        fileSizeBytes: source.byteLength, isLimited: shouldChunk && rowStart + rows.length < totalRows };
+        fileSizeBytes: source.byteLength, isLimited: shouldChunk && rowStart + rows.length < totalRows, fileMetadata: metadata };
 }
 
 /** Wraps a source so each range read observes cancellation (parity with the buffer path). */

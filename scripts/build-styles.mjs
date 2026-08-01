@@ -19,6 +19,7 @@ const entries = [
     ['viewers/excel/styles.js', 'excelViewerCss', 'excel.css'],
     ['viewers/image/styles.js', 'imageViewerCss', 'image.css']
     ,['viewers/markdown/styles.js', 'markdownViewerCss', 'markdown.css']
+    ,['viewers/latex/styles.js', 'latexViewerCss', 'latex.css']
     ,['viewers/archive/styles.js', 'archiveViewerCss', 'archive.css']
     ,['viewers/parquet/styles.js', 'parquetViewerCss', 'parquet.css']
     ,['viewers/hwp/styles.js', 'hwpViewerCss', 'hwp.css']

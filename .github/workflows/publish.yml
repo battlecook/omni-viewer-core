@@ -1,13 +1,17 @@
 name: Publish to npm
 
-# Publishes to npm using OIDC trusted publishing — no long-lived npm token.
-# Triggered when a GitHub Release is published (or manually via the Actions tab).
-# The package version published is whatever is in package.json at that commit,
-# so bump the version before creating the release.
+# Manual escape hatch for publishing to npm with OIDC trusted publishing — no
+# long-lived npm token. The normal path is the `publish` job in release.yml, which
+# runs on a `v*` tag push; use this workflow to re-publish a version whose upload
+# failed after the GitHub Release was already created.
+#
+# There is deliberately no `release: published` trigger: that Release is created
+# with GITHUB_TOKEN, and events raised by that token do not start workflow runs.
+#
+# The version published is whatever is in package.json on the selected ref, so
+# dispatch this against a ref that already carries the intended version bump.
 
 on:
-  release:
-    types: [published]
   workflow_dispatch:
 
 permissions:
