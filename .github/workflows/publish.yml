@@ -1,9 +1,15 @@
 name: Publish to npm
 
-# Manual escape hatch for publishing to npm with OIDC trusted publishing — no
-# long-lived npm token. The normal path is the `publish` job in release.yml, which
-# runs on a `v*` tag push; use this workflow to re-publish a version whose upload
-# failed after the GitHub Release was already created.
+# The single npm upload path, reached two ways: called by release.yml on a `v*`
+# tag push, or dispatched by hand to re-publish a version whose upload failed
+# after the GitHub Release was already created.
+#
+# Everything publishes through this file on purpose. npm's trusted publishing
+# (OIDC — no long-lived token) is registered against one workflow *filename* per
+# package, and this package is registered as `publish.yml`. A job that runs
+# `npm publish` from another file mints a token whose `job_workflow_ref` points
+# at that other file, and npm rejects it with a 404. Calling this workflow keeps
+# `job_workflow_ref` pointed here, so both entry points stay authorized.
 #
 # There is deliberately no `release: published` trigger: that Release is created
 # with GITHUB_TOKEN, and events raised by that token do not start workflow runs.
@@ -13,6 +19,7 @@ name: Publish to npm
 
 on:
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
