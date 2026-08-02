@@ -120,7 +120,12 @@ export interface CsvController {
     /** Whole document in original order as normalized CSV (save/writeback —
      *  ignores search and sort so hidden rows are never dropped). */
     toDocumentCsv(): string;
-    /** Mark the current edit depth as the saved point (clears dirty). */
+    /**
+     * Mark the current edit depth as the saved point (clears dirty). Writes are
+     * async and the grid stays editable during one, so the caller must confirm
+     * that `toDocumentCsv()` still equals what it wrote before calling this —
+     * otherwise an edit made mid-write is recorded as being on disk.
+     */
     markSaved(): void;
     /** Decoded source text (raw view). */
     readonly rawText: string;

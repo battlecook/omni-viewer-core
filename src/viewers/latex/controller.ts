@@ -13,7 +13,14 @@ export type LatexAction =
     | { type: 'edit-source'; source: string }
     | { type: 'undo' }
     | { type: 'redo' }
-    | { type: 'mark-saved' };
+    /**
+     * `source` is the text that actually reached the file. Writes are async and
+     * the editor stays live during one, so the current source at completion is
+     * not necessarily what was written — omitting it would mark an edit made
+     * mid-write as saved and let a host discard it. Omitted = "what is in the
+     * editor now", which is only correct for synchronous saves.
+     */
+    | { type: 'mark-saved'; source?: string };
 
 export interface LatexViewState {
     mode: LatexViewMode;
@@ -74,7 +81,8 @@ export function createLatexController(text: string, mode: LatexViewMode = 'previ
                 undo.push(state.source);
                 setSource(redo.pop()!);
             } else if (action.type === 'mark-saved') {
-                state = { ...state, savedSource: state.source, dirty: false };
+                const savedSource = action.source ?? state.source;
+                state = { ...state, savedSource, dirty: state.source !== savedSource };
             }
             emit();
         },

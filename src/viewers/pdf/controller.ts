@@ -158,7 +158,15 @@ export type PdfAction =
     | { type: 'select-annotation'; id: string | null }
     | { type: 'undo' }
     | { type: 'redo' }
-    | { type: 'mark-saved' };
+    /**
+     * `savedState` is the page order and annotations that actually reached the
+     * file. Builds and writes are async and the document stays editable during
+     * one, so the state at completion is not necessarily what was written —
+     * omitting it would mark an edit made mid-save as saved and let a host
+     * discard it. Omitted = "the current state", which is only correct for a
+     * synchronous save.
+     */
+    | { type: 'mark-saved'; savedState?: Pick<PdfViewState, 'pageOrder' | 'annotations'> };
 
 export interface PdfController {
     readonly state: PdfViewState;
@@ -355,7 +363,16 @@ export function createPdfController(
                 case 'set-annotation-color': annotations = annotations.map((a) => a.id === action.id ? { ...a, color: action.color } : a); break;
                 case 'remove-annotation': annotations = annotations.filter((a) => a.id !== action.id); if (selectedAnnotationId === action.id) selectedAnnotationId = null; break;
                 case 'select-annotation': selectedAnnotationId = action.id; break;
-                case 'mark-saved': savedSignature = signature(); break;
+                case 'mark-saved':
+                    // Same shape as `signature()` so an unchanged document still
+                    // compares equal (state copies preserve key order).
+                    savedSignature = action.savedState
+                        ? JSON.stringify({
+                            pageOrder: action.savedState.pageOrder,
+                            annotations: action.savedState.annotations
+                        })
+                        : signature();
+                    break;
             }
             if (before && beforeSignature !== signature()) {
                 undoStack.push(before);

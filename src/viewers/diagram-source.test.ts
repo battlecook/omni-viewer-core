@@ -2,7 +2,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createCatalogI18n } from '../i18n/index.js';
 import { createDiagramController } from './diagram-controller.js';
-import { mountDiagramViewer, type DiagramViewerContext } from './diagram.js';
+import { mountDiagramViewer, type DiagramViewerContext, type DiagramViewerHandle } from './diagram.js';
 
 const SVG = '<svg xmlns="http://www.w3.org/2000/svg"><path/></svg>';
 
@@ -117,5 +117,101 @@ describe('diagram viewer mount', () => {
         expect(label.textContent).toBe('300%');
         for (let i = 0; i < 20; i++) out.click();
         expect(label.textContent).toBe('25%');
+    });
+});
+
+// Hosts re-mount on file change or refresh; isDirty() is what they ask before
+// doing so, in place of reading the textarea out of the shadow root.
+describe('diagram viewer handle — isDirty', () => {
+    interface Mounted { handle: DiagramViewerHandle; source: HTMLTextAreaElement; container: HTMLElement }
+
+    async function mount(extra: Partial<DiagramViewerContext> = {}): Promise<Mounted> {
+        const container = document.createElement('div');
+        const handle = await mountDiagramViewer('mermaid', { source: 'flowchart TD\nA-->B', warnings: [] },
+            { fileName: 'g.mmd', data: new Uint8Array() }, container, makeContext(extra),
+            { renderMermaid: async () => SVG });
+        return { handle, source: query<HTMLTextAreaElement>(container, '.omni-diagram__source'), container };
+    }
+    const edit = (source: HTMLTextAreaElement, text: string): void => {
+        source.value = text; source.dispatchEvent(new Event('input'));
+    };
+
+    it('is false on mount, true after an edit, false again after undo', async () => {
+        const { handle, source } = await mount();
+        expect(handle.isDirty()).toBe(false);
+
+        edit(source, 'flowchart TD\nA-->C');
+        expect(handle.isDirty()).toBe(true);
+
+        source.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true }));
+        expect(handle.isDirty()).toBe(false);
+        handle.dispose();
+    });
+
+    it('clears after a successful writeback', async () => {
+        const write = vi.fn(async () => undefined);
+        const { handle, source, container } = await mount({ writeback: { write } });
+        edit(source, 'flowchart TD\nA-->C');
+        query<HTMLButtonElement>(container, '.omni-diagram__button--primary').click();
+        await flush();
+        expect(write).toHaveBeenCalledTimes(1);
+        expect(handle.isDirty()).toBe(false);
+        handle.dispose();
+    });
+
+    it('holds after a failed writeback', async () => {
+        const write = vi.fn(async () => { throw new Error('read-only'); });
+        const { handle, source, container } = await mount({ writeback: { write } });
+        edit(source, 'flowchart TD\nA-->C');
+        query<HTMLButtonElement>(container, '.omni-diagram__button--primary').click();
+        await flush();
+        // The save was attempted and rejected — the edit never reached the file,
+        // so a re-mount would still lose it.
+        expect(write).toHaveBeenCalledTimes(1);
+        expect(handle.isDirty()).toBe(true);
+        handle.dispose();
+    });
+
+    it('stays dirty when the user edits while the writeback is in flight', async () => {
+        // The editor stays live during an async write. If the save marks "what is
+        // in the editor now" as saved, the edit made mid-write is declared to be
+        // on disk and a host trusting isDirty() would discard it on re-mount.
+        let release = (): void => undefined;
+        const gate = new Promise<void>(resolve => { release = resolve; });
+        const write = vi.fn(async (_data: Uint8Array) => { await gate; });
+        const { handle, source, container } = await mount({ writeback: { write } });
+
+        edit(source, 'flowchart TD\nA-->FIRST');
+        query<HTMLButtonElement>(container, '.omni-diagram__button--primary').click();
+        await flush();
+        expect(new TextDecoder().decode(write.mock.calls[0]![0])).toContain('FIRST');
+
+        edit(source, 'flowchart TD\nA-->SECOND');
+        release();
+        await flush();
+
+        // SECOND never reached the file.
+        expect(handle.isDirty()).toBe(true);
+        handle.dispose();
+    });
+
+    it('stays dirty after the download fallback, which saves a copy', async () => {
+        const saveFile = vi.fn(async () => undefined);
+        const { handle, source } = await mount({ save: { saveFile } });
+        edit(source, 'flowchart TD\nA-->C');
+        source.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true }));
+        await flush();
+        expect(saveFile).toHaveBeenCalledTimes(1);
+        expect(handle.isDirty()).toBe(true);
+        handle.dispose();
+    });
+
+    it('disposes exactly as before, with the detached editor no longer listened to', async () => {
+        const { handle, source, container } = await mount();
+        handle.dispose();
+        expect(container.shadowRoot?.querySelector('.omni-diagram')).toBeNull();
+
+        edit(source, 'flowchart TD\nA-->C');
+        expect(handle.isDirty()).toBe(false);
     });
 });

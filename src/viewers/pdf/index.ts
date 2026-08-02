@@ -2077,13 +2077,20 @@ export async function mountPdfViewer(
 
     async function save(): Promise<void> {
         if (!ctx.writeback || saveBtn.disabled) return;
+        // Pin what is being written before the build starts: only the save/merge
+        // buttons are disabled while an operation runs, so pages and annotations
+        // can still change across the await. Taking the state at completion would
+        // mark those changes as saved and let a host discard them on re-mount.
+        // `stateForSave()` only rasterizes text for output, so the pre-raster
+        // state is what this write represents.
+        const { pageOrder, annotations } = controller.state;
         const result = await runOperation('save', async (control) => {
             const data = await buildOutput(stateForSave(), control);
             await ctx.writeback!.write(data);
         });
         if (result.status === 'succeeded') {
             mergedSinceSave = false;
-            controller.dispatch({ type: 'mark-saved' });
+            controller.dispatch({ type: 'mark-saved', savedState: { pageOrder, annotations } });
             refreshChrome();
             status.textContent = t('common.savedToOriginal');
         } else if (result.status === 'failed') {

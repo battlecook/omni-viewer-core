@@ -13,7 +13,11 @@ export type DiagramAction =
     | { type: 'edit-source'; source: string }
     | { type: 'undo' }
     | { type: 'redo' }
-    | { type: 'mark-saved' };
+    /** `source` is the text that actually reached the file. Writes are async and
+     *  the editor stays live during one, so the current source at completion is
+     *  not necessarily what was written (mirrors the latex/markdown controllers).
+     *  Omitted = "what is in the editor now". */
+    | { type: 'mark-saved'; source?: string };
 
 export interface DiagramViewState {
     mode: DiagramViewMode;
@@ -62,7 +66,8 @@ export function createDiagramController(text: string, theme: DiagramTheme): Diag
                 undo.push(state.source);
                 setSource(redo.pop()!);
             } else if (action.type === 'mark-saved') {
-                state = { ...state, savedSource: state.source, dirty: false };
+                const savedSource = action.source ?? state.source;
+                state = { ...state, savedSource, dirty: state.source !== savedSource };
             }
             emit();
         },

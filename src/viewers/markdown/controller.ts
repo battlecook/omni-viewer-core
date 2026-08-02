@@ -9,7 +9,10 @@ export type MarkdownAction =
     | { type: 'edit-source'; source: string }
     | { type: 'undo' }
     | { type: 'redo' }
-    | { type: 'mark-saved' }
+    /** `source` is the text that actually reached the file. Writes are async and
+     *  the editor stays live during one, so the current source at completion is
+     *  not necessarily what was written. Omitted = "what is in the editor now". */
+    | { type: 'mark-saved'; source?: string }
     | { type: 'copy-code'; code: string };
 export interface MarkdownMatch { start: number; end: number; }
 export interface MarkdownViewState {
@@ -75,7 +78,8 @@ export function createMarkdownController(text: string, _headings: readonly Markd
                 undo.push(state.source);
                 setSource(redo.pop()!);
             } else if (action.type === 'mark-saved') {
-                state = { ...state, savedSource: state.source, dirty: false };
+                const savedSource = action.source ?? state.source;
+                state = { ...state, savedSource, dirty: state.source !== savedSource };
             }
             emit();
         },

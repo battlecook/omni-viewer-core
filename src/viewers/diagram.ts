@@ -11,6 +11,12 @@ export type DiagramViewerContext = HostContext & {
     writeback?: FileWritebackService;
     save?: FileSaveService;
 };
+/** Diagram mount handle: `isDirty()` lets a host guard a re-mount against
+ *  discarding unsaved source edits (DESIGN.md §3-②). */
+export interface DiagramViewerHandle extends ViewerHandle {
+    isDirty(): boolean;
+}
+
 export interface DiagramMountOptions extends MountOptions {
     renderMermaid?(id: string, source: string, theme?: DiagramTheme): Promise<string>;
     renderPlantUml?(source: string, document: Document, theme?: DiagramTheme): SVGElement | string;
@@ -31,7 +37,7 @@ export async function mountDiagramViewer(
     container: HTMLElement,
     ctx: DiagramViewerContext,
     options: DiagramMountOptions = {}
-): Promise<ViewerHandle> {
+): Promise<DiagramViewerHandle> {
     if (options.signal?.aborted) throw new MountAbortedError();
     const themes = kind === 'mermaid' ? MERMAID_THEMES : PLANTUML_THEMES;
     const initialTheme: DiagramTheme = options.initialTheme && themes.includes(options.initialTheme) ? options.initialTheme : themes[0]!;
@@ -161,9 +167,15 @@ export async function mountDiagramViewer(
         }
     };
     const saveSource = async (): Promise<void> => {
-        const bytes = new TextEncoder().encode(controller.state.source);
+        // Snapshot once: the write is async and the editor stays live, so
+        // `controller.state.source` after the await may already be a later edit
+        // than the bytes that reached the file.
+        const saved = controller.state.source;
+        const bytes = new TextEncoder().encode(saved);
         if (ctx.writeback) {
-            try { await ctx.writeback.write(bytes); controller.dispatch({ type: 'mark-saved' }); setStatus('common.savedToOriginal', 'valid'); sourceCaption.textContent = t('common.savedToOriginal'); }
+            // The caption is the dirty indicator: leave syncState's verdict alone
+            // when an edit arrived mid-write and the source is still unsaved.
+            try { await ctx.writeback.write(bytes); controller.dispatch({ type: 'mark-saved', source: saved }); setStatus('common.savedToOriginal', 'valid'); if (!controller.state.dirty) sourceCaption.textContent = t('common.savedToOriginal'); }
             catch (error) { ctx.logger.log('error', `diagram save failed: ${String(error)}`); setStatus('common.saveFailed', 'invalid'); showMessage(errorText(error, t('common.saveFailed'))); }
             return;
         }
@@ -214,7 +226,11 @@ export async function mountDiagramViewer(
             for (const dispose of disposers.splice(0)) dispose();
             shell.remove();
             if (root === container) container.classList.remove(VIEWER_ROOT_CLASS, `omni-viewer--${kind}`); else root.replaceChildren();
-        }
+        },
+        // The controller, not the textarea: `mark-saved` (a successful writeback)
+        // is the only thing that clears it, so a failed save or a Save As copy
+        // stays dirty.
+        isDirty: () => controller.state.dirty
     };
 }
 

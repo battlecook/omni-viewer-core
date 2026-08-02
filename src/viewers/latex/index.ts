@@ -67,6 +67,13 @@ export interface LatexViewerDeps {
     createDOMPurify?(window: Window): DomPurify;
 }
 
+/** LaTeX mount handle: dirty inspection lets hosts guard a re-mount (file
+ *  change, refresh) against discarding unsaved edits, without reaching into the
+ *  viewer's DOM (csv/image/pdf expose the same method). */
+export interface LatexViewerHandle extends ViewerHandle {
+    isDirty(): boolean;
+}
+
 export interface LatexMountOptions extends MountOptions {
     /** Forwarded to the parser (limits, cancellation). */
     parse?: LatexParseOptions;
@@ -103,7 +110,7 @@ export async function mountLatexViewer(
     container: HTMLElement,
     ctx: LatexViewerContext,
     options: LatexMountOptions = {}
-): Promise<ViewerHandle> {
+): Promise<LatexViewerHandle> {
     if (options.signal?.aborted) throw new MountAbortedError();
 
     const root: HTMLElement | ShadowRoot = options.styleIsolation !== 'scoped' && typeof container.attachShadow === 'function'
@@ -624,11 +631,15 @@ export async function mountLatexViewer(
     };
 
     const saveSource = async (): Promise<void> => {
-        const bytes = new TextEncoder().encode(controller.state.source);
+        // Snapshot once: the write is async and the editor stays live, so
+        // `controller.state.source` after the await may already be a later edit
+        // than the bytes that reached the file.
+        const saved = controller.state.source;
+        const bytes = new TextEncoder().encode(saved);
         if (ctx.writeback) {
             try {
                 await ctx.writeback.write(bytes);
-                controller.dispatch({ type: 'mark-saved' });
+                controller.dispatch({ type: 'mark-saved', source: saved });
                 setStatus('common.savedToOriginal', 'valid');
             } catch (error) {
                 ctx.logger.log('error', `latex save failed: ${String(error)}`);
@@ -715,7 +726,10 @@ export async function mountLatexViewer(
         throw new MountAbortedError();
     }
 
-    return { dispose: teardown };
+    // Reads the controller rather than the textarea: the source of truth for
+    // "unsaved" is `source !== savedSource`, which undo restores and `mark-saved`
+    // clears. A Save As copy never dispatches `mark-saved`, so it stays dirty.
+    return { dispose: teardown, isDirty: () => controller.state.dirty };
 }
 
 function errorText(error: unknown, fallback: string): string {

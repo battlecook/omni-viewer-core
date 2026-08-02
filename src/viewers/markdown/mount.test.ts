@@ -420,6 +420,91 @@ describe('mountMarkdownViewer', () => {
         expect(root.querySelector('.omni-markdown__message')?.textContent).toContain('unavailable');
     });
 
+    // Hosts re-mount on file change or refresh; isDirty() is what they ask
+    // before doing so, in place of reading the textarea out of the shadow root.
+    it('reports unsaved edits through handle.isDirty()', async () => {
+        const write = vi.fn(async () => undefined);
+        const container = document.createElement('div');
+        const handle = await mountMarkdownViewer(
+            { fileName: 'readme.md', data: new TextEncoder().encode('# Hello') }, container, ctx(write), deps
+        );
+        const root = container.shadowRoot!; const source = root.querySelector('textarea')!;
+        expect(handle.isDirty()).toBe(false);
+
+        source.value = '# Changed'; source.dispatchEvent(new Event('input'));
+        expect(handle.isDirty()).toBe(true);
+
+        source.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }));
+        expect(handle.isDirty()).toBe(false);
+
+        source.value = '# Changed again'; source.dispatchEvent(new Event('input'));
+        button(root, 'Render').click();
+        await new Promise(resolve => setTimeout(resolve, 0));
+        expect(write).toHaveBeenCalledTimes(1);
+        expect(handle.isDirty()).toBe(false);
+        handle.dispose();
+    });
+
+    it('keeps isDirty() set when the writeback fails', async () => {
+        const write = vi.fn(async () => { throw new Error('read-only vault'); });
+        const container = document.createElement('div');
+        const handle = await mountMarkdownViewer(
+            { fileName: 'readme.md', data: new TextEncoder().encode('# Hello') }, container, ctx(write), deps
+        );
+        const root = container.shadowRoot!; const source = root.querySelector('textarea')!;
+        source.value = '# Changed'; source.dispatchEvent(new Event('input'));
+        button(root, 'Render').click();
+        await new Promise(resolve => setTimeout(resolve, 0));
+        // The save was attempted and rejected — the edit never reached the file,
+        // so a re-mount would still lose it.
+        expect(write).toHaveBeenCalledTimes(1);
+        expect(handle.isDirty()).toBe(true);
+        handle.dispose();
+    });
+
+    it('keeps isDirty() set when the user types while the writeback is in flight', async () => {
+        // The editor stays live during an async write. If the save marks "what is
+        // in the editor now" as saved, the edit made mid-write is declared to be
+        // on disk and a host trusting isDirty() would discard it on re-mount.
+        let release = (): void => undefined;
+        const gate = new Promise<void>(resolve => { release = resolve; });
+        const write = vi.fn(async (): Promise<undefined> => { await gate; return undefined; });
+        const container = document.createElement('div');
+        const handle = await mountMarkdownViewer(
+            { fileName: 'readme.md', data: new TextEncoder().encode('# Hello') }, container, ctx(write), deps
+        );
+        const root = container.shadowRoot!; const source = root.querySelector('textarea')!;
+
+        source.value = '# First'; source.dispatchEvent(new Event('input'));
+        button(root, 'Render').click();
+        await new Promise(resolve => setTimeout(resolve, 0));
+        expect(write).toHaveBeenCalledWith(new TextEncoder().encode('# First'));
+
+        source.value = '# Second'; source.dispatchEvent(new Event('input'));
+        release();
+        await new Promise(resolve => setTimeout(resolve, 0));
+
+        // '# Second' never reached the file.
+        expect(handle.isDirty()).toBe(true);
+        handle.dispose();
+    });
+
+    it('keeps isDirty() set after the download fallback, which saves a copy', async () => {
+        const saveFile = vi.fn(async () => undefined);
+        const context: MarkdownViewerContext = { ...readonlyCtx(), save: { saveFile } };
+        const container = document.createElement('div');
+        const handle = await mountMarkdownViewer(
+            { fileName: 'readme.md', data: new TextEncoder().encode('# Hello') }, container, context, deps
+        );
+        const source = container.shadowRoot!.querySelector('textarea')!;
+        source.value = '# Changed'; source.dispatchEvent(new Event('input'));
+        source.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true, bubbles: true }));
+        await new Promise(resolve => setTimeout(resolve, 0));
+        expect(saveFile).toHaveBeenCalledTimes(1);
+        expect(handle.isDirty()).toBe(true);
+        handle.dispose();
+    });
+
     it('never sends content beyond parser limits to the Markdown renderer', async () => {
         const parse = vi.fn((source: string) => `<p>${source}</p>`);
         const limitedDeps: MarkdownViewerDeps = { ...deps, render: { parse } };

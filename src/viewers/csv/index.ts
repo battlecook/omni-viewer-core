@@ -294,13 +294,25 @@ export async function mountCsvViewer(
 
     const dirtyBadge = el('span', 'omni-csv__dirty');
 
+    /**
+     * Clear dirty only if the document still equals the bytes that reached the
+     * file. The grid stays editable across the async write, so a cell changed
+     * mid-write would otherwise be recorded as saved — and a host trusting
+     * `isDirty()` would discard it on re-mount. When it differs, dirty is left
+     * set: the next save resolves it, and erring toward "unsaved" cannot lose
+     * work.
+     */
+    function markSavedIfUnchanged(written: string): void {
+        if (controller.toDocumentCsv() === written) controller.markSaved();
+    }
+
     async function saveDocument(service: FileWritebackService): Promise<void> {
         try {
             // Save covers the whole document in original order — never the
             // filtered/sorted display result (docs §6).
-            const bytes = new TextEncoder().encode(controller.toDocumentCsv());
-            await service.write(bytes);
-            controller.markSaved();
+            const written = controller.toDocumentCsv();
+            await service.write(new TextEncoder().encode(written));
+            markSavedIfUnchanged(written);
             showToast(t('common.savedToOriginal'));
         } catch (error) {
             ctx.logger.log('error', `csv save failed: ${String(error)}`);
@@ -316,9 +328,9 @@ export async function mountCsvViewer(
         const mime =
             state.delimiter === '\t' ? 'text/tab-separated-values' : 'text/csv';
         try {
-            const bytes = new TextEncoder().encode(controller.toDocumentCsv());
-            await service.saveFile(name, bytes, mime);
-            controller.markSaved();
+            const written = controller.toDocumentCsv();
+            await service.saveFile(name, new TextEncoder().encode(written), mime);
+            markSavedIfUnchanged(written);
             showToast(t('common.saved', { name }));
         } catch (error) {
             ctx.logger.log('error', `csv save-as failed: ${String(error)}`);

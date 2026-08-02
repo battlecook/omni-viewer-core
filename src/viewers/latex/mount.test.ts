@@ -2,7 +2,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createCatalogI18n } from '../../i18n/index.js';
 import { MountAbortedError } from '../types.js';
-import { mountLatexViewer, type LatexViewerContext } from './index.js';
+import { mountLatexViewer, type LatexViewerContext, type LatexViewerHandle } from './index.js';
 
 const enc = (text: string): Uint8Array => new TextEncoder().encode(text);
 
@@ -20,11 +20,17 @@ Element.prototype.scrollIntoView = function scrollIntoView(): void { /* no-op */
 const doc = (body: string, preamble = '\\documentclass{article}\n'): string =>
     `${preamble}\\begin{document}\n${body}\n\\end{document}\n`;
 
-async function mount(source: string, ctx: LatexViewerContext = baseCtx): Promise<{ root: ShadowRoot; dispose: () => void; container: HTMLElement }> {
+async function mount(source: string, ctx: LatexViewerContext = baseCtx): Promise<{ root: ShadowRoot; dispose: () => void; container: HTMLElement; handle: LatexViewerHandle }> {
     const container = document.createElement('div');
     const handle = await mountLatexViewer({ fileName: 'paper.tex', data: enc(source) }, container, ctx);
-    return { root: container.shadowRoot!, dispose: () => handle.dispose(), container };
+    return { root: container.shadowRoot!, dispose: () => handle.dispose(), container, handle };
 }
+
+/** Ctrl+S sequences re-parse then save, so the outcome lands several
+ *  microtasks later rather than synchronously. */
+const flush = async (turns = 12): Promise<void> => {
+    for (let i = 0; i < turns; i++) await Promise.resolve();
+};
 
 describe('mountLatexViewer — structure', () => {
     it('injects its CSS into a shadow root and cleans up on dispose', async () => {
@@ -347,6 +353,122 @@ describe('mountLatexViewer — editing and saving', () => {
         const copy = [...root.querySelectorAll<HTMLButtonElement>('.omni-latex__button')].find(x => x.textContent === 'Copy source');
         expect(copy?.disabled).toBe(true);
         dispose();
+    });
+});
+
+describe('mountLatexViewer — handle.isDirty', () => {
+    // Hosts re-mount on file change or refresh; without this they had to read
+    // `.omni-latex__source` out of the shadow root to know whether that would
+    // discard unsaved edits.
+    it('is false on a freshly mounted document', async () => {
+        const { handle, dispose } = await mount(doc('text\n'));
+        expect(handle.isDirty()).toBe(false);
+        dispose();
+    });
+
+    it('turns true once the source is edited', async () => {
+        const { root, handle, dispose } = await mount(doc('text\n'));
+        const area = root.querySelector<HTMLTextAreaElement>('.omni-latex__source')!;
+        area.value = doc('changed\n');
+        area.dispatchEvent(new Event('input'));
+        expect(handle.isDirty()).toBe(true);
+        dispose();
+    });
+
+    it('returns to false when undo restores the last saved source', async () => {
+        const { root, handle, dispose } = await mount(doc('text\n'));
+        const area = root.querySelector<HTMLTextAreaElement>('.omni-latex__source')!;
+        area.value = doc('changed\n');
+        area.dispatchEvent(new Event('input'));
+        expect(handle.isDirty()).toBe(true);
+        area.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true }));
+        expect(handle.isDirty()).toBe(false);
+        dispose();
+    });
+
+    it('clears after a successful writeback', async () => {
+        const write = vi.fn(async (_data: Uint8Array) => undefined);
+        const { root, handle, dispose } = await mount(doc('text\n'), { ...baseCtx, writeback: { write } });
+        const area = root.querySelector<HTMLTextAreaElement>('.omni-latex__source')!;
+        area.value = doc('changed\n');
+        area.dispatchEvent(new Event('input'));
+        area.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true }));
+        await flush();
+        expect(write).toHaveBeenCalledTimes(1);
+        expect(handle.isDirty()).toBe(false);
+        dispose();
+    });
+
+    it('stays dirty when the writeback fails', async () => {
+        const write = vi.fn(async (_data: Uint8Array) => { throw new Error('disk full'); });
+        const { root, handle, dispose } = await mount(doc('text\n'), { ...baseCtx, writeback: { write } });
+        const area = root.querySelector<HTMLTextAreaElement>('.omni-latex__source')!;
+        area.value = doc('changed\n');
+        area.dispatchEvent(new Event('input'));
+        area.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true }));
+        await flush();
+        // Losing the flag here would let the host re-mount over edits that never
+        // reached the file.
+        expect(handle.isDirty()).toBe(true);
+        dispose();
+    });
+
+    it('stays dirty when the user keeps typing while the writeback is in flight', async () => {
+        // The editor stays live during an async write. If the save marks "what is
+        // in the editor now" as saved, the edit made mid-write is declared to be
+        // on disk and a host trusting isDirty() would discard it on re-mount.
+        let release = (): void => undefined;
+        const gate = new Promise<void>(resolve => { release = resolve; });
+        const write = vi.fn(async (_data: Uint8Array) => { await gate; });
+        const { root, handle, dispose } = await mount(doc('text\n'), { ...baseCtx, writeback: { write } });
+        const area = root.querySelector<HTMLTextAreaElement>('.omni-latex__source')!;
+
+        area.value = doc('first\n');
+        area.dispatchEvent(new Event('input'));
+        area.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true }));
+        await flush();
+        expect(write).toHaveBeenCalledTimes(1);
+        expect(new TextDecoder().decode(write.mock.calls[0]![0])).toContain('first');
+
+        area.value = doc('second\n');
+        area.dispatchEvent(new Event('input'));
+        release();
+        await flush();
+
+        // 'second' never reached the file.
+        expect(handle.isDirty()).toBe(true);
+        // Undoing back to what the file holds is genuinely clean again.
+        area.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true }));
+        expect(handle.isDirty()).toBe(false);
+        dispose();
+    });
+
+    it('stays dirty after Save As, which writes a copy rather than the original', async () => {
+        const saveFile = vi.fn(async () => undefined);
+        const { root, handle, dispose } = await mount(doc('text\n'), { ...baseCtx, save: { saveFile } });
+        const area = root.querySelector<HTMLTextAreaElement>('.omni-latex__source')!;
+        area.value = doc('changed\n');
+        area.dispatchEvent(new Event('input'));
+        area.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true }));
+        await flush();
+        expect(saveFile).toHaveBeenCalledTimes(1);
+        expect(handle.isDirty()).toBe(true);
+        dispose();
+    });
+
+    it('disposes exactly as before: DOM cleared and listeners detached', async () => {
+        const { root, container, handle } = await mount(doc('\\section{One}\ntext\n'));
+        const area = root.querySelector<HTMLTextAreaElement>('.omni-latex__source')!;
+        handle.dispose();
+        expect(container.shadowRoot?.childNodes).toHaveLength(0);
+        expect(root.querySelector('.omni-latex')).toBeNull();
+
+        // The detached textarea keeps no live handler: a late input event from a
+        // host that held a reference must not resurrect controller work.
+        area.value = doc('changed\n');
+        area.dispatchEvent(new Event('input'));
+        expect(handle.isDirty()).toBe(false);
+        handle.dispose();
     });
 });
 

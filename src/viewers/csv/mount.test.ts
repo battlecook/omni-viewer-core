@@ -310,6 +310,99 @@ describe('mountCsvViewer', () => {
         handle.dispose();
     });
 
+    it('keeps isDirty() set for a cell edited while the save was in flight', async () => {
+        // The grid stays editable across the async write. Taking the edit depth
+        // at completion would mark the mid-write edit as saved, and a host
+        // trusting isDirty() would discard it on re-mount.
+        let release = (): void => undefined;
+        const gate = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        const write = vi.fn(async (_data: Uint8Array) => {
+            await gate;
+        });
+        const container = document.createElement('div');
+        const handle = await mountCsvViewer(csvInput('name\nkim\nlee\n'), container, {
+            ...stubCtx(),
+            writeback: { write }
+        });
+        const root = shadow(container);
+        const editFirstCell = (value: string): void => {
+            const td = root.querySelector('tbody td:not(.omni-csv__rowops)') as HTMLElement;
+            td.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+            const input = td.querySelector('input') as HTMLInputElement;
+            input.value = value;
+            input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+        };
+        const save = [...root.querySelectorAll('.omni-csv__toolbar button')].find(
+            (b) => b.textContent === 'Save' || b.getAttribute('aria-label') === 'Save'
+        ) as HTMLButtonElement;
+
+        editFirstCell('first');
+        save.click();
+        await Promise.resolve();
+        expect(write).toHaveBeenCalledTimes(1);
+        expect(new TextDecoder().decode(write.mock.calls[0]![0])).toContain('first');
+
+        editFirstCell('second');
+        release();
+        for (let i = 0; i < 8; i++) await Promise.resolve();
+
+        // 'second' never reached the file.
+        expect(handle.isDirty()).toBe(true);
+
+        // Undoing back to the written content does not clear the flag: the save
+        // point was never moved, so dirty stays set until the next save. Erring
+        // toward "unsaved" costs a redundant save and cannot lose work.
+        const undo = [...root.querySelectorAll('.omni-csv__toolbar button')].find(
+            (b) => b.getAttribute('aria-label') === 'Undo'
+        ) as HTMLButtonElement;
+        undo.click();
+        expect(handle.isDirty()).toBe(true);
+        handle.dispose();
+    });
+
+    it('clears isDirty() when a mid-write edit is reverted before the save lands', async () => {
+        let release = (): void => undefined;
+        const gate = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        const write = vi.fn(async (_data: Uint8Array) => {
+            await gate;
+        });
+        const container = document.createElement('div');
+        const handle = await mountCsvViewer(csvInput('name\nkim\nlee\n'), container, {
+            ...stubCtx(),
+            writeback: { write }
+        });
+        const root = shadow(container);
+        const editFirstCell = (value: string): void => {
+            const td = root.querySelector('tbody td:not(.omni-csv__rowops)') as HTMLElement;
+            td.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+            const input = td.querySelector('input') as HTMLInputElement;
+            input.value = value;
+            input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+        };
+        const toolbarButton = (label: string) =>
+            [...root.querySelectorAll('.omni-csv__toolbar button')].find(
+                (b) => b.textContent === label || b.getAttribute('aria-label') === label
+            ) as HTMLButtonElement;
+
+        editFirstCell('first');
+        toolbarButton('Save').click();
+        await Promise.resolve();
+
+        // Typed and undone again while the write was still running: the document
+        // is back to exactly what is being written.
+        editFirstCell('second');
+        toolbarButton('Undo').click();
+        release();
+        for (let i = 0; i < 8; i++) await Promise.resolve();
+
+        expect(handle.isDirty()).toBe(false);
+        handle.dispose();
+    });
+
     it('row insert/delete via right-click context menu and header rename via double-click', async () => {
         const container = document.createElement('div');
         const handle = await mountCsvViewer(csvInput('n\n1\n2\n'), container, stubCtx());

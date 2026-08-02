@@ -11,6 +11,7 @@ import {
     type PdfViewerContext,
     type PdfViewerDeps
 } from './index.js';
+import type { PdfViewState } from './controller.js';
 
 // jsdom has no canvas backend, so page/thumb canvases stay blank; the DOM
 // structure (thumbs, overlays, chrome) is what these tests exercise.
@@ -441,6 +442,78 @@ describe('mountPdfViewer host contracts', () => {
         expect(buildPdf.mock.calls[0]![0].source).toBe(largeSource);
         expect(write).toHaveBeenCalledWith(new Uint8Array([9]));
         expect(handle.operation.status).toBe('succeeded');
+        expect(handle.isDirty()).toBe(false);
+        handle.dispose();
+    });
+
+    it('keeps isDirty() set for an annotation added while the save was in flight', async () => {
+        // Only the save/merge buttons are disabled while an operation runs, so
+        // the document stays editable across the await. Marking the state at
+        // completion as saved would declare that edit to be on disk, and a host
+        // trusting isDirty() would discard it on re-mount.
+        let release = (): void => undefined;
+        const gate = new Promise<void>((resolve) => { release = resolve; });
+        const write = vi.fn(async () => { await gate; });
+        const buildPdf = vi.fn(async (_request: { state: PdfViewState }) => new Uint8Array([9]));
+        const container = document.createElement('div');
+        const handle = await mountPdfViewer(
+            { fileName: 'sample.pdf', data: new Uint8Array(8 * 1024 * 1024) },
+            container, { ...ctx(), writeback: { write } },
+            { loadPdfjs: async () => fakePdfjs(2), processing: { buildPdf } }
+        );
+        const annotate = (text: string, page: number): void => handle.controller.dispatch({
+            type: 'add-annotation',
+            annotation: { kind: 'text', page, x: 1, y: 2, text, size: 12, color: '#000000' }
+        });
+
+        annotate('first', 1);
+        buttonWithText(container.shadowRoot!, 'Save').click();
+        await flush();
+        expect(write).toHaveBeenCalledTimes(1);
+        // The build ran against the one annotation that existed at save time.
+        expect(buildPdf.mock.calls[0]![0].state.annotations).toHaveLength(1);
+
+        annotate('second', 2);
+        release();
+        await flush();
+        await flush();
+
+        expect(handle.operation.status).toBe('succeeded');
+        // 'second' never reached the file.
+        expect(handle.isDirty()).toBe(true);
+        handle.dispose();
+    });
+
+    it('clears isDirty() when a mid-save edit is undone before the write lands', async () => {
+        let release = (): void => undefined;
+        const gate = new Promise<void>((resolve) => { release = resolve; });
+        const write = vi.fn(async () => { await gate; });
+        const buildPdf = vi.fn(async () => new Uint8Array([9]));
+        const container = document.createElement('div');
+        const handle = await mountPdfViewer(
+            { fileName: 'sample.pdf', data: new Uint8Array(8 * 1024 * 1024) },
+            container, { ...ctx(), writeback: { write } },
+            { loadPdfjs: async () => fakePdfjs(2), processing: { buildPdf } }
+        );
+
+        handle.controller.dispatch({
+            type: 'add-annotation',
+            annotation: { kind: 'text', page: 1, x: 1, y: 2, text: 'first', size: 12, color: '#000000' }
+        });
+        buttonWithText(container.shadowRoot!, 'Save').click();
+        await flush();
+
+        // Added and undone again while the write was still running: the document
+        // is back to exactly what was written.
+        handle.controller.dispatch({
+            type: 'add-annotation',
+            annotation: { kind: 'text', page: 2, x: 5, y: 6, text: 'second', size: 12, color: '#000000' }
+        });
+        handle.controller.dispatch({ type: 'undo' });
+        release();
+        await flush();
+        await flush();
+
         expect(handle.isDirty()).toBe(false);
         handle.dispose();
     });

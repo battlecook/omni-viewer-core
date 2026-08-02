@@ -5,6 +5,57 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`isDirty()` on every editable viewer's mount handle.** The LaTeX, Markdown,
+  Mermaid and PlantUML mounts now resolve to `LatexViewerHandle`,
+  `MarkdownViewerHandle`, `MermaidViewerHandle` and `PlantUmlViewerHandle` —
+  each `ViewerHandle` plus `isDirty(): boolean`, the shape csv, image and pdf
+  already used. A host that re-mounts on a file change or refresh can ask whether
+  that would discard unsaved edits, instead of reading the editor textarea out of
+  the viewer's shadow root and comparing against its own copy of the text. The
+  value is the controller's `source !== savedSource`: undoing back to the saved
+  text clears it, a successful writeback clears it, and a failed save or a
+  Save As/download copy keeps it set.
+
+  Purely additive. The returned objects still satisfy `ViewerHandle`, the mount
+  functions are still assignable to their previous `Promise<ViewerHandle>`
+  signatures, and `dispose()` is unchanged.
+
+  DESIGN.md §3-② now records the convention (ADR 44): per-viewer capabilities go
+  on a handle that extends `ViewerHandle`, never as optional members of the shared
+  contract, and `isDirty()` is mandatory for new editable viewers.
+
+### Fixed
+
+- An edit made while a save was still in flight was reported as saved. The bytes
+  are snapshotted before the `await`, but `mark-saved` was dispatched after it and
+  took "whatever is in the editor now" as the new baseline — so editing A → B
+  during the write left A on disk and B recorded as saved, with `isDirty()`
+  answering `false`. A host trusting that answer would discard B on re-mount. The
+  action now carries the source that actually reached the file
+  (`{ type: 'mark-saved', source }`) and dirty is recomputed against it, so the
+  mid-write edit stays dirty and undoing it back to the file's content clears the
+  flag as usual. Fixed in the LaTeX, Markdown and diagram (Mermaid/PlantUML)
+  controllers. The `source` field is optional, so existing `mark-saved` dispatches
+  keep their previous meaning.
+
+- The same defect in the PDF viewer: only the save/merge buttons are disabled
+  while an operation runs, so a page reorder or annotation added during a save
+  was reported as saved once the write finished. `mark-saved` now carries the
+  `pageOrder`/`annotations` pinned when the write began (`savedState`), so the
+  mid-save edit stays dirty and undoing it back to the written document clears
+  the flag. The field is optional — existing dispatches keep their meaning.
+
+- The same defect in the CSV viewer, where it had been reachable since the first
+  release: a cell edited while Save or Save As was in flight was reported as
+  saved. CSV tracks dirty by undo depth rather than by text, so the viewer now
+  keeps the serialization it wrote and clears dirty only if the document still
+  equals it on completion; otherwise the flag stays set until the next save.
+  `CsvController` is unchanged — no new or altered members.
+
 ## [0.11.1] - 2026-08-01
 
 ### Fixed
