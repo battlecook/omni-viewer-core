@@ -5,12 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.12.0] - 2026-08-02
 
 ### Added
 
-- **`isDirty()` on every editable viewer's mount handle.** The LaTeX, Markdown,
-  Mermaid and PlantUML mounts now resolve to `LatexViewerHandle`,
+- **`isDirty()` on the LaTeX, Markdown, Mermaid and PlantUML mount handles.**
+  They now resolve to `LatexViewerHandle`,
   `MarkdownViewerHandle`, `MermaidViewerHandle` and `PlantUmlViewerHandle` —
   each `ViewerHandle` plus `isDirty(): boolean`, the shape csv, image and pdf
   already used. A host that re-mounts on a file change or refresh can ask whether
@@ -26,7 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   DESIGN.md §3-② now records the convention (ADR 44): per-viewer capabilities go
   on a handle that extends `ViewerHandle`, never as optional members of the shared
-  contract, and `isDirty()` is mandatory for new editable viewers.
+  contract, and `isDirty()` is mandatory for new editable viewers. The Excel and
+  Protobuf viewers are editable but still do not expose it — they are recorded
+  there as the remaining gap, not covered by this release.
 
 ### Fixed
 
