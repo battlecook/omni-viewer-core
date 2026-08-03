@@ -60,6 +60,43 @@ const buttonWithText = (root: ParentNode, text: string): HTMLButtonElement => {
     return button;
 };
 
+/** Give the page panel a scroll model jsdom cannot provide: stacked page boxes,
+ *  a scrollTop that clamps at the end of the content, and the scroll event a
+ *  browser dispatches after — not during — the assignment that moved it. */
+function stubScrollport(
+    root: ShadowRoot,
+    { pageHeight, viewportHeight }: { pageHeight: number; viewportHeight: number }
+): { scrollTop: () => number; scrollTo: (value: number) => void } {
+    const box = (top: number, height: number): DOMRect => ({
+        x: 0, y: top, left: 0, top, right: 300, bottom: top + height,
+        width: 300, height, toJSON: () => undefined
+    });
+    const panel = root.querySelector<HTMLElement>('.omni-pdf__pages')!;
+    const wrappers = [...root.querySelectorAll<HTMLElement>('.omni-pdf__page')];
+    const maxScroll = Math.max(0, wrappers.length * pageHeight - viewportHeight);
+    let scrollTop = 0;
+    Object.defineProperty(panel, 'scrollTop', {
+        configurable: true,
+        get: () => scrollTop,
+        set: (value: number) => {
+            const next = Math.max(0, Math.min(maxScroll, value));
+            if (next === scrollTop) return;
+            scrollTop = next;
+            queueMicrotask(() => panel.dispatchEvent(new Event('scroll')));
+        }
+    });
+    panel.getBoundingClientRect = () => box(0, viewportHeight);
+    wrappers.forEach((wrapper, index) => {
+        wrapper.getBoundingClientRect = () => box(index * pageHeight - scrollTop, pageHeight);
+    });
+    return {
+        scrollTop: () => scrollTop,
+        scrollTo: (value: number) => {
+            panel.scrollTop = value;
+        }
+    };
+}
+
 describe('mountPdfViewer thumbnails', () => {
     it('mirrors markup annotations onto the page thumbnails', async () => {
         const container = document.createElement('div');
@@ -156,6 +193,57 @@ describe('mountPdfViewer thumbnails', () => {
         expect(input.value).toBe('1');
         expect(root.querySelector('.omni-pdf__page-total')?.textContent).toBe('/ 1');
         expect(root.querySelector('.omni-pdf__thumb-label')?.textContent).toBe('1');
+        handle.dispose();
+    });
+
+    it('keeps the clicked thumbnail current for pages merged onto the end', async () => {
+        // Two pages open, two more appended by a merge.
+        let opened = 0;
+        const base = fakePdfjs(2);
+        base.getDocument = () => {
+            const pageCount = ++opened === 1 ? 2 : 4;
+            return {
+                promise: Promise.resolve({
+                    numPages: pageCount,
+                    getPage: async (n: number) => (
+                        await fakePdfjs(pageCount).getDocument({ data: new Uint8Array([1]) }).promise
+                    ).getPage(n),
+                    destroy: async () => undefined
+                }),
+                destroy: () => undefined
+            };
+        };
+        const container = document.createElement('div');
+        const handle = await mountPdfViewer(
+            { fileName: 'sample.pdf', data: new Uint8Array([1]) },
+            container,
+            { ...ctx(), filePick: { pickFile: async () => ({ fileName: 'second.pdf', data: new Uint8Array([2]) }) } },
+            { loadPdfjs: async () => base, processing: { mergePdfs: async () => new Uint8Array([3]) } }
+        );
+        const root = container.shadowRoot!;
+        buttonWithText(root, 'Merge PDF').click();
+        await flush();
+        await flush();
+        expect(root.querySelectorAll('.omni-pdf__page')).toHaveLength(4);
+
+        // jsdom does no layout, so model the scrollport: a 400px-tall viewport
+        // over four 200px pages. Its end clamps at 400, which leaves the last
+        // page's top 400px below the viewport top no matter what is requested.
+        const scrollport = stubScrollport(root, { pageHeight: 200, viewportHeight: 400 });
+        const thumbs = [...root.querySelectorAll<HTMLButtonElement>('.omni-pdf__thumb')];
+        thumbs[3]!.click();
+        await flush();
+
+        expect(scrollport.scrollTop()).toBe(400);
+        expect(root.querySelector('.omni-pdf__thumb[aria-current] .omni-pdf__thumb-label')?.textContent)
+            .toBe('4');
+        expect(root.querySelector<HTMLInputElement>('.omni-pdf__page-input')?.value).toBe('4');
+
+        // Scrolling by hand hands the current page back to the viewport.
+        scrollport.scrollTo(0);
+        await flush();
+        expect(root.querySelector('.omni-pdf__thumb[aria-current] .omni-pdf__thumb-label')?.textContent)
+            .toBe('1');
         handle.dispose();
     });
 });

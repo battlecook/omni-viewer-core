@@ -325,6 +325,9 @@ export async function mountPdfViewer(
     let thumbRecords: ThumbRecord[] = [];
     let renderEpoch = 0;
     let currentPage = 1;
+    /** Page requested by an explicit navigation, held against the scroll event
+     *  that navigation queues. Cleared once the reader scrolls themselves. */
+    let navigatedTo: { pageNumber: number; scrollTop: number } | undefined;
     let tool: 'view' | 'text' | 'signature' = 'view';
     let highlightColor = '#ffeb3b';
     let underlineColor = '#000000';
@@ -1657,6 +1660,13 @@ export async function mountPdfViewer(
         // coordinate-based movement is enough. Combining this with
         // scrollIntoView applied the same offset twice.
         pages.scrollTop = Math.max(0, pages.scrollTop + page.top - viewport.top);
+        // The scrollport clamps at its end, so pages inside the final screenful
+        // — the pages appended by a merge, typically — never reach the top of
+        // the viewport. Pin the requested page against the scroll event this
+        // assignment queues; without it the listener re-selects the page that
+        // does straddle the top and the click appears to land one page early.
+        // Read the value back so the pin carries the clamped landing position.
+        navigatedTo = { pageNumber: record.pageNumber, scrollTop: pages.scrollTop };
         requestAnimationFrame(() => {
             ctx.logger.log(
                 'info',
@@ -1667,6 +1677,16 @@ export async function mountPdfViewer(
     }
 
     function syncCurrentPageFromViewport(): void {
+        if (navigatedTo) {
+            // Still resting where the navigation left us: honour the request.
+            // Any other offset means the reader has scrolled since, so the
+            // viewport takes over again.
+            if (Math.abs(pages.scrollTop - navigatedTo.scrollTop) <= 1) {
+                setCurrentPage(navigatedTo.pageNumber);
+                return;
+            }
+            navigatedTo = undefined;
+        }
         const viewport = pages.getBoundingClientRect();
         const visible = records.filter((record) => {
             const box = record.wrapper.getBoundingClientRect();
@@ -1688,6 +1708,9 @@ export async function mountPdfViewer(
 
     async function rebuildLayout(): Promise<void> {
         if (!doc || disposed) return;
+        // Page boxes are about to move (merge, reorder, delete, zoom), so a
+        // pin taken against the old layout no longer describes anything.
+        navigatedTo = undefined;
         // Preserve the source page the reader is actually viewing.  `currentPage`
         // alone is not sufficient here: the lazy-render observer deliberately
         // observes pages outside the viewport as well.

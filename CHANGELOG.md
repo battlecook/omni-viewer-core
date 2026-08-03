@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.1] - 2026-08-03
+
+### Fixed
+
+- The PDF viewer now keeps the page selected through explicit navigation when
+  the scrollport clamps near the end of the document. Clicking a thumbnail for
+  one of the final pages — most visibly after appending pages with Merge PDF —
+  previously scrolled to the correct position but immediately marked an earlier
+  page as current because that page still crossed the top of the viewport. The
+  requested page now stays current until the reader scrolls or a layout-changing
+  operation invalidates the navigation position.
+
 ## [0.12.0] - 2026-08-02
 
 ### Added
