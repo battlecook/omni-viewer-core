@@ -29,6 +29,34 @@ export interface AudioDecodeEngine {
     analyze(data: Uint8Array, width: number): Promise<AudioAnalysis>;
 }
 
+/**
+ * Extensions withheld from the engine because the committed artifact
+ * mishandles them, measured 2026-08-02 against
+ * `assets/audio-engine/audio_engine.wasm`:
+ *
+ * - MPEG-1 Layer III stereo (32/44.1/48 kHz — what nearly every mp3 is) never
+ *   returns for short inputs: a 1-second 17 KB file ran over 300 s. Reproduced
+ *   across 64–320 kbps, with and without ID3/Xing, joint stereo either way.
+ * - Long inputs return quickly but wrong: 60-, 90- and 120-minute files all
+ *   report a duration of 1042.3 s. ffmpeg decodes the same fixtures in full,
+ *   so the files are fine and the engine truncates silently. That is the worse
+ *   half — the viewer would render a believable waveform for the wrong 17
+ *   minutes of a two-hour file.
+ *
+ * Mono and MPEG-2 sample rates decoded correctly, but only on short inputs,
+ * and truncation only appears on long ones — so the format is withheld whole
+ * rather than the subset proven bad. Narrowing this needs a rebuilt engine
+ * plus mp3 fixtures in `engine.test.ts`, which covers only WAV today and is
+ * why this reached a release.
+ */
+export const ENGINE_UNSAFE_EXTENSIONS: readonly string[] = ['mp3'];
+
+/** Whether the engine may be used for a file. See {@link ENGINE_UNSAFE_EXTENSIONS}. */
+export function isEngineSafeForFile(fileName: string): boolean {
+    const extension = fileName.toLowerCase().split('.').pop() ?? '';
+    return !ENGINE_UNSAFE_EXTENSIONS.includes(extension);
+}
+
 /** Emscripten module surface used by the bridge (see native/audio-engine). */
 export interface AudioEngineModuleLike {
     HEAPU8: Uint8Array;

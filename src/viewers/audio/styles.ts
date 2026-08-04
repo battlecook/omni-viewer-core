@@ -29,6 +29,10 @@ export const audioViewerCss = mediaViewerCss + `
 .omni-audio * { box-sizing: border-box; }
 
 .omni-audio__header { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; }
+/* Keeps the previous title/meta row intact now that the header also carries
+   the download button on the right. */
+.omni-audio__header-text { display: flex; align-items: baseline; gap: 16px; min-width: 0; flex: 1; }
+.omni-audio__btn--download { flex: none; }
 .omni-audio__title { font-size: 16px; font-weight: 650; overflow-wrap: anywhere; }
 .omni-audio__meta { color: var(--omni-muted, #9d9d9d); white-space: nowrap; }
 
@@ -70,6 +74,43 @@ export const audioViewerCss = mediaViewerCss + `
    running along the bottom) rather than staying with the waveform at the top. */
 .omni-audio__waveform ::part(cursor),
 .omni-audio__waveform ::part(progress) { height: 128px !important; }
+
+/* Region time editors, anchored over the selected region. The wrapper is the
+   positioning context; the editor row sits just below the waveform so it never
+   covers the samples being trimmed. */
+.omni-audio__waveform-wrap { position: relative; }
+/* The editor is absolutely positioned, so the wrapper has to reserve its band
+   while it is shown. Without this it lands on the status line in waveform-only
+   mode and covers the spectrogram in both mode. */
+.omni-audio__waveform-wrap.is-editing-region { padding-bottom: 30px; }
+
+.omni-audio__region-editor {
+    position: absolute; top: 100%; left: 0; z-index: 3;
+    display: flex; align-items: center; gap: 4px;
+    /* No min-width: a narrow region would otherwise force the row past the
+       right edge. The left offset is clamped to the wrapper when positioning. */
+    max-width: 100%; pointer-events: none;
+}
+.omni-audio__region-editor[hidden] { display: none; }
+.omni-audio__region-editor--unanchored { position: static; margin-top: 4px; }
+
+.omni-audio__region-field { display: flex; pointer-events: auto; }
+.omni-audio__region-field--duration { margin: 0 4px; }
+
+.omni-audio__region-input {
+    width: 72px; padding: 2px 4px;
+    font-size: 11px; font-variant-numeric: tabular-nums; text-align: center;
+    color: var(--omni-fg, #d4d4d4);
+    background: var(--omni-input-bg, #2d2d2d);
+    border: 1px solid var(--omni-border, #3c3c3c); border-radius: 4px;
+}
+.omni-audio__region-input:focus { outline: 1px solid var(--omni-accent, #4fc1ff); outline-offset: -1px; }
+/* Spinners steal width at this size and the value is edited by typing. */
+.omni-audio__region-input::-webkit-outer-spin-button,
+.omni-audio__region-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.omni-audio__region-input { -moz-appearance: textfield; appearance: textfield; }
+
+.omni-audio__info-detail { color: var(--omni-muted, #9d9d9d); font-size: 11px; font-variant-numeric: tabular-nums; margin-top: 2px; }
 
 .omni-audio__status { color: var(--omni-muted, #9d9d9d); font-size: 12px; min-height: 16px; }
 

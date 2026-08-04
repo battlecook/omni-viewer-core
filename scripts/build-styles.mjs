@@ -55,7 +55,7 @@ await copyFile(
 // WASM audio engine (built from native/audio-engine, committed artifacts).
 const audioEngine = path.join(dist, 'assets', 'audio-engine');
 await mkdir(audioEngine, { recursive: true });
-for (const artifact of ['audio_engine.mjs', 'audio_engine.wasm']) {
+for (const artifact of ['audio_engine.mjs', 'audio_engine.wasm', 'audio_engine_worker.mjs']) {
     await copyFile(
         path.join(root, '..', 'assets', 'audio-engine', artifact),
         path.join(audioEngine, artifact)

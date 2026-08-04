@@ -5,8 +5,11 @@
 
 import type { MountOptions, ViewerHandle, ViewerInput } from '../types.js';
 import {
+    AudioWorkerUnavailableError,
     createAssetAudioEngine,
+    createWorkerAudioEngine,
     mountAudioViewer,
+    type AudioDecodeEngine,
     type AudioMountOptions,
     type AudioPluginHandle,
     type AudioRegionsHandle,
@@ -54,14 +57,82 @@ export const selfLoadingAudioDeps: AudioViewerDeps = {
     }
 };
 
+/**
+ * Wraps the worker engine so that a host which cannot start the worker at all
+ * — asset key not registered, CSP blocks construction — keeps the in-process
+ * engine rather than losing WASM decoding entirely. That capability is the
+ * only recovery path for codecs the browser cannot play (AMR, AC3), so it must
+ * not disappear just because a worker is unavailable.
+ *
+ * Only {@link AudioWorkerUnavailableError} triggers the switch. Decode errors
+ * and timeouts say something about the file, and re-running them on the main
+ * thread would reintroduce the freeze the worker exists to prevent.
+ */
+export function withInProcessFallback(
+    ctx: AudioViewerContext,
+    worker: AudioDecodeEngine & { dispose(): void }
+): AudioDecodeEngine & { dispose(): void } {
+    let inProcess: AudioDecodeEngine | undefined;
+    let workerUsable = true;
+
+    const viaFallback = <T>(run: (engine: AudioDecodeEngine) => Promise<T>): Promise<T> => {
+        inProcess ??= createAssetAudioEngine(ctx);
+        return run(inProcess);
+    };
+    const attempt = async <T>(run: (engine: AudioDecodeEngine) => Promise<T>): Promise<T> => {
+        if (!workerUsable) return viaFallback(run);
+        try {
+            return await run(worker);
+        } catch (error) {
+            if (!(error instanceof AudioWorkerUnavailableError)) throw error;
+            workerUsable = false;
+            ctx.logger.log('warn', `${error.message} — falling back to the in-process engine`);
+            return viaFallback(run);
+        }
+    };
+
+    return {
+        decode: (data) => attempt((engine) => engine.decode(data)),
+        analyze: (data, width) => attempt((engine) => engine.analyze(data, width)),
+        dispose: () => worker.dispose()
+    };
+}
+
 /** mountAudioViewer with the core's own dynamic-import waveform loader and
- *  the AssetService-served WASM decode engine (assets/audio-engine/*). */
-export function mountSelfLoadingAudioViewer(
+ *  the AssetService-served WASM decode engine (assets/audio-engine/*).
+ *
+ *  The engine runs in a Worker where `Worker` exists: its decode is a
+ *  synchronous WASM call that stalls — and on some inputs never returns —
+ *  so keeping it off the main thread is what makes it interruptible. Hosts
+ *  without `Worker` fall back to the in-process engine. */
+export async function mountSelfLoadingAudioViewer(
     input: ViewerInput,
     container: HTMLElement,
     ctx: AudioViewerContext,
     options: MountOptions & Omit<AudioMountOptions, 'deps'> = {}
 ): Promise<ViewerHandle> {
-    const deps: AudioViewerDeps = { ...selfLoadingAudioDeps, engine: createAssetAudioEngine(ctx) };
-    return mountAudioViewer(input, container, ctx, { ...options, deps });
+    const engine = typeof Worker === 'undefined'
+        ? createAssetAudioEngine(ctx)
+        : withInProcessFallback(ctx, createWorkerAudioEngine(ctx));
+    // This entry point owns the engine it created, so it also owns tearing the
+    // worker down. Without this a repeated open/close cycle leaks one worker
+    // (and its grown WASM heap) per mount.
+    const release = (): void => {
+        (engine as Partial<{ dispose(): void }>).dispose?.();
+    };
+
+    const deps: AudioViewerDeps = { ...selfLoadingAudioDeps, engine };
+    let handle: ViewerHandle;
+    try {
+        handle = await mountAudioViewer(input, container, ctx, { ...options, deps });
+    } catch (error) {
+        // Aborted or failed mounts never return a handle to dispose.
+        release();
+        throw error;
+    }
+    return {
+        dispose(): void {
+            try { handle.dispose(); } finally { release(); }
+        }
+    };
 }

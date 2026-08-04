@@ -144,7 +144,7 @@ export const MAT_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'mat',displayNameKey:
 // Safetensors has no fixed leading magic (the file opens with an 8-byte header
 // length), so it is admitted by extension and validated by the parser.
 export const SAFETENSORS_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'safetensors',displayNameKey:'safetensors.title',extensions:['safetensors'],priority:20,requiredServices:[],optionalServices:['clipboard']};
-export const AUDIO_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'audio',displayNameKey:'audio.title',extensions:['mp3','wav','pcm','aiff','aif','aifc','amr','awb','ogg','flac','ac3','aac','m4a'],priority:20,requiredServices:[],optionalServices:[]};
+export const AUDIO_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'audio',displayNameKey:'audio.title',extensions:['mp3','wav','pcm','aiff','aif','aifc','amr','awb','ogg','flac','ac3','aac','m4a'],priority:20,requiredServices:[],optionalServices:['save']};
 export const VIDEO_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'video',displayNameKey:'video.title',extensions:['mp4','mts','m2ts','avi','mov','wmv','flv','webm','mkv'],priority:20,requiredServices:[],optionalServices:[]};
 export const DBC_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'dbc',displayNameKey:'dbc.title',extensions:['dbc'],priority:20,requiredServices:[],optionalServices:['clipboard']};
 export const ARXML_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'arxml',displayNameKey:'arxml.title',extensions:['arxml'],priority:20,requiredServices:[],optionalServices:['clipboard']};
