@@ -5,6 +5,104 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0] - 2026-08-07
+
+### Added
+
+- ONNX `ModelProto` parsing and an interactive `.onnx` model viewer. The
+  dependency-free protobuf reader retains graph topology, operators, attributes,
+  tensor types and shapes, opsets, metadata, and external-data references while
+  skipping weight payload decoding. The viewer adds a connected computation
+  graph with node inspection, searchable node/tensor/input-output tables, model
+  metadata, bounded large-graph rendering, JSON copy, and registry routing.
+
+- GGUF metadata and tensor-index parsing powered by `@huggingface/gguf`, exposed
+  through `parsers/gguf` and the Node local-file helper `parsers/gguf/node`.
+  Parsed bigint values and large metadata arrays are normalized into a
+  JSON-safe document, while tensor payload bytes remain unread. The new GGUF
+  viewer adds summary cards, searchable tensor/metadata tables, structure
+  preview, JSON copy, and `GGUF` magic-byte detection. Remote parsing validates
+  HTTP 206/`Content-Range` while accepting a valid terminal HTTP 416 prefetch,
+  propagates cancellation to fetch, and caps normalized tensor/metadata previews
+  at 1,000 entries plus a total character budget. The viewer accepts both the
+  shared `{ fileName, data }` input and remote URI sources; Node local files use
+  the separate abortable parser helper and pre-parsed document mount. Layout
+  normalization rejects unsafe alignment and tensor-data offsets, and clipboard
+  success is reported only after the host write completes. Remote
+  `Content-Range`, memory byte length, and local `stat.size` are retained for EOF
+  validation of the tensor index and offsets. Node local-file parsing uses an
+  AbortSignal-aware range stream instead of the upstream uncancellable file mode.
+  HTTP 206 responses must cover the complete requested range through EOF, so a
+  server-side range cap cannot create zero-filled gaps in the upstream parser.
+  Tensor payload ends are checked using exact ggml dtype block sizes, every
+  tensor offset is alignment-checked, and `general.alignment` must be a power of
+  two, matching the files ggml itself agrees to load. Tensorless files such as
+  llama.cpp vocab models parse normally: with no tensor data section there is no
+  alignment padding to require past the tensor index.
+  Header version and counts are preserved from the source bytes so metadata keys
+  cannot overwrite parser-reserved fields unnoticed. Future storage dtypes keep
+  a bounded structural preview with an explicit unverified-payload warning, and
+  remote viewers display the file size learned from `Content-Range` by default.
+  Source tensor and metadata counts are admission-checked before the upstream
+  parser can allocate entry objects, and host-provided byte lengths must agree
+  with every HTTP `Content-Range` total used for parsing. A lightweight wire
+  preflight also enforces cumulative metadata array-element and UTF-8 string-byte
+  budgets before `@huggingface/gguf` can box those values; fetched preflight
+  ranges are replayed to avoid duplicate downloads. GGUF summary labels, table
+  titles, column headers, and warnings are stored as semantic message keys and
+  localized by the viewer in English, Korean, Japanese, and Simplified Chinese;
+  the viewer also shows the parser's specific rejection reason beneath the
+  generic invalid-file warning. File sizes are reported in the same 1024-based
+  units on every GGUF entry point.
+
+- Decoder-free waveform analysis for large WAV files. `analyzeWavSource` streams
+  the file through a peak pyramid, so memory no longer scales with track length
+  and the channel layout is preserved: a 60-minute WAV indexes in 1.7s holding a
+  10.8 MiB pyramid, where the WASM engine took 5.2s and held 1211 MiB of PCM.
+  Large WAV files now render with no audio engine present at all. The building
+  blocks are exported from `viewers/audio` for adapters — `pyramid`,
+  `wav-stream`, `mp3-demux`, and `webcodecs-decoder` — but only the WAV path is
+  wired into the viewer; adopting WebCodecs by default depends on cross-engine
+  output equality, which is unmeasured.
+
+- The WASM audio engine can run off the main thread through
+  `createWorkerAudioEngine`, with a timeout that terminates the worker so a
+  non-terminating decode surfaces as a recoverable error instead of a frozen
+  tab. Worker creation goes through the host's `WorkerFactoryService` when one
+  is provided, and a worker that cannot start falls back in-process so the WASM
+  recovery path for AMR and AC3 survives. The bundled
+  `audio-engine/audio_engine_worker.mjs` asset ships with the package.
+
+- Audio viewer capabilities lost in the port from vscode-omni-viewer are back:
+  region start/end/length editors, Space to play and pause, a zoom label that
+  reports the visible window with a ceiling that scales with the track instead
+  of a fixed 32x, waveform and spectrogram shown together, selectable
+  spectrogram scales (linear, mel, bark, ERB), download through the optional
+  `save` service, per-channel peak and RMS levels, bar rendering, and adaptive
+  timeline ticks. The new messages are localized in every shipped catalog.
+
+### Changed
+
+- The minimum supported Node.js version is now 20.
+
+- mp3 is withheld from the WASM audio engine entirely
+  (`ENGINE_UNSAFE_EXTENSIONS`) and takes the slower browser decode path instead.
+  A fast waveform is not worth having if it describes the wrong audio.
+
+### Fixed
+
+- The audio viewer no longer freezes the tab on mp3. Measured against the
+  shipped `audio_engine.wasm`, MPEG-1 Layer III stereo mp3 — what nearly every
+  mp3 is — either never returns (over 300s for a one-second file) or reports a
+  duration of 1042.3s regardless of the real length. Because `analyze()` ran
+  synchronously on the main thread, any mp3 past the 50 MiB analysis threshold
+  froze the tab, and shorter ones drew a believable waveform for the wrong 17
+  minutes. Those files now take the browser decode path, and engine decodes run
+  behind a terminating worker timeout.
+
+- WaveSurfer's synthesized peaks buffer no longer overwrites the real sample
+  rate and channel count when the viewer renders from precomputed peaks.
+
 ## [0.12.1] - 2026-08-03
 
 ### Fixed
