@@ -2,6 +2,14 @@
 
 This distribution includes the following third-party software.
 
+## Hugging Face GGUF parser
+
+- Project: `@huggingface/gguf` and `@huggingface/tasks`
+- Copyright: Hugging Face and contributors
+- License: MIT
+- Use: GGUF metadata and tensor-index parsing
+- Source: https://github.com/huggingface/huggingface.js
+
 ## PDF.js
 
 - Project: PDF.js (`pdfjs-dist`)

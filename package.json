@@ -30,7 +30,7 @@
   ],
   "sideEffects": false,
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "files": [
     "dist",
@@ -53,20 +53,62 @@
       "types": "./dist/parsers/automotive/index.d.ts",
       "default": "./dist/parsers/automotive/index.js"
     },
-    "./parsers/audio": { "types": "./dist/parsers/audio/index.d.ts", "default": "./dist/parsers/audio/index.js" },
-    "./parsers/video": { "types": "./dist/parsers/video/index.d.ts", "default": "./dist/parsers/video/index.js" },
-    "./parsers/dbc": { "types": "./dist/parsers/dbc/index.d.ts", "default": "./dist/parsers/dbc/index.js" },
-    "./parsers/arxml": { "types": "./dist/parsers/arxml/index.d.ts", "default": "./dist/parsers/arxml/index.js" },
-    "./parsers/a2l": { "types": "./dist/parsers/a2l/index.d.ts", "default": "./dist/parsers/a2l/index.js" },
-    "./parsers/asc": { "types": "./dist/parsers/asc/index.d.ts", "default": "./dist/parsers/asc/index.js" },
-    "./parsers/blf": { "types": "./dist/parsers/blf/index.d.ts", "default": "./dist/parsers/blf/index.js" },
-    "./parsers/mf4": { "types": "./dist/parsers/mf4/index.d.ts", "default": "./dist/parsers/mf4/index.js" },
-    "./parsers/pcap": { "types": "./dist/parsers/pcap/index.d.ts", "default": "./dist/parsers/pcap/index.js" },
-    "./parsers/pcapng": { "types": "./dist/parsers/pcapng/index.d.ts", "default": "./dist/parsers/pcapng/index.js" },
-    "./parsers/mermaid": { "types": "./dist/parsers/mermaid/index.d.ts", "default": "./dist/parsers/mermaid/index.js" },
-    "./parsers/plantuml": { "types": "./dist/parsers/plantuml/index.d.ts", "default": "./dist/parsers/plantuml/index.js" },
-    "./parsers/shapefile": { "types": "./dist/parsers/shapefile/index.d.ts", "default": "./dist/parsers/shapefile/index.js" },
-    "./parsers/psd": { "types": "./dist/parsers/psd/index.d.ts", "default": "./dist/parsers/psd/index.js" },
+    "./parsers/audio": {
+      "types": "./dist/parsers/audio/index.d.ts",
+      "default": "./dist/parsers/audio/index.js"
+    },
+    "./parsers/video": {
+      "types": "./dist/parsers/video/index.d.ts",
+      "default": "./dist/parsers/video/index.js"
+    },
+    "./parsers/dbc": {
+      "types": "./dist/parsers/dbc/index.d.ts",
+      "default": "./dist/parsers/dbc/index.js"
+    },
+    "./parsers/arxml": {
+      "types": "./dist/parsers/arxml/index.d.ts",
+      "default": "./dist/parsers/arxml/index.js"
+    },
+    "./parsers/a2l": {
+      "types": "./dist/parsers/a2l/index.d.ts",
+      "default": "./dist/parsers/a2l/index.js"
+    },
+    "./parsers/asc": {
+      "types": "./dist/parsers/asc/index.d.ts",
+      "default": "./dist/parsers/asc/index.js"
+    },
+    "./parsers/blf": {
+      "types": "./dist/parsers/blf/index.d.ts",
+      "default": "./dist/parsers/blf/index.js"
+    },
+    "./parsers/mf4": {
+      "types": "./dist/parsers/mf4/index.d.ts",
+      "default": "./dist/parsers/mf4/index.js"
+    },
+    "./parsers/pcap": {
+      "types": "./dist/parsers/pcap/index.d.ts",
+      "default": "./dist/parsers/pcap/index.js"
+    },
+    "./parsers/pcapng": {
+      "types": "./dist/parsers/pcapng/index.d.ts",
+      "default": "./dist/parsers/pcapng/index.js"
+    },
+    "./parsers/mermaid": {
+      "types": "./dist/parsers/mermaid/index.d.ts",
+      "default": "./dist/parsers/mermaid/index.js"
+    },
+    "./parsers/plantuml": {
+      "types": "./dist/parsers/plantuml/index.d.ts",
+      "default": "./dist/parsers/plantuml/index.js"
+    },
+    "./parsers/shapefile": {
+      "types": "./dist/parsers/shapefile/index.d.ts",
+      "default": "./dist/parsers/shapefile/index.js"
+    },
+    "./parsers/psd": {
+      "types": "./dist/parsers/psd/index.d.ts",
+      "default": "./dist/parsers/psd/index.js"
+    },
     "./parsers/types": {
       "types": "./dist/parsers/types.d.ts",
       "default": "./dist/parsers/types.js"
@@ -155,6 +197,18 @@
       "types": "./dist/parsers/safetensors/node.d.ts",
       "default": "./dist/parsers/safetensors/node.js"
     },
+    "./parsers/gguf": {
+      "types": "./dist/parsers/gguf/index.d.ts",
+      "default": "./dist/parsers/gguf/index.js"
+    },
+    "./parsers/gguf/node": {
+      "types": "./dist/parsers/gguf/node.d.ts",
+      "default": "./dist/parsers/gguf/node.js"
+    },
+    "./parsers/onnx": {
+      "types": "./dist/parsers/onnx/index.d.ts",
+      "default": "./dist/parsers/onnx/index.js"
+    },
     "./viewers/types": {
       "types": "./dist/viewers/types.d.ts",
       "default": "./dist/viewers/types.js"
@@ -179,25 +233,82 @@
       "types": "./dist/viewers/reqif/index.d.ts",
       "default": "./dist/viewers/reqif/index.js"
     },
-    "./viewers/audio": { "types": "./dist/viewers/audio/index.d.ts", "default": "./dist/viewers/audio/index.js" },
-    "./viewers/audio/self-loading": { "types": "./dist/viewers/audio/self-loading.d.ts", "default": "./dist/viewers/audio/self-loading.js" },
-    "./viewers/video": { "types": "./dist/viewers/video/index.d.ts", "default": "./dist/viewers/video/index.js" },
-    "./viewers/dbc": { "types": "./dist/viewers/dbc/index.d.ts", "default": "./dist/viewers/dbc/index.js" },
-    "./viewers/arxml": { "types": "./dist/viewers/arxml/index.d.ts", "default": "./dist/viewers/arxml/index.js" },
-    "./viewers/a2l": { "types": "./dist/viewers/a2l/index.d.ts", "default": "./dist/viewers/a2l/index.js" },
-    "./viewers/asc": { "types": "./dist/viewers/asc/index.d.ts", "default": "./dist/viewers/asc/index.js" },
-    "./viewers/blf": { "types": "./dist/viewers/blf/index.d.ts", "default": "./dist/viewers/blf/index.js" },
-    "./viewers/mf4": { "types": "./dist/viewers/mf4/index.d.ts", "default": "./dist/viewers/mf4/index.js" },
-    "./viewers/pcap": { "types": "./dist/viewers/pcap/index.d.ts", "default": "./dist/viewers/pcap/index.js" },
-    "./viewers/pcapng": { "types": "./dist/viewers/pcapng/index.d.ts", "default": "./dist/viewers/pcapng/index.js" },
-    "./viewers/mermaid": { "types": "./dist/viewers/mermaid/index.d.ts", "default": "./dist/viewers/mermaid/index.js" },
-    "./viewers/mermaid/self-loading": { "types": "./dist/viewers/mermaid/self-loading.d.ts", "default": "./dist/viewers/mermaid/self-loading.js" },
-    "./viewers/plantuml": { "types": "./dist/viewers/plantuml/index.d.ts", "default": "./dist/viewers/plantuml/index.js" },
-    "./viewers/plantuml/self-loading": { "types": "./dist/viewers/plantuml/self-loading.d.ts", "default": "./dist/viewers/plantuml/self-loading.js" },
-    "./viewers/shapefile": { "types": "./dist/viewers/shapefile/index.d.ts", "default": "./dist/viewers/shapefile/index.js" },
-    "./viewers/shapefile/self-loading": { "types": "./dist/viewers/shapefile/self-loading.d.ts", "default": "./dist/viewers/shapefile/self-loading.js" },
-    "./viewers/psd": { "types": "./dist/viewers/psd/index.d.ts", "default": "./dist/viewers/psd/index.js" },
-    "./viewers/psd/self-loading": { "types": "./dist/viewers/psd/self-loading.d.ts", "default": "./dist/viewers/psd/self-loading.js" },
+    "./viewers/audio": {
+      "types": "./dist/viewers/audio/index.d.ts",
+      "default": "./dist/viewers/audio/index.js"
+    },
+    "./viewers/audio/self-loading": {
+      "types": "./dist/viewers/audio/self-loading.d.ts",
+      "default": "./dist/viewers/audio/self-loading.js"
+    },
+    "./viewers/video": {
+      "types": "./dist/viewers/video/index.d.ts",
+      "default": "./dist/viewers/video/index.js"
+    },
+    "./viewers/dbc": {
+      "types": "./dist/viewers/dbc/index.d.ts",
+      "default": "./dist/viewers/dbc/index.js"
+    },
+    "./viewers/arxml": {
+      "types": "./dist/viewers/arxml/index.d.ts",
+      "default": "./dist/viewers/arxml/index.js"
+    },
+    "./viewers/a2l": {
+      "types": "./dist/viewers/a2l/index.d.ts",
+      "default": "./dist/viewers/a2l/index.js"
+    },
+    "./viewers/asc": {
+      "types": "./dist/viewers/asc/index.d.ts",
+      "default": "./dist/viewers/asc/index.js"
+    },
+    "./viewers/blf": {
+      "types": "./dist/viewers/blf/index.d.ts",
+      "default": "./dist/viewers/blf/index.js"
+    },
+    "./viewers/mf4": {
+      "types": "./dist/viewers/mf4/index.d.ts",
+      "default": "./dist/viewers/mf4/index.js"
+    },
+    "./viewers/pcap": {
+      "types": "./dist/viewers/pcap/index.d.ts",
+      "default": "./dist/viewers/pcap/index.js"
+    },
+    "./viewers/pcapng": {
+      "types": "./dist/viewers/pcapng/index.d.ts",
+      "default": "./dist/viewers/pcapng/index.js"
+    },
+    "./viewers/mermaid": {
+      "types": "./dist/viewers/mermaid/index.d.ts",
+      "default": "./dist/viewers/mermaid/index.js"
+    },
+    "./viewers/mermaid/self-loading": {
+      "types": "./dist/viewers/mermaid/self-loading.d.ts",
+      "default": "./dist/viewers/mermaid/self-loading.js"
+    },
+    "./viewers/plantuml": {
+      "types": "./dist/viewers/plantuml/index.d.ts",
+      "default": "./dist/viewers/plantuml/index.js"
+    },
+    "./viewers/plantuml/self-loading": {
+      "types": "./dist/viewers/plantuml/self-loading.d.ts",
+      "default": "./dist/viewers/plantuml/self-loading.js"
+    },
+    "./viewers/shapefile": {
+      "types": "./dist/viewers/shapefile/index.d.ts",
+      "default": "./dist/viewers/shapefile/index.js"
+    },
+    "./viewers/shapefile/self-loading": {
+      "types": "./dist/viewers/shapefile/self-loading.d.ts",
+      "default": "./dist/viewers/shapefile/self-loading.js"
+    },
+    "./viewers/psd": {
+      "types": "./dist/viewers/psd/index.d.ts",
+      "default": "./dist/viewers/psd/index.js"
+    },
+    "./viewers/psd/self-loading": {
+      "types": "./dist/viewers/psd/self-loading.d.ts",
+      "default": "./dist/viewers/psd/self-loading.js"
+    },
     "./viewers/csv": {
       "types": "./dist/viewers/csv/index.d.ts",
       "default": "./dist/viewers/csv/index.js"
@@ -302,6 +413,14 @@
       "types": "./dist/viewers/safetensors/index.d.ts",
       "default": "./dist/viewers/safetensors/index.js"
     },
+    "./viewers/gguf": {
+      "types": "./dist/viewers/gguf/index.d.ts",
+      "default": "./dist/viewers/gguf/index.js"
+    },
+    "./viewers/onnx": {
+      "types": "./dist/viewers/onnx/index.d.ts",
+      "default": "./dist/viewers/onnx/index.js"
+    },
     "./styles/*": "./dist/styles/*",
     "./assets/*": "./dist/assets/*"
   },
@@ -313,6 +432,7 @@
     "prepublishOnly": "npm run build && npm test"
   },
   "dependencies": {
+    "@huggingface/gguf": "^0.4.6",
     "emf-converter": "^2.0.0"
   },
   "devDependencies": {

@@ -29,6 +29,8 @@ const entries = [
     ,['viewers/hdf5/styles.js', 'hdf5ViewerCss', 'hdf5.css']
     ,['viewers/mat/styles.js', 'matViewerCss', 'mat.css']
     ,['viewers/safetensors/styles.js', 'safetensorsViewerCss', 'safetensors.css']
+    ,['viewers/gguf/styles.js', 'ggufViewerCss', 'gguf.css']
+    ,['viewers/onnx/styles.js', 'onnxViewerCss', 'onnx.css']
     ,['viewers/automotive/styles.js', 'automotiveViewerCss', 'automotive.css']
     ,['viewers/audio/index.js', 'audioViewerCss', 'audio.css']
     ,['viewers/video/index.js', 'videoViewerCss', 'video.css']

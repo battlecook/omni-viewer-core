@@ -15,7 +15,8 @@ models, viewers mount into a DOM element, and everything host-specific
 - **Documents** — PDF, Word (DOCX and legacy DOC), HWP, PowerPoint (PPTX and
   legacy PPT), Markdown, LaTeX (structure and math preview, not typesetting)
 - **Data & spreadsheets** — Excel, CSV/TSV, JSON, JSONL/NDJSON, YAML, TOML,
-  Parquet, Avro, HDF5, MATLAB MAT, Safetensors, Protocol Buffers, ReqIF, SQLite
+  Parquet, Avro, HDF5, MATLAB MAT, Safetensors, GGUF, ONNX, Protocol Buffers, ReqIF,
+  SQLite
 - **Media & graphics** — audio (waveform/spectrogram), video, images,
   Photoshop PSD
 - **Engineering & automotive** — CAN DBC, AUTOSAR ARXML, ASAM A2L, Vector
@@ -82,6 +83,43 @@ Node hosts can use `parseSafetensorsFile` from
 `omni-viewer-core/parsers/safetensors/node` and mount the returned document
 with `mountSafetensorsDocument`. The legacy `Uint8Array` input remains
 available, but it requires the host to load the complete file first.
+
+### GGUF metadata and tensor index
+
+GGUF parsing delegates to `@huggingface/gguf`, then normalizes its bigint and
+large-array values into an Omni Viewer JSON-safe document. Node hosts can parse
+a local model without loading tensor payloads and mount the result separately:
+
+```ts
+import { parseGgufFile } from 'omni-viewer-core/parsers/gguf/node';
+import { mountGgufDocument } from 'omni-viewer-core/viewers/gguf';
+
+const document = await parseGgufFile('/models/model.gguf');
+mountGgufDocument(document, 'model.gguf', container, ctx);
+```
+
+Remote hosts can use `parseGgufUri` from `omni-viewer-core/parsers/gguf`.
+Browser and file-picker hosts can pass the common `{ fileName, data }`
+`ViewerInput` directly to `mountGgufViewer`; the byte input is exposed to the
+same upstream parser through an in-memory range source.
+Tokenizer arrays are represented by bounded previews in the normalized model;
+the viewer provides searchable tensor/metadata tables, structure preview, and
+JSON copy. Node.js 20 or later is required.
+
+### ONNX computation graphs
+
+The ONNX parser reads the protobuf `ModelProto` directly without a runtime
+dependency. Tensor payload bytes are skipped while graph topology, operators,
+attributes, shapes, opsets, metadata, and external-data locations are retained:
+
+```ts
+import { mountOnnxViewer } from 'omni-viewer-core/viewers/onnx';
+
+await mountOnnxViewer({ fileName: file.name, data: bytes }, container, ctx);
+```
+
+The viewer provides a connected computation graph with node inspection plus
+searchable node, initializer, input/output, and model-information panels.
 
 ### Archive host integration
 

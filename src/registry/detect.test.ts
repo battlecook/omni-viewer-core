@@ -60,6 +60,8 @@ describe('detectViewer (stage 1)', () => {
             ['a.hdf5', 'hdf5'],
             ['a.he5', 'hdf5'],
             ['a.safetensors', 'safetensors'],
+            ['a.gguf', 'gguf'],
+            ['a.onnx', 'onnx'],
             ['a.json', 'json'],
             ['a.toml', 'toml'],
             ['a.jsonl', 'jsonl'],
@@ -78,6 +80,16 @@ describe('detectViewer (stage 1)', () => {
         for (const [fileName, expected] of table) {
             expect(detectViewer(fileName).viewerId, fileName).toBe(expected);
         }
+    });
+});
+
+describe('detectViewer (GGUF)', () => {
+    const GGUF = new TextEncoder().encode('GGUF');
+
+    it('validates the extension magic and detects an extensionless GGUF file', () => {
+        expect(detectViewer('model.gguf', undefined, undefined, GGUF)).toEqual({ viewerId: 'gguf', matchedBy: 'extension' });
+        expect(detectViewer('model.bin', undefined, undefined, GGUF)).toEqual({ viewerId: 'gguf', matchedBy: 'content' });
+        expect(detectViewer('broken.gguf', undefined, undefined, new Uint8Array(4))).toEqual({ viewerId: 'fallback', matchedBy: 'fallback' });
     });
 });
 
