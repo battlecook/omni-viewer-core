@@ -79,6 +79,8 @@ export const PCAPNG_MAGIC_SIGNATURES: readonly MagicSignature[] = [[{offset:0,by
 export const PSD_MAGIC_SIGNATURES: readonly MagicSignature[] = [[{offset:0,bytes:[0x38,0x42,0x50,0x53]}]];
 export const SHAPEFILE_MAGIC_SIGNATURES: readonly MagicSignature[] = [[{offset:0,bytes:[0x00,0x00,0x27,0x0a]}]];
 export const GGUF_MAGIC_SIGNATURES: readonly MagicSignature[] = [[{offset:0,bytes:[0x47,0x47,0x55,0x46]}]];
+/** A TFLite FlatBuffer opens with the root offset, then the 'TFL3' identifier. */
+export const TFLITE_MAGIC_SIGNATURES: readonly MagicSignature[] = [[{offset:4,bytes:[0x54,0x46,0x4c,0x33]}]];
 
 /** Farthest byte any signature needs (WebP reaches offset 8 + 4 = 12). */
 const signatureReach = (sigs: readonly MagicSignature[]): number =>
@@ -101,6 +103,7 @@ export const REQUIRED_SNIFF_BYTES = Math.max(
     signatureReach(DB3_MAGIC_SIGNATURES),
     signatureReach(GGUF_MAGIC_SIGNATURES)
     ,signatureReach(MF4_MAGIC_SIGNATURES)
+    ,signatureReach(TFLITE_MAGIC_SIGNATURES)
 );
 
 export const CSV_VIEWER_DESCRIPTOR: ViewerDescriptor = {
@@ -150,6 +153,7 @@ export const GGUF_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'gguf',displayNameKe
 // ONNX is a protobuf ModelProto with no fixed leading magic. The parser checks
 // its required IR version and graph fields after extension-based routing.
 export const ONNX_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'onnx',displayNameKey:'onnx.title',extensions:['onnx'],priority:20,requiredServices:[],optionalServices:['clipboard']};
+export const TFLITE_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'tflite',displayNameKey:'tflite.title',extensions:['tflite','lite'],priority:20,magicSignatures:TFLITE_MAGIC_SIGNATURES,requiredServices:[],optionalServices:['clipboard']};
 export const AUDIO_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'audio',displayNameKey:'audio.title',extensions:['mp3','wav','pcm','aiff','aif','aifc','amr','awb','ogg','flac','ac3','aac','m4a'],priority:20,requiredServices:[],optionalServices:['save']};
 export const VIDEO_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'video',displayNameKey:'video.title',extensions:['mp4','mts','m2ts','avi','mov','wmv','flv','webm','mkv'],priority:20,requiredServices:[],optionalServices:[]};
 export const DBC_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'dbc',displayNameKey:'dbc.title',extensions:['dbc'],priority:20,requiredServices:[],optionalServices:['clipboard']};
@@ -281,6 +285,7 @@ export const CORE_VIEWER_DESCRIPTORS: readonly ViewerDescriptor[] = [
     SAFETENSORS_VIEWER_DESCRIPTOR,
     GGUF_VIEWER_DESCRIPTOR,
     ONNX_VIEWER_DESCRIPTOR,
+    TFLITE_VIEWER_DESCRIPTOR,
     PPT_VIEWER_DESCRIPTOR,
     WORD_VIEWER_DESCRIPTOR,
     HWP_VIEWER_DESCRIPTOR,
@@ -399,7 +404,7 @@ export function detectViewer(
     }
     if (sniffBytes) {
         const unambiguous = descriptors.find(d =>
-            ['avro', 'bag', 'stp', 'db3', 'blf', 'mf4', 'pcap', 'pcapng', 'shapefile', 'psd', 'gguf'].includes(d.id) && servicesMet(d) && magicMatches(d)
+            ['avro', 'bag', 'stp', 'db3', 'blf', 'mf4', 'pcap', 'pcapng', 'shapefile', 'psd', 'gguf', 'tflite'].includes(d.id) && servicesMet(d) && magicMatches(d)
         );
         if (unambiguous) return { viewerId: unambiguous.id, matchedBy: 'content' };
     }

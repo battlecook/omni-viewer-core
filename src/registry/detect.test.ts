@@ -62,6 +62,8 @@ describe('detectViewer (stage 1)', () => {
             ['a.safetensors', 'safetensors'],
             ['a.gguf', 'gguf'],
             ['a.onnx', 'onnx'],
+            ['a.tflite', 'tflite'],
+            ['a.lite', 'tflite'],
             ['a.json', 'json'],
             ['a.toml', 'toml'],
             ['a.jsonl', 'jsonl'],
@@ -90,6 +92,18 @@ describe('detectViewer (GGUF)', () => {
         expect(detectViewer('model.gguf', undefined, undefined, GGUF)).toEqual({ viewerId: 'gguf', matchedBy: 'extension' });
         expect(detectViewer('model.bin', undefined, undefined, GGUF)).toEqual({ viewerId: 'gguf', matchedBy: 'content' });
         expect(detectViewer('broken.gguf', undefined, undefined, new Uint8Array(4))).toEqual({ viewerId: 'fallback', matchedBy: 'fallback' });
+    });
+});
+
+describe('detectViewer (TFLite)', () => {
+    // The identifier sits at offset 4, after the FlatBuffer root offset.
+    const TFLITE = new Uint8Array([0x1c, 0, 0, 0, ...new TextEncoder().encode('TFL3')]);
+
+    it('validates the extension magic and detects an extensionless TFLite model', () => {
+        expect(detectViewer('model.tflite', undefined, undefined, TFLITE)).toEqual({ viewerId: 'tflite', matchedBy: 'extension' });
+        expect(detectViewer('model.lite', undefined, undefined, TFLITE)).toEqual({ viewerId: 'tflite', matchedBy: 'extension' });
+        expect(detectViewer('model.bin', undefined, undefined, TFLITE)).toEqual({ viewerId: 'tflite', matchedBy: 'content' });
+        expect(detectViewer('broken.tflite', undefined, undefined, new Uint8Array(8))).toEqual({ viewerId: 'fallback', matchedBy: 'fallback' });
     });
 });
 

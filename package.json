@@ -26,7 +26,10 @@
     "markdown",
     "latex",
     "tex",
-    "shapefile"
+    "shapefile",
+    "onnx",
+    "tflite",
+    "litert"
   ],
   "sideEffects": false,
   "engines": {
@@ -208,6 +211,10 @@
     "./parsers/onnx": {
       "types": "./dist/parsers/onnx/index.d.ts",
       "default": "./dist/parsers/onnx/index.js"
+    },
+    "./parsers/tflite": {
+      "types": "./dist/parsers/tflite/index.d.ts",
+      "default": "./dist/parsers/tflite/index.js"
     },
     "./viewers/types": {
       "types": "./dist/viewers/types.d.ts",
@@ -420,6 +427,10 @@
     "./viewers/onnx": {
       "types": "./dist/viewers/onnx/index.d.ts",
       "default": "./dist/viewers/onnx/index.js"
+    },
+    "./viewers/tflite": {
+      "types": "./dist/viewers/tflite/index.d.ts",
+      "default": "./dist/viewers/tflite/index.js"
     },
     "./styles/*": "./dist/styles/*",
     "./assets/*": "./dist/assets/*"

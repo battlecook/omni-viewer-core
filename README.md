@@ -15,8 +15,8 @@ models, viewers mount into a DOM element, and everything host-specific
 - **Documents** — PDF, Word (DOCX and legacy DOC), HWP, PowerPoint (PPTX and
   legacy PPT), Markdown, LaTeX (structure and math preview, not typesetting)
 - **Data & spreadsheets** — Excel, CSV/TSV, JSON, JSONL/NDJSON, YAML, TOML,
-  Parquet, Avro, HDF5, MATLAB MAT, Safetensors, GGUF, ONNX, Protocol Buffers, ReqIF,
-  SQLite
+  Parquet, Avro, HDF5, MATLAB MAT, Safetensors, GGUF, ONNX, TFLite/LiteRT,
+  Protocol Buffers, ReqIF, SQLite
 - **Media & graphics** — audio (waveform/spectrogram), video, images,
   Photoshop PSD
 - **Engineering & automotive** — CAN DBC, AUTOSAR ARXML, ASAM A2L, Vector
@@ -120,6 +120,25 @@ await mountOnnxViewer({ fileName: file.name, data: bytes }, container, ctx);
 
 The viewer provides a connected computation graph with node inspection plus
 searchable node, initializer, input/output, and model-information panels.
+
+### TFLite / LiteRT models
+
+The TFLite parser reads the `TFL3` FlatBuffer directly — no schema compiler and
+no runtime dependency. Buffer payloads stay unread while subgraph topology,
+operator codes, decoded builtin options, tensor types, shapes, quantization,
+sparsity, signature definitions, and metadata are retained:
+
+```ts
+import { mountTfliteViewer } from 'omni-viewer-core/viewers/tflite';
+
+await mountTfliteViewer({ fileName: file.name, data: bytes }, container, ctx);
+```
+
+The viewer provides a per-subgraph computation graph with operator and tensor
+inspection, navigation into the subgraphs a control-flow operator references,
+and searchable operator, tensor, input/output, buffer, and model-information
+panels. Custom operators, Select TensorFlow fallbacks, and buffers stored
+outside the FlatBuffer are surfaced as warnings.
 
 ### Archive host integration
 
