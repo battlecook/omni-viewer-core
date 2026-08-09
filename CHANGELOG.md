@@ -5,6 +5,57 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.0] - 2026-08-09
+
+### Added
+
+- TFLite / LiteRT model parsing and an interactive `.tflite` / `.lite` viewer,
+  exposed through `parsers/tflite` and `viewers/tflite`. The `TFL3` FlatBuffer is
+  read directly with no schema compiler and no runtime dependency: buffer
+  payloads stay unread while subgraph topology, operator codes, decoded builtin
+  options, tensor types, shapes, quantization, sparsity, signature definitions,
+  and metadata are retained. The viewer adds a per-subgraph computation graph
+  with operator and tensor inspection, navigation into the subgraphs a
+  control-flow operator references, searchable operator/tensor/input-output/
+  buffer/model-information panels, and JSON copy. Custom operators, Select
+  TensorFlow fallbacks, and buffers stored outside the FlatBuffer are surfaced as
+  warnings, as are an unexpected file identifier, a schema version other than 3,
+  and models with no subgraphs or no operators. Registry routing detects the
+  `TFL3` identifier at offset 4, so content-based detection resolves these files
+  unambiguously regardless of extension. Parsing is bounded by FlatBuffer nesting
+  depth, normalized object count, per-vector and cumulative decoded-element
+  limits, per-field and cumulative UTF-8 text budgets, and tensor rank and
+  element-count bit width; the viewer additionally caps graph nodes, cards, and
+  edges plus table rows, reporting what it omitted. TFLite labels, panels,
+  columns, and warnings are stored as semantic message keys and localized in
+  English, Korean, Japanese, and Simplified Chinese.
+
+### Fixed
+
+- GGUF files whose tokenizer vocabulary exceeded the wire preflight's cumulative
+  complex-array budget were reported as invalid instead of being displayed. The
+  300,000-element ceiling sat below ordinary vocabularies, so most current models
+  were rejected: `tokenizer.ggml.tokens` plus `tokenizer.ggml.merges` is 303,325
+  elements for Qwen3 (151,936-entry vocab) and roughly 408,000 for Llama 3. The
+  budget is now 1,000,000 complex elements, sized against the memory it actually
+  guards — string content is already capped at 16 MiB, so what remains is
+  per-object overhead — and the cumulative array-element budget is 2,000,000,
+  which no longer cuts through the 256K-vocab range.
+  ([vscode-omni-viewer#18](https://github.com/battlecook/vscode-omni-viewer/issues/18))
+
+### Changed
+
+- Exceeding a cumulative GGUF metadata budget no longer discards the whole
+  document. The preflight now collects a bounded preview per entry — key, type,
+  declared array length, and the first few items — while skipping array bodies,
+  so its peak memory is independent of vocabulary size. A file over budget is
+  rendered from that preview data with an explicit too-large warning and the
+  parser's specific reason, rather than as an invalid file; the tensor table is
+  absent because the tensor index is never reached, and the entry that tripped
+  the budget is still described. Structural failures such as invalid magic bytes
+  or unsupported value types remain hard rejections, and files within budget are
+  parsed by `@huggingface/gguf` exactly as before.
+
 ## [0.13.0] - 2026-08-07
 
 ### Added
