@@ -86,6 +86,7 @@ export const CATALOG_EN: Record<string, string> = {
     'gguf.warning.tensorsLimited': 'Showing the first {shown} of {total} tensors to limit memory use.',
     'gguf.warning.metadataLimited': 'Showing the first {shown} of {total} metadata entries to limit memory use.',
     'gguf.warning.textTruncated': 'Some text was truncated by per-field limits or the normalized GGUF character budget.',
+    'gguf.warning.metadataTooLarge': 'This file’s metadata is too large to parse in full, so only key previews are shown and the tensor list is unavailable.',
     'onnx.title': 'ONNX model', 'onnx.search': 'Search graph, nodes, and tensors…', 'onnx.copyJson': 'Copy JSON',
     'onnx.graph': 'Graph', 'onnx.nodes': 'Nodes', 'onnx.tensors': 'Tensors', 'onnx.io': 'Inputs & Outputs',
     'onnx.modelInfo': 'Model Info', 'onnx.rows': '{shown} / {total} rows shown', 'onnx.noMatches': 'No rows match the current search.',

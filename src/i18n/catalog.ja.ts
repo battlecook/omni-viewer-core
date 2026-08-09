@@ -81,6 +81,7 @@ export const CATALOG_JA: Record<string, string> = {
     'gguf.warning.tensorsLimited': 'メモリ使用量を抑えるため、{total}個のテンソルのうち先頭{shown}個を表示します。',
     'gguf.warning.metadataLimited': 'メモリ使用量を抑えるため、{total}個のメタデータのうち先頭{shown}個を表示します。',
     'gguf.warning.textTruncated': 'フィールド制限またはGGUF文字数予算により、一部のテキストが省略されました。',
+    'gguf.warning.metadataTooLarge': 'このファイルのメタデータは大きすぎて完全には解析できません。キーのプレビューのみを表示し、テンソル一覧は利用できません。',
     'onnx.title': 'ONNXモデル', 'onnx.search': 'グラフ、ノード、テンソルを検索…', 'onnx.copyJson': 'JSONをコピー',
     'onnx.graph': 'グラフ', 'onnx.nodes': 'ノード', 'onnx.tensors': 'テンソル', 'onnx.io': '入出力',
     'onnx.modelInfo': 'モデル情報', 'onnx.rows': '{total}行中{shown}行を表示', 'onnx.noMatches': '検索に一致する行がありません。',

@@ -91,10 +91,36 @@ describe('GGUF parser adapter', () => {
         const arrays = await parseGgufBytes(buildCumulativeArrayLimitFixture());
         const strings = await parseGgufBytes(buildCumulativeStringLimitFixture());
 
-        expectInvalid(arrays);
+        for (const document of [arrays, strings]) {
+            expectValid(document);
+            expect(document.warnings).toContainEqual({ key: 'gguf.warning.metadataTooLarge' });
+            expect(document.tensors).toEqual([]);
+        }
         expect(warningText(arrays)).toMatch(/metadata arrays.*cumulative element limit/i);
-        expectInvalid(strings);
         expect(warningText(strings)).toMatch(/metadata strings.*cumulative byte limit/i);
+    });
+
+    it('describes the entry that exceeded a budget instead of dropping the whole document', async () => {
+        const document = await parseGgufBytes(buildCumulativeArrayLimitFixture());
+
+        const overflowing = document.metadata.find((entry) => entry.key === 'array.b');
+        expect(overflowing).toMatchObject({ type: 'ARRAY<UINT8>' });
+        expect(overflowing?.value).toContain(`[${Math.floor(GGUF_PARSE_ARRAY_ELEMENT_LIMIT / 2) + 1} items]`);
+        expect(document.summary).toContainEqual({ labelKey: 'gguf.summary.metadataKeys', value: '2' });
+    });
+
+    // https://github.com/battlecook/vscode-omni-viewer/issues/18: the previous 300K
+    // complex-element ceiling cut through the middle of ordinary vocabularies, so
+    // Qwen3, Llama 3 and friends all rendered as "invalid".
+    it('parses a modern tokenizer vocabulary in full', async () => {
+        const document = await parseGgufBytes(buildLargeVocabularyFixture(151_936, 151_387));
+
+        expectValid(document);
+        expect(document.warnings).toEqual([]);
+        expect(document.metadata.find((entry) => entry.key === 'tokenizer.ggml.tokens'))
+            .toMatchObject({ type: 'ARRAY<STRING>', arrayLength: 151_936 });
+        expect(document.metadata.find((entry) => entry.key === 'tokenizer.ggml.merges'))
+            .toMatchObject({ type: 'ARRAY<STRING>', arrayLength: 151_387 });
     });
 
     it('returns an invalid document when the upstream parser rejects a file', async () => {
@@ -652,6 +678,24 @@ function buildCumulativeArrayLimitFixture(): Uint8Array {
         for (let index = 0; index < perArray; index += 1) bytes.push(0);
     }
     return Uint8Array.from(bytes);
+}
+
+/** Mirrors the tokenizer shape of a Qwen3-sized GGUF: two large STRING arrays. */
+function buildLargeVocabularyFixture(tokenCount: number, mergeCount: number): Uint8Array {
+    const bytes: number[] = [];
+    pushAscii(bytes, 'GGUF'); pushU32(bytes, 3); pushU64(bytes, 0n); pushU64(bytes, 3n);
+    pushStringMetadata(bytes, 'general.architecture', 'qwen3vl');
+    pushIndexedStringArray(bytes, 'tokenizer.ggml.tokens', tokenCount, 't');
+    pushIndexedStringArray(bytes, 'tokenizer.ggml.merges', mergeCount, 'm');
+    return Uint8Array.from(bytes);
+}
+
+function pushIndexedStringArray(bytes: number[], key: string, count: number, prefix: string): void {
+    pushString(bytes, key);
+    pushU32(bytes, 9); // ARRAY
+    pushU32(bytes, 8); // STRING element type
+    pushU64(bytes, BigInt(count));
+    for (let index = 0; index < count; index += 1) pushString(bytes, `${prefix}${index}`);
 }
 
 function buildCumulativeStringLimitFixture(): Uint8Array {

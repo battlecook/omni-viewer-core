@@ -73,6 +73,7 @@ export const CATALOG_ZH_CN: Record<string, string> = {
     'gguf.warning.tensorsLimited': '为限制内存使用，仅显示 {total} 个张量中的前 {shown} 个。',
     'gguf.warning.metadataLimited': '为限制内存使用，仅显示 {total} 个元数据条目中的前 {shown} 个。',
     'gguf.warning.textTruncated': '由于字段限制或 GGUF 字符预算，部分文本已被截断。',
+    'gguf.warning.metadataTooLarge': '该文件的元数据过大，无法完整解析，因此仅显示键的预览，且无法提供张量列表。',
     'onnx.title': 'ONNX 模型', 'onnx.search': '搜索图、节点和张量…', 'onnx.copyJson': '复制 JSON',
     'onnx.graph': '计算图', 'onnx.nodes': '节点', 'onnx.tensors': '张量', 'onnx.io': '输入和输出',
     'onnx.modelInfo': '模型信息', 'onnx.rows': '显示 {shown} / {total} 行', 'onnx.noMatches': '没有符合当前搜索的行。',

@@ -83,6 +83,7 @@ export const CATALOG_KO: Record<string, string> = {
     'gguf.warning.tensorsLimited': '메모리 사용을 제한하기 위해 전체 {total}개 텐서 중 처음 {shown}개를 표시합니다.',
     'gguf.warning.metadataLimited': '메모리 사용을 제한하기 위해 전체 {total}개 메타데이터 중 처음 {shown}개를 표시합니다.',
     'gguf.warning.textTruncated': '필드별 제한 또는 GGUF 문자 예산으로 인해 일부 텍스트가 잘렸습니다.',
+    'gguf.warning.metadataTooLarge': '이 파일의 메타데이터가 너무 커서 전체를 해석할 수 없습니다. 키 미리보기만 표시되며 텐서 목록은 제공되지 않습니다.',
     'onnx.title': 'ONNX 모델', 'onnx.search': '그래프, 노드, 텐서 검색…', 'onnx.copyJson': 'JSON 복사',
     'onnx.graph': '그래프', 'onnx.nodes': '노드', 'onnx.tensors': '텐서', 'onnx.io': '입출력',
     'onnx.modelInfo': '모델 정보', 'onnx.rows': '전체 {total}행 중 {shown}행 표시', 'onnx.noMatches': '검색과 일치하는 행이 없습니다.',

@@ -145,9 +145,25 @@ export const GGUF_NORMALIZED_TEXT_BUDGET = 2_000_000;
 /** Admission limits enforced from source bytes before @huggingface/gguf allocates entry objects. */
 export const GGUF_PARSE_TENSOR_LIMIT = 100_000;
 export const GGUF_PARSE_METADATA_LIMIT = 10_000;
-export const GGUF_PARSE_ARRAY_ELEMENT_LIMIT = 1_000_000;
+/**
+ * Total metadata array elements. Numeric elements land in packed JS arrays (~8 B
+ * each), but INT64/UINT64 subtypes become BigInt objects, so keep the headroom
+ * modest: a 256K-vocab model's `tokens` + `token_type` + `merges` is ~1M elements,
+ * and the Qwen3 file from issue #18 measures 455,265.
+ */
+export const GGUF_PARSE_ARRAY_ELEMENT_LIMIT = 2_000_000;
 export const GGUF_PARSE_STRING_BYTE_LIMIT = 16 * 1024 * 1024;
-const GGUF_PARSE_COMPLEX_ARRAY_LIMIT = 300_000;
+/**
+ * Caps the metadata elements that become individual JS objects upstream. String
+ * *content* is already bounded by GGUF_PARSE_STRING_BYTE_LIMIT, so what is left to
+ * bound is per-object overhead (~50-60 B each in V8), i.e. roughly 60 MB here.
+ *
+ * Real tokenizers sit well under this: `tokens` + `merges` is ~303K for Qwen3
+ * (151,936-entry vocab), ~408K for Llama 3, and ~756K for a 256K-vocab BPE model.
+ * The previous 300K ceiling cut through that range and rejected most current
+ * models -- see https://github.com/battlecook/vscode-omni-viewer/issues/18.
+ */
+export const GGUF_PARSE_COMPLEX_ARRAY_LIMIT = 1_000_000;
 
 /**
  * Parses a remote GGUF URL. Node local files use the abortable `./node` helper.
@@ -184,8 +200,17 @@ export async function parseGgufUri(uri: string, options: GgufParseOptions = {}):
             replayCache,
             () => preflighting
         );
-        await preflightGgufMetadata(rangeFetch, options.signal);
+        const preflight = await preflightGgufMetadata(rangeFetch, options.signal);
         preflighting = false;
+        if (preflight.overflow) {
+            // Handing this file to the upstream parser would allocate the very arrays
+            // the budget refused, so report what the preflight already read instead.
+            return partialGguf(
+                preflight,
+                options.fileSize
+                    ?? (remoteFileSize === undefined ? 'Unknown' : formatByteSize(remoteFileSize))
+            );
+        }
         const output = await gguf(uri, {
             typedMetadata: true,
             fetch: rangeFetch
@@ -847,8 +872,53 @@ interface GgufMetadataBudget {
     stringBytes: bigint;
 }
 
-/** Scans metadata without materializing values before the third-party parser runs. */
-async function preflightGgufMetadata(fetchRange: typeof fetch, signal?: AbortSignal): Promise<void> {
+/**
+ * A cumulative budget stopped the metadata walk. Distinct from a structural error:
+ * the bytes read so far are valid and still worth showing, so this unwinds to a
+ * partial document instead of an invalid one.
+ */
+class GgufBudgetExceeded extends Error {}
+
+/** Preview of one metadata entry, gathered without materializing whole arrays. */
+interface GgufPreflightEntry {
+    key: string;
+    type: number;
+    subType?: number;
+    /** Exact declared length; kept as bigint because an over-budget array can be huge. */
+    arrayLength?: bigint;
+    /** Display text for a scalar, or for the first ARRAY_PREVIEW_ITEMS array items. */
+    preview: string[];
+}
+
+interface GgufPreflightResult {
+    header: GgufHeaderInfo;
+    entries: GgufPreflightEntry[];
+    /**
+     * Set when a cumulative budget stopped the walk, leaving `entries` a prefix of
+     * the file's metadata. The upstream parser must not run in that case: it would
+     * allocate exactly the arrays the budget refused.
+     */
+    overflow?: string;
+}
+
+const FIXED_VALUE_BYTES: Readonly<Record<number, number>> = {
+    [GGUFValueType.UINT8]: 1, [GGUFValueType.INT8]: 1,
+    [GGUFValueType.UINT16]: 2, [GGUFValueType.INT16]: 2,
+    [GGUFValueType.UINT32]: 4, [GGUFValueType.INT32]: 4,
+    [GGUFValueType.FLOAT32]: 4, [GGUFValueType.BOOL]: 1,
+    [GGUFValueType.UINT64]: 8, [GGUFValueType.INT64]: 8,
+    [GGUFValueType.FLOAT64]: 8
+};
+
+/**
+ * Walks metadata from the source bytes before the third-party parser runs, keeping
+ * only a bounded preview per entry. Array bodies are skipped past ARRAY_PREVIEW_ITEMS,
+ * so peak memory here is independent of vocabulary size.
+ */
+async function preflightGgufMetadata(
+    fetchRange: typeof fetch,
+    signal?: AbortSignal
+): Promise<GgufPreflightResult> {
     const reader = new GgufPreflightReader(fetchRange, signal);
     const magic = await reader.read(4);
     if (magic[0] !== 0x47 || magic[1] !== 0x47 || magic[2] !== 0x55 || magic[3] !== 0x46) {
@@ -868,37 +938,60 @@ async function preflightGgufMetadata(fetchRange: typeof fetch, signal?: AbortSig
     validateSourceHeaderResourceLimits(header);
 
     const budget: GgufMetadataBudget = { arrayElements: 0n, complexArrayElements: 0n, stringBytes: 0n };
-    for (let index = 0n; index < metadataCount; index += 1n) {
-        await scanGgufString(reader, version, littleEndian, budget);
-        const type = await reader.readU32(littleEndian);
-        await scanGgufMetadataValue(reader, type, version, littleEndian, budget, 0);
+    const text = new CharacterBudget(GGUF_NORMALIZED_TEXT_BUDGET);
+    const entries: GgufPreflightEntry[] = [];
+    try {
+        for (let index = 0n; index < metadataCount; index += 1n) {
+            const key = await readGgufString(reader, version, littleEndian, budget, text, MAX_IDENTIFIER_CHARS);
+            const type = await reader.readU32(littleEndian);
+            const entry: GgufPreflightEntry = { key: key ?? '', type, preview: [] };
+            // Registered before its value is read so the entry that trips a budget --
+            // the informative one -- still reaches the partial document.
+            if (entries.length < GGUF_PREVIEW_ENTRY_LIMIT) entries.push(entry);
+            await readGgufValue(reader, type, version, littleEndian, budget, text, 0, entry);
+        }
+    } catch (error) {
+        if (!(error instanceof GgufBudgetExceeded)) throw error;
+        return { header, entries, overflow: error.message };
     }
+    return { header, entries };
 }
 
-async function scanGgufMetadataValue(
+/**
+ * Reads one metadata value, advancing the reader past it exactly. `entry`, when
+ * given, receives the preview; otherwise the value is walked for budget accounting
+ * and reader positioning only.
+ */
+async function readGgufValue(
     reader: GgufPreflightReader,
     type: number,
     version: 1 | 2 | 3,
     littleEndian: boolean,
     budget: GgufMetadataBudget,
-    depth: number
-): Promise<void> {
-    const fixedBytes: Record<number, number> = {
-        [GGUFValueType.UINT8]: 1, [GGUFValueType.INT8]: 1,
-        [GGUFValueType.UINT16]: 2, [GGUFValueType.INT16]: 2,
-        [GGUFValueType.UINT32]: 4, [GGUFValueType.INT32]: 4,
-        [GGUFValueType.FLOAT32]: 4, [GGUFValueType.BOOL]: 1,
-        [GGUFValueType.UINT64]: 8, [GGUFValueType.INT64]: 8,
-        [GGUFValueType.FLOAT64]: 8
-    };
-    const size = fixedBytes[type];
+    text: CharacterBudget,
+    depth: number,
+    entry?: GgufPreflightEntry
+): Promise<string | undefined> {
+    const size = FIXED_VALUE_BYTES[type];
     if (size !== undefined) {
-        await reader.skip(size);
-        return;
+        if (!entry) {
+            await reader.skip(size);
+            return undefined;
+        }
+        const value = formatFixedValue(type, await reader.read(size), littleEndian);
+        entry.preview.push(value);
+        return value;
     }
     if (type === GGUFValueType.STRING) {
-        await scanGgufString(reader, version, littleEndian, budget);
-        return;
+        const value = await readGgufString(
+            reader, version, littleEndian, budget, text, entry ? MAX_ARRAY_ITEM_CHARS : 0
+        );
+        if (!entry) return undefined;
+        // Top-level strings read as themselves; array items are quoted, matching
+        // displayScalar / displayArrayItem on the upstream-parsed path.
+        const display = depth === 0 ? (value ?? '') : JSON.stringify(value ?? '');
+        entry.preview.push(display);
+        return display;
     }
     if (type !== GGUFValueType.ARRAY || depth >= 4) {
         throw new Error(`GGUF metadata contains an unsupported type or nesting depth (${type}).`);
@@ -906,45 +999,98 @@ async function scanGgufMetadataValue(
 
     const subtype = await reader.readU32(littleEndian);
     const length = await reader.readCount(version, littleEndian);
+    if (entry && depth === 0) {
+        entry.subType = subtype;
+        entry.arrayLength = length;
+    }
     budget.arrayElements += length;
     if (budget.arrayElements > BigInt(GGUF_PARSE_ARRAY_ELEMENT_LIMIT)) {
-        throw new Error(
+        throw new GgufBudgetExceeded(
             `GGUF metadata arrays exceed the cumulative element limit (${GGUF_PARSE_ARRAY_ELEMENT_LIMIT}).`
         );
     }
-    const subtypeSize = fixedBytes[subtype];
-    if (subtypeSize !== undefined) {
-        await reader.skip(Number(length) * subtypeSize);
-        return;
-    }
-    if (subtype !== GGUFValueType.STRING && subtype !== GGUFValueType.ARRAY) {
+    const subtypeSize = FIXED_VALUE_BYTES[subtype];
+    if (subtypeSize === undefined && subtype !== GGUFValueType.STRING && subtype !== GGUFValueType.ARRAY) {
         throw new Error(`GGUF metadata array uses an unsupported element type (${subtype}).`);
     }
-    budget.complexArrayElements += length;
-    if (budget.complexArrayElements > BigInt(GGUF_PARSE_COMPLEX_ARRAY_LIMIT)) {
-        throw new Error(
-            `GGUF string or nested arrays exceed the complex element limit (${GGUF_PARSE_COMPLEX_ARRAY_LIMIT}).`
-        );
+    if (subtypeSize === undefined) {
+        budget.complexArrayElements += length;
+        if (budget.complexArrayElements > BigInt(GGUF_PARSE_COMPLEX_ARRAY_LIMIT)) {
+            throw new GgufBudgetExceeded(
+                `GGUF string or nested arrays exceed the complex element limit (${GGUF_PARSE_COMPLEX_ARRAY_LIMIT}).`
+            );
+        }
     }
-    for (let index = 0n; index < length; index += 1n) {
-        await scanGgufMetadataValue(reader, subtype, version, littleEndian, budget, depth + 1);
+
+    // Only the head of an array is materialized; nested arrays report their length
+    // rather than recursing into a preview, which keeps the walk depth-independent.
+    const previewCount = entry && depth === 0
+        ? Number(length < BigInt(ARRAY_PREVIEW_ITEMS) ? length : BigInt(ARRAY_PREVIEW_ITEMS))
+        : 0;
+    for (let index = 0; index < previewCount; index += 1) {
+        await readGgufValue(reader, subtype, version, littleEndian, budget, text, depth + 1, entry);
     }
+    const remaining = length - BigInt(previewCount);
+    if (subtypeSize !== undefined) {
+        await reader.skip(Number(remaining) * subtypeSize);
+    } else {
+        for (let index = 0n; index < remaining; index += 1n) {
+            await readGgufValue(reader, subtype, version, littleEndian, budget, text, depth + 1);
+        }
+    }
+    if (!entry || depth === 0) return undefined;
+    const display = `[${length} items]`;
+    entry.preview.push(display);
+    return display;
 }
 
-async function scanGgufString(
+/**
+ * Consumes a GGUF string. `maxChars` of 0 skips it entirely; otherwise only the
+ * leading bytes that can cover the cap are read, and the tail is skipped.
+ */
+async function readGgufString(
     reader: GgufPreflightReader,
     version: 1 | 2 | 3,
     littleEndian: boolean,
-    budget: GgufMetadataBudget
-): Promise<void> {
+    budget: GgufMetadataBudget,
+    text: CharacterBudget,
+    maxChars: number
+): Promise<string | undefined> {
     const length = await reader.readCount(version, littleEndian);
     budget.stringBytes += length;
     if (budget.stringBytes > BigInt(GGUF_PARSE_STRING_BYTE_LIMIT)) {
-        throw new Error(
+        throw new GgufBudgetExceeded(
             `GGUF metadata strings exceed the cumulative byte limit (${GGUF_PARSE_STRING_BYTE_LIMIT}).`
         );
     }
-    await reader.skip(Number(length));
+    const byteLength = Number(length);
+    if (maxChars <= 0) {
+        await reader.skip(byteLength);
+        return undefined;
+    }
+    // UTF-8 encodes a code point in at most 4 bytes, so this always covers maxChars.
+    const head = Math.min(byteLength, maxChars * 4);
+    const bytes = await reader.read(head);
+    await reader.skip(byteLength - head);
+    return text.take(new TextDecoder().decode(bytes), maxChars);
+}
+
+function formatFixedValue(type: number, bytes: Uint8Array, littleEndian: boolean): string {
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    switch (type) {
+        case GGUFValueType.UINT8: return String(view.getUint8(0));
+        case GGUFValueType.INT8: return String(view.getInt8(0));
+        case GGUFValueType.UINT16: return String(view.getUint16(0, littleEndian));
+        case GGUFValueType.INT16: return String(view.getInt16(0, littleEndian));
+        case GGUFValueType.UINT32: return String(view.getUint32(0, littleEndian));
+        case GGUFValueType.INT32: return String(view.getInt32(0, littleEndian));
+        case GGUFValueType.FLOAT32: return String(view.getFloat32(0, littleEndian));
+        case GGUFValueType.FLOAT64: return String(view.getFloat64(0, littleEndian));
+        case GGUFValueType.UINT64: return view.getBigUint64(0, littleEndian).toString();
+        case GGUFValueType.INT64: return view.getBigInt64(0, littleEndian).toString();
+        case GGUFValueType.BOOL: return view.getUint8(0) !== 0 ? 'true' : 'false';
+        default: return '';
+    }
 }
 
 class GgufPreflightReader {
@@ -1187,6 +1333,78 @@ function abortReason(signal: AbortSignal): Error {
 
 function errorMessage(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Builds a document from preflight data alone, for files whose metadata is too
+ * large to hand to the upstream parser. The tensor index is not reached, so the
+ * tensor table is absent; everything the walk did read is still shown.
+ */
+function partialGguf(preflight: GgufPreflightResult, fileSize: string): GgufDocument {
+    const { header, entries } = preflight;
+    const metadata = entries.map(preflightMetadataEntry);
+    const scalar = (key: string): string | undefined => {
+        const entry = entries.find((candidate) => candidate.key === key);
+        return entry && entry.arrayLength === undefined ? entry.preview[0] : undefined;
+    };
+    const modelName = scalar('general.name');
+
+    const summary: GgufSummaryItem[] = [
+        { labelKey: 'gguf.summary.version', value: `GGUF v${header.version}` },
+        { labelKey: 'gguf.summary.architecture', value: scalar('general.architecture') ?? '—' },
+        { labelKey: 'gguf.summary.tensors', value: header.tensorCount.toString() },
+        { labelKey: 'gguf.summary.metadataKeys', value: header.metadataCount.toString() }
+    ];
+    const generalType = scalar('general.type');
+    if (generalType) summary.splice(2, 0, { labelKey: 'gguf.summary.type', value: generalType });
+
+    const warnings: GgufWarning[] = [{ key: 'gguf.warning.metadataTooLarge' }];
+    if (BigInt(metadata.length) < header.metadataCount) {
+        warnings.push({
+            key: 'gguf.warning.metadataLimited',
+            args: { shown: metadata.length, total: header.metadataCount.toString() }
+        });
+    }
+
+    return {
+        format: 'gguf',
+        title: modelName || 'GGUF model',
+        fileSize: truncate(fileSize, MAX_FILE_SIZE_LABEL_CHARS),
+        version: header.version,
+        byteOrder: header.littleEndian ? 'little-endian' : 'big-endian',
+        summary,
+        metadata,
+        tensors: [],
+        tables: [{
+            titleKey: 'gguf.table.metadata',
+            titleArgs: { count: header.metadataCount.toString() },
+            headerKeys: ['gguf.column.key', 'gguf.column.type', 'gguf.column.value'],
+            rows: metadata.map((entry) => [entry.key, entry.type, entry.value])
+        }],
+        rawPreview: undefined,
+        warnings,
+        errorDetail: truncate(preflight.overflow ?? '', MAX_ERROR_MESSAGE_CHARS)
+    };
+}
+
+function preflightMetadataEntry(entry: GgufPreflightEntry): GgufMetadataEntry {
+    const type = valueTypeName(entry.type as GGUFValueType, entry.subType as GGUFValueType | undefined);
+    if (entry.arrayLength === undefined) {
+        return { key: entry.key, type, value: truncate(entry.preview[0] ?? '', MAX_DISPLAY_STRING_CHARS) };
+    }
+    const omitted = entry.arrayLength - BigInt(entry.preview.length);
+    const value = `[${entry.arrayLength} items] ${entry.preview.join(', ')}`
+        + (omitted > 0n ? `, … (+${omitted})` : '');
+    return {
+        key: entry.key,
+        type,
+        value: truncate(value, MAX_DISPLAY_STRING_CHARS),
+        // The array that tripped the budget can declare a length past 2^53; its exact
+        // value stays in the display text above rather than being rounded here.
+        ...(entry.arrayLength <= BigInt(Number.MAX_SAFE_INTEGER)
+            ? { arrayLength: Number(entry.arrayLength) }
+            : {})
+    };
 }
 
 function invalid(fileSize: string, message: string): GgufDocument {
