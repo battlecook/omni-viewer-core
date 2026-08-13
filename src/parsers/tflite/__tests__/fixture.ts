@@ -337,8 +337,9 @@ export function tfliteFixture(): Uint8Array {
         [
             {
                 opcodeIndex: 0, inputs: [0, 1, 2], outputs: [3], optionsType: 1,
+                // `padding` is left out entirely: flatc omits any field equal to
+                // its schema default, and SAME is the default.
                 options: b => {
-                    b.addInt8(0, 0); // padding SAME
                     b.addInt32(1, 1); b.addInt32(2, 1);
                     b.addInt8(3, 3); // RELU6
                     b.addInt32(4, 1); b.addInt32(5, 1);
@@ -619,6 +620,140 @@ export function tfliteAdvancedFixture(): Uint8Array {
     builder.addOffset(1, operatorCodeVector);
     builder.addOffset(2, subgraphVector);
     builder.addOffset(4, bufferVector);
+    const model = builder.endTable();
+    return builder.finish(model);
+}
+
+/**
+ * Option-decoding edge cases: an IF whose options table is entirely absent (so
+ * every field comes from a fallback), a WHILE naming the same subgraph twice, a
+ * RESHAPE whose shape vector exceeds the option preview cap, and a tensor with
+ * more quantization scales than the preview cap.
+ */
+export function tfliteOptionEdgeCasesFixture(): Uint8Array {
+    const builder = new FlatBufferBuilder(1 << 14);
+    const buffers = [buildBuffer(builder), buildBuffer(builder, new Uint8Array(300))];
+    const scales = builder.createFloatVector(Array.from({ length: 100 }, (_, index) => index / 100));
+    const zeroPoints = builder.createLongVector(Array.from({ length: 100 }, () => 0n));
+    builder.startTable();
+    builder.addOffset(2, scales);
+    builder.addOffset(3, zeroPoints);
+    builder.addInt32(6, 0);
+    const quantization = builder.endTable();
+    const quantName = builder.createString('per_channel');
+    const quantShape = builder.createIntVector([100, 1, 1, 3]);
+    builder.startTable();
+    builder.addOffset(0, quantShape);
+    builder.addInt8(1, 9);
+    builder.addInt32(2, 1);
+    builder.addOffset(3, quantName);
+    builder.addOffset(4, quantization);
+    const quantTensor = builder.endTable();
+
+    // An IF with no options table at all: every field resolves to its default.
+    builder.startTable();
+    const emptyOptions = builder.endTable();
+    const ifInputs = builder.createIntVector([0]);
+    builder.startTable();
+    builder.addInt32(0, 0);
+    builder.addOffset(1, ifInputs);
+    builder.addInt8(3, 92);
+    builder.addOffset(4, emptyOptions);
+    const ifOperator = builder.endTable();
+
+    builder.startTable();
+    builder.addInt32(0, 1);
+    builder.addInt32(1, 1);
+    const whileOptions = builder.endTable();
+    builder.startTable();
+    builder.addInt32(0, 1);
+    builder.addInt8(3, 93);
+    builder.addOffset(4, whileOptions);
+    const whileOperator = builder.endTable();
+
+    const newShape = builder.createIntVector(Array.from({ length: 80 }, (_, index) => index));
+    builder.startTable();
+    builder.addOffset(0, newShape);
+    const reshapeOptions = builder.endTable();
+    builder.startTable();
+    builder.addInt32(0, 2);
+    builder.addInt8(3, 17);
+    builder.addOffset(4, reshapeOptions);
+    const reshapeOperator = builder.endTable();
+
+    const subgraphName = builder.createString('edges');
+    const tensorVector = builder.createOffsetVector([quantTensor]);
+    const operatorVector = builder.createOffsetVector([ifOperator, whileOperator, reshapeOperator]);
+    builder.startTable();
+    builder.addOffset(0, tensorVector);
+    builder.addOffset(3, operatorVector);
+    builder.addOffset(4, subgraphName);
+    const subgraph = builder.endTable();
+    const operatorCodes = [
+        buildOperatorCode(builder, 118, 118),
+        buildOperatorCode(builder, 119, 119),
+        buildOperatorCode(builder, 22, 22)
+    ];
+    const operatorCodeVector = builder.createOffsetVector(operatorCodes);
+    const subgraphVector = builder.createOffsetVector([subgraph]);
+    const bufferVector = builder.createOffsetVector(buffers);
+    builder.startTable();
+    builder.addInt32(0, 3);
+    builder.addOffset(1, operatorCodeVector);
+    builder.addOffset(2, subgraphVector);
+    builder.addOffset(4, bufferVector);
+    const model = builder.endTable();
+    return builder.finish(model);
+}
+
+/**
+ * A schema-3d model whose constant tensor lives in a separate file via
+ * `Tensor.external_buffer`, plus `count` activation tensors sharing buffer 0.
+ */
+export function tfliteExternalBufferFixture(count = 0, declaredId = 7, referencedId = 7): Uint8Array {
+    const builder = new FlatBufferBuilder(1 << 14);
+    const buffer = buildBuffer(builder);
+    const packing = builder.createString('raw');
+    builder.startTable();
+    builder.addInt32(0, declaredId); // id
+    builder.addInt32(1, 0); // group
+    builder.addInt64(2, 65536n);
+    builder.addInt64(3, 4096n);
+    builder.addOffset(4, packing);
+    const externalBuffer = builder.endTable();
+
+    const weightName = builder.createString('external_weights');
+    const weightShape = builder.createIntVector([4096]);
+    builder.startTable();
+    builder.addOffset(0, weightShape);
+    builder.addInt8(1, 9);
+    builder.addInt32(2, 0);
+    builder.addOffset(3, weightName);
+    builder.addInt32(10, referencedId); // external_buffer id
+    const tensors = [builder.endTable()];
+    for (let index = 0; index < count; index++) {
+        const name = builder.createString(`act_${index}`);
+        builder.startTable();
+        builder.addInt8(1, 0);
+        builder.addInt32(2, 0);
+        builder.addOffset(3, name);
+        tensors.push(builder.endTable());
+    }
+
+    const subgraphName = builder.createString('external');
+    const tensorVector = builder.createOffsetVector(tensors);
+    builder.startTable();
+    builder.addOffset(0, tensorVector);
+    builder.addOffset(4, subgraphName);
+    const subgraph = builder.endTable();
+    const subgraphVector = builder.createOffsetVector([subgraph]);
+    const bufferVector = builder.createOffsetVector([buffer]);
+    const externalVector = builder.createOffsetVector([externalBuffer]);
+    builder.startTable();
+    builder.addInt32(0, 3);
+    builder.addOffset(2, subgraphVector);
+    builder.addOffset(4, bufferVector);
+    builder.addOffset(9, externalVector);
     const model = builder.endTable();
     return builder.finish(model);
 }

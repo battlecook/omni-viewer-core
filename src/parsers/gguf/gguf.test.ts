@@ -5,7 +5,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
     formatBigCount,
     GGUF_NORMALIZED_TEXT_BUDGET,
-    GGUF_PARSE_ARRAY_ELEMENT_LIMIT,
     GGUF_PARSE_METADATA_LIMIT,
     GGUF_PARSE_STRING_BYTE_LIMIT,
     GGUF_PARSE_TENSOR_LIMIT,
@@ -37,7 +36,7 @@ function warningText(document: GgufDocument): string {
 }
 
 describe('GGUF parser adapter', () => {
-    it('uses @huggingface/gguf for local prefix parsing and creates a JSON-safe document', async () => {
+    it('reads a local prefix into a JSON-safe document', async () => {
         const filePath = temporaryFile('model.gguf', buildGgufFixture());
         const document = await parseGgufFile(filePath);
 
@@ -63,15 +62,41 @@ describe('GGUF parser adapter', () => {
         expect(() => JSON.stringify(document)).not.toThrow();
     });
 
-    it('rejects metadata keys that overwrite parser-reserved header fields', async () => {
+    // Reading the header struct ourselves means a metadata key named like a
+    // reserved field is just an oddly named key, not a spoofing vector: it lands in
+    // the entry list and cannot reach the header. Flattening metadata into one
+    // object, as @huggingface/gguf does, is what made this a collision.
+    it('keeps a metadata key named after a header field from overwriting the header', async () => {
         const document = await parseGgufBytes(buildGgufFixture(0, undefined, 99));
 
+        expectValid(document);
+        expect(document.version).toBe(3);
+        expect(document.summary).toContainEqual({ labelKey: 'gguf.summary.version', value: 'GGUF v3' });
+        expect(document.metadata).toContainEqual(
+            expect.objectContaining({ key: 'version', type: 'UINT32', value: '99' })
+        );
+    });
+
+    it('still rejects a reserved-field collision when a caller supplies a verified header', () => {
+        const document = normalizeGguf({
+            metadata: { version: 99, tensor_count: 0n, kv_count: 1n },
+            typedMetadata: {
+                version: { value: 99, type: 4 },
+                tensor_count: { value: 0n, type: 10 },
+                kv_count: { value: 1n, type: 10 }
+            },
+            tensorInfos: [],
+            tensorDataOffset: 32n,
+            littleEndian: true,
+            tensorInfoByteRange: [24, 24]
+        } as unknown as HuggingFaceGgufOutput, '100 bytes', 100,
+        { version: 3, tensorCount: 0n, metadataCount: 1n, littleEndian: true });
+
         expectInvalid(document);
-        expect(document.version).toBeUndefined();
         expect(warningText(document)).toMatch(/metadata.*reserved header fields/i);
     });
 
-    it('rejects excessive source counts before the upstream parser creates entry objects', async () => {
+    it('rejects excessive source counts before the walk allocates any entry', async () => {
         const excessiveTensors = await parseGgufBytes(buildHeaderOnlyFixture(
             BigInt(GGUF_PARSE_TENSOR_LIMIT) + 1n,
             0n
@@ -87,26 +112,84 @@ describe('GGUF parser adapter', () => {
         expect(warningText(excessiveMetadata)).toMatch(/metadata count.*viewer parsing limit/i);
     });
 
-    it('preflights cumulative metadata array elements and string bytes without boxing values', async () => {
-        const arrays = await parseGgufBytes(buildCumulativeArrayLimitFixture());
-        const strings = await parseGgufBytes(buildCumulativeStringLimitFixture());
-
-        for (const document of [arrays, strings]) {
-            expectValid(document);
-            expect(document.warnings).toContainEqual({ key: 'gguf.warning.metadataTooLarge' });
-            expect(document.tensors).toEqual([]);
-        }
-        expect(warningText(arrays)).toMatch(/metadata arrays.*cumulative element limit/i);
-        expect(warningText(strings)).toMatch(/metadata strings.*cumulative byte limit/i);
-    });
-
-    it('describes the entry that exceeded a budget instead of dropping the whole document', async () => {
+    it('walks past a metadata array far larger than any element ceiling would have allowed', async () => {
         const document = await parseGgufBytes(buildCumulativeArrayLimitFixture());
 
-        const overflowing = document.metadata.find((entry) => entry.key === 'array.b');
-        expect(overflowing).toMatchObject({ type: 'ARRAY<UINT8>' });
-        expect(overflowing?.value).toContain(`[${Math.floor(GGUF_PARSE_ARRAY_ELEMENT_LIMIT / 2) + 1} items]`);
-        expect(document.summary).toContainEqual({ labelKey: 'gguf.summary.metadataKeys', value: '2' });
+        expectValid(document);
+        expect(document.warnings).toEqual([]);
+        const walked = document.metadata.find((entry) => entry.key === 'array.b');
+        expect(walked).toMatchObject({ type: 'ARRAY<UINT8>' });
+        expect(walked?.value).toContain(`[${Math.floor(2_000_000 / 2) + 1} items]`);
+        expect(document.summary).toContainEqual({ labelKey: 'gguf.summary.metadataKeys', value: 2 });
+    });
+
+    // The cumulative string limit used to abandon the walk, which cost the tensor
+    // index -- it starts wherever the last metadata value ends, so there was no way
+    // back to it. It now only stops decoding text, and the walk runs to completion.
+    it('drops display text but keeps the tensor index past the cumulative string limit', async () => {
+        const document = await parseGgufBytes(buildCumulativeStringLimitFixture());
+
+        expectValid(document);
+        expect(document.warnings).toContainEqual({ key: 'gguf.warning.textTruncated' });
+        expect(document.tensors).toEqual([expect.objectContaining({ name: 'weight', dtype: 'F32' })]);
+        expect(document.summary).toContainEqual({ labelKey: 'gguf.summary.parameters', value: '6' });
+        // The entry that crossed the limit still reports its type and declared size.
+        expect(document.metadata.map((entry) => entry.key)).toEqual(['huge.a', 'huge.b']);
+    });
+
+    // The parser used to hand the file to @huggingface/gguf once the preflight
+    // cleared it, which meant an array-element ceiling had to exist to stop that
+    // handoff from materializing a whole vocabulary. Crossing the ceiling therefore
+    // cost the tensor table, the parameter count and the quantization summary --
+    // everything that made the document worth opening. Reading the tensor index in
+    // the same walk removes the coupling: vocabulary size no longer decides it.
+    it('reports tensors and parameters for a vocabulary past the retired element ceilings', async () => {
+        const bytes = buildLargeVocabularyModel(550_000, 460_000);
+        const filePath = temporaryFile('wide-vocab.gguf', bytes);
+
+        const memory = await parseGgufBytes(bytes);
+        const local = await parseGgufFile(filePath);
+
+        for (const document of [memory, local]) {
+            expectValid(document);
+            expect(document.warnings).toEqual([]);
+            expect(document.title).toBe('Wide Vocab');
+            expect(document.tensors.map((tensor) => tensor.name))
+                .toEqual(['token_embd.weight', 'output.weight']);
+            expect(document.summary).toContainEqual({ labelKey: 'gguf.summary.tensors', value: 2 });
+            expect(document.summary).toContainEqual({ labelKey: 'gguf.summary.parameters', value: '4.6K' });
+            expect(document.summary).toContainEqual({ labelKey: 'gguf.summary.quantization', value: 'F32' });
+            expect(document.metadata.find((entry) => entry.key === 'tokenizer.ggml.tokens'))
+                .toMatchObject({ type: 'ARRAY<STRING>', arrayLength: 550_000 });
+        }
+    });
+
+    // Peak memory is not directly observable, so this measures the two quantities
+    // that bound it: the largest chunk the reader ever holds, and the size of what
+    // the finished document retains. Both must be flat in vocabulary size.
+    //
+    // Bytes *streamed* is deliberately not asserted flat, because it cannot be: a
+    // GGUF string array records no byte size, so finding element n + 1 means
+    // reading element n's length prefix. Walking a bigger vocabulary really does
+    // move more bytes -- it just never accumulates them, which is the whole claim.
+    // (Only fixed-width arrays can be jumped over outright, and those are skipped
+    // without being requested at all.)
+    it('streams a growing vocabulary through a fixed-size working set', async () => {
+        const small = buildLargeVocabularyModel(200_000, 100_000);
+        const large = buildLargeVocabularyModel(700_000, 350_000);
+        // The premise: the file really did get much bigger.
+        expect(large.byteLength).toBeGreaterThan(small.byteLength * 3);
+
+        const smallRun = await measureParse(small);
+        const largeRun = await measureParse(large);
+
+        // More of the file is traversed...
+        expect(largeRun.requests).toBeGreaterThan(smallRun.requests);
+        // ...through a working set that does not grow with it.
+        expect(largeRun.peakResponseBytes).toBe(smallRun.peakResponseBytes);
+        expect(largeRun.peakResponseBytes).toBeLessThanOrEqual(2_000_000);
+        // The only growth the document is allowed is the digits of the printed counts.
+        expect(Math.abs(largeRun.retained - smallRun.retained)).toBeLessThan(50);
     });
 
     // https://github.com/battlecook/vscode-omni-viewer/issues/18: the previous 300K
@@ -123,7 +206,7 @@ describe('GGUF parser adapter', () => {
             .toMatchObject({ type: 'ARRAY<STRING>', arrayLength: 151_387 });
     });
 
-    it('returns an invalid document when the upstream parser rejects a file', async () => {
+    it('returns an invalid document when the source bytes are not GGUF', async () => {
         const filePath = temporaryFile('broken.gguf', new Uint8Array(32));
         const document = await parseGgufFile(filePath);
 
@@ -378,6 +461,24 @@ describe('GGUF parser adapter', () => {
         expect(fetchRange).toHaveBeenCalledTimes(1);
     });
 
+    // The reader used to request a fixed placeholder URL, which only went unnoticed
+    // because the real URI was handed to @huggingface/gguf separately and every
+    // test supplies a transport that ignores the URL it is given.
+    it('range-requests the URI it was given rather than a placeholder', async () => {
+        const bytes = buildGgufFixture();
+        const requested: string[] = [];
+        const fetchRange = (async (input: RequestInfo | URL, init?: RequestInit) => {
+            requested.push(String(input));
+            return memoryRange(bytes)(input, init);
+        }) as typeof fetch;
+
+        const document = await parseGgufUri('https://models.example/a/b/model.gguf', { fetch: fetchRange });
+
+        expectValid(document);
+        expect(requested).not.toHaveLength(0);
+        expect(new Set(requested)).toEqual(new Set(['https://models.example/a/b/model.gguf']));
+    });
+
     it('rejects a Content-Range total that disagrees with the host-provided file size', async () => {
         const bytes = buildGgufFixture();
         const fetchRange = vi.fn(async () => new Response(bytes.buffer as ArrayBuffer, {
@@ -418,8 +519,10 @@ describe('GGUF parser adapter', () => {
         expect(fetchShortRange).toHaveBeenCalledTimes(1);
     });
 
-    it('accepts a terminal 416 when upstream prefetches past a small file', async () => {
-        const bytes = buildGgufFixture(1_600_000);
+    it('walks into successive chunks and rejects a range that starts past EOF', async () => {
+        // Metadata alone crosses the 2,000,000-byte chunk boundary, so the tensor
+        // index that follows it can only be reached from a second chunk.
+        const bytes = buildGgufFixture(2_100_000);
         const requestedRanges: string[] = [];
         const fetchRange = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
             const value = new Headers(init?.headers).get('range') ?? '';
@@ -446,11 +549,17 @@ describe('GGUF parser adapter', () => {
 
         const remote = await parseGgufUri('https://models.example/small.gguf', { fetch: fetchRange });
         const memory = await parseGgufBytes(bytes);
+        // A zero-length file makes even the first chunk unsatisfiable, which is the
+        // only way a 416 reaches the reader now that nothing prefetches ahead of it.
+        const empty = await parseGgufBytes(new Uint8Array(0));
 
         expect(remote.version).toBe(3);
         expect(remote.title).toBe('Tiny Model');
+        expect(remote.tensors).toHaveLength(1);
         expect(memory.version).toBe(3);
         expect(requestedRanges).toEqual(['bytes=0-1999999', 'bytes=2000000-3999999']);
+        expectInvalid(empty);
+        expect(warningText(empty)).toMatch(/end of the file/i);
     });
 
     it('rejects a server that ignores Range before reading its response body', async () => {
@@ -596,6 +705,170 @@ describe('GGUF parser adapter', () => {
     });
 });
 
+/** Serves bounded ranges out of an in-memory buffer, like a well-behaved server. */
+function memoryRange(bytes: Uint8Array): typeof fetch {
+    return (async (_input: RequestInfo | URL, init?: RequestInit) => {
+        const match = new Headers(init?.headers).get('range')!.match(/^bytes=(\d+)-(\d+)$/)!;
+        const start = Number(match[1]);
+        if (start >= bytes.byteLength) {
+            return new Response(null, {
+                status: 416,
+                headers: { 'Content-Range': `bytes */${bytes.byteLength}` }
+            });
+        }
+        const end = Math.min(Number(match[2]), bytes.byteLength - 1);
+        const body = bytes.slice(start, end + 1);
+        return new Response(body.buffer as ArrayBuffer, {
+            status: 206,
+            headers: {
+                'Content-Range': `bytes ${start}-${end}/${bytes.byteLength}`,
+                'Content-Length': String(body.byteLength)
+            }
+        });
+    }) as typeof fetch;
+}
+
+interface ParseMeasurement {
+    requests: number;
+    fetched: number;
+    peakResponseBytes: number;
+    retained: number;
+}
+
+/** Parses through a range server that records what the transport actually moved. */
+async function measureParse(bytes: Uint8Array): Promise<ParseMeasurement> {
+    const measurement: ParseMeasurement = { requests: 0, fetched: 0, peakResponseBytes: 0, retained: 0 };
+    const serve = memoryRange(bytes);
+    const countingFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        measurement.requests += 1;
+        const response = await serve(input, init);
+        const body = new Uint8Array(await response.arrayBuffer());
+        measurement.fetched += body.byteLength;
+        measurement.peakResponseBytes = Math.max(measurement.peakResponseBytes, body.byteLength);
+        return new Response(body.buffer as ArrayBuffer, {
+            status: response.status,
+            headers: response.headers
+        });
+    }) as typeof fetch;
+
+    const document = await parseGgufUri('https://models.example/vocab.gguf', {
+        fetch: countingFetch,
+        fileByteLength: bytes.byteLength
+    });
+    expectValid(document);
+    measurement.retained = JSON.stringify(document).length;
+    return measurement;
+}
+
+/**
+ * Growable little-endian writer. The `number[]` helpers below are fine for small
+ * fixtures but quadratic-ish once a vocabulary reaches six figures, and the memory
+ * tests need files that large.
+ */
+class GgufWriter {
+    private bytes = new Uint8Array(1 << 16);
+    private length = 0;
+
+    ensure(extra: number): void {
+        if (this.length + extra <= this.bytes.byteLength) return;
+        let capacity = this.bytes.byteLength * 2;
+        while (capacity < this.length + extra) capacity *= 2;
+        const grown = new Uint8Array(capacity);
+        grown.set(this.bytes.subarray(0, this.length));
+        this.bytes = grown;
+    }
+
+    ascii(value: string): this {
+        this.ensure(value.length);
+        for (let index = 0; index < value.length; index += 1) {
+            this.bytes[this.length + index] = value.charCodeAt(index);
+        }
+        this.length += value.length;
+        return this;
+    }
+
+    u32(value: number): this {
+        this.ensure(4);
+        new DataView(this.bytes.buffer).setUint32(this.length, value, true);
+        this.length += 4;
+        return this;
+    }
+
+    u64(value: bigint): this {
+        this.ensure(8);
+        new DataView(this.bytes.buffer).setBigUint64(this.length, value, true);
+        this.length += 8;
+        return this;
+    }
+
+    /** A GGUF length-prefixed string. ASCII only, which every fixture here is. */
+    str(value: string): this {
+        return this.u64(BigInt(value.length)).ascii(value);
+    }
+
+    /** A length-prefixed string of `byteLength` copies of one byte, without a JS string. */
+    filledString(byteLength: number, code: number): this {
+        this.u64(BigInt(byteLength)).ensure(byteLength);
+        this.bytes.fill(code, this.length, this.length + byteLength);
+        this.length += byteLength;
+        return this;
+    }
+
+    stringMetadata(key: string, value: string): this {
+        return this.str(key).u32(8).str(value);
+    }
+
+    u32Metadata(key: string, value: number): this {
+        return this.str(key).u32(4).u32(value);
+    }
+
+    stringArrayMetadata(key: string, count: number, prefix: string): this {
+        this.str(key).u32(9).u32(8).u64(BigInt(count));
+        for (let index = 0; index < count; index += 1) this.str(`${prefix}${index}`);
+        return this;
+    }
+
+    tensor(name: string, shape: bigint[], dtype: number, offset: bigint): this {
+        this.str(name).u32(shape.length);
+        for (const dimension of shape) this.u64(dimension);
+        return this.u32(dtype).u64(offset);
+    }
+
+    padTo(alignment: number): this {
+        this.ensure(alignment);
+        while (this.length % alignment !== 0) this.length += 1;
+        return this;
+    }
+
+    zeros(count: number): this {
+        this.ensure(count);
+        this.length += count;
+        return this;
+    }
+
+    done(): Uint8Array {
+        return this.bytes.slice(0, this.length);
+    }
+}
+
+/**
+ * A model with a vocabulary large enough that its `tokens` + `merges` arrays cross
+ * the 1,000,000-element ceiling the parser used to enforce, plus real tensors whose
+ * payload follows the index.
+ */
+function buildLargeVocabularyModel(tokenCount: number, mergeCount: number): Uint8Array {
+    const writer = new GgufWriter();
+    writer.ascii('GGUF').u32(3).u64(2n).u64(4n);
+    writer.stringMetadata('general.architecture', 'llama');
+    writer.stringMetadata('general.name', 'Wide Vocab');
+    writer.stringArrayMetadata('tokenizer.ggml.tokens', tokenCount, 't');
+    writer.stringArrayMetadata('tokenizer.ggml.merges', mergeCount, 'm');
+    // 4096 F32 elements = 16384 bytes, then 2048 more at the next aligned offset.
+    writer.tensor('token_embd.weight', [64n, 64n], 0, 0n);
+    writer.tensor('output.weight', [32n, 16n], 0, 16_384n);
+    return writer.padTo(32).zeros(16_384 + 2_048).done();
+}
+
 function temporaryFile(name: string, bytes: Uint8Array): string {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-gguf-'));
     tempDirs.push(dir);
@@ -671,7 +944,9 @@ function buildHeaderOnlyFixture(tensorCount: bigint, metadataCount: bigint): Uin
 
 function buildCumulativeArrayLimitFixture(): Uint8Array {
     const bytes: number[] = [];
-    const perArray = Math.floor(GGUF_PARSE_ARRAY_ELEMENT_LIMIT / 2) + 1;
+    // Half of the retired 2,000,000-element ceiling, plus one, in each of two
+    // arrays: the shape that used to trip the cumulative budget.
+    const perArray = 1_000_001;
     pushAscii(bytes, 'GGUF'); pushU32(bytes, 3); pushU64(bytes, 0n); pushU64(bytes, 2n);
     for (const key of ['array.a', 'array.b']) {
         pushString(bytes, key); pushU32(bytes, 9); pushU32(bytes, 0); pushU64(bytes, BigInt(perArray));
@@ -698,14 +973,19 @@ function pushIndexedStringArray(bytes: number[], key: string, count: number, pre
     for (let index = 0; index < count; index += 1) pushString(bytes, `${prefix}${index}`);
 }
 
+/**
+ * Two metadata strings whose combined length crosses GGUF_PARSE_STRING_BYTE_LIMIT,
+ * with the bytes actually present and a real tensor behind them. The strings have
+ * to be genuinely there: a file that merely *declares* them and stops is truncated,
+ * which is a structural rejection rather than a budget case.
+ */
 function buildCumulativeStringLimitFixture(): Uint8Array {
-    const bytes: number[] = [];
     const perString = Math.floor(GGUF_PARSE_STRING_BYTE_LIMIT / 2) + 1;
-    pushAscii(bytes, 'GGUF'); pushU32(bytes, 3); pushU64(bytes, 0n); pushU64(bytes, 2n);
-    pushString(bytes, 'a'); pushU32(bytes, 8); pushU64(bytes, BigInt(perString));
-    for (let index = 0; index < perString; index += 1) bytes.push(0);
-    pushString(bytes, 'b'); pushU32(bytes, 8); pushU64(bytes, BigInt(perString));
-    return Uint8Array.from(bytes);
+    const writer = new GgufWriter();
+    writer.ascii('GGUF').u32(3).u64(1n).u64(2n);
+    for (const key of ['huge.a', 'huge.b']) writer.str(key).u32(8).filledString(perString, 0x78);
+    writer.tensor('weight', [2n, 3n], 0, 0n);
+    return writer.padTo(32).zeros(24).done();
 }
 
 function pushStringMetadata(bytes: number[], key: string, value: string): void {

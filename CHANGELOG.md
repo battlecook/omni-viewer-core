@@ -5,6 +5,71 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.0] - 2026-08-13
+
+### Added
+
+- NumPy `.npy` array parsing and `.npz` archive parsing, exposed through
+  `parsers/numpy`, plus an interactive viewer exposed through `viewers/numpy`.
+  The parser handles NPY versions 1–3, little-/big-/native-endian dtypes,
+  C-order and Fortran-order arrays, scalars and multidimensional shapes, and
+  bounded previews for booleans, signed and unsigned integers, floating-point
+  and complex numbers, byte and Unicode strings, datetimes, and timedeltas.
+  The viewer provides array selection, dtype/shape/order metadata, an array
+  index, JSON copy, and slice controls that render the final two axes as a
+  scrollable grid. Object arrays are never unpickled, value previews are capped
+  at 100,000 elements, grid rendering is bounded to 100 rows by 100 columns, and
+  NPZ expansion enforces per-array and cumulative uncompressed-size limits.
+  Registry routing recognizes `.npy` and `.npz` extensions plus extensionless
+  NPY signatures, and the UI is localized in English, Korean, Japanese, and
+  Chinese.
+
+### Changed
+
+- GGUF documents no longer lose their tensor table, parameter count, or
+  quantization summary because of a large vocabulary. The parser now reads the
+  tensor index in the same streaming walk as the metadata instead of handing the
+  file to `@huggingface/gguf`, which had to materialize every metadata array
+  element as a JS value. The cumulative array-element ceilings that existed to
+  bound that allocation (`GGUF_PARSE_ARRAY_ELEMENT_LIMIT` and
+  `GGUF_PARSE_COMPLEX_ARRAY_LIMIT`) are **removed** rather than raised: array
+  bodies are skipped, so vocabulary size no longer decides whether a document can
+  be built. What replaces them is exact instead of tuned — an array declaring
+  more elements than the remaining file bytes can hold is rejected as malformed.
+  `GGUF_PARSE_TENSOR_LIMIT`, `GGUF_PARSE_METADATA_LIMIT`, and
+  `GGUF_NORMALIZED_TEXT_BUDGET` are unchanged.
+- `GGUF_PARSE_STRING_BYTE_LIMIT` keeps its value but no longer gates the document.
+  Exceeding it used to abandon the metadata walk, which cost the tensor index —
+  that index begins wherever the last metadata value ends, so there was no way
+  back to it. It now only stops decoding further display text (skipping costs
+  nothing and keeps the walk going), reported through the existing
+  `gguf.warning.textTruncated`. No budget can cost a document its tensor table
+  anymore, so the partial-document path and its `gguf.warning.metadataTooLarge`
+  message are removed along with the four locale strings for it.
+- GGUF peak memory is now independent of both vocabulary and tensor count. The
+  reader holds one 2 MB chunk at a time instead of the growing buffer
+  `@huggingface/gguf` accumulated from offset 0 (hard-capped at 50 MB, past which
+  large models failed outright), and the tensor index is folded into running
+  totals with only the first `GGUF_PREVIEW_ENTRY_LIMIT` entries retained.
+  Fixed-width array bodies are now skipped without being requested at all.
+- `@huggingface/gguf` remains a dependency for its `GGMLQuantizationType`,
+  `GGMLFileQuantizationType`, and `GGUFValueType` tables, which track new ggml
+  quantization types. `normalizeGguf` keeps its signature and still accepts a
+  `gguf()` result, and now shares every validation and accumulator with the
+  streaming path.
+
+### Fixed
+
+- GGUF remote parsing requested a fixed placeholder URL
+  (`https://omni-viewer.invalid/gguf-preflight`) instead of the URI passed to
+  `parseGgufUri`, so parsing a remote model with the default `fetch` could not
+  succeed. Hosts supplying their own transport were unaffected, which is why
+  tests did not catch it.
+- A GGUF metadata key named after a parser-reserved header field (`version`,
+  `tensor_count`, `kv_count`) no longer causes the whole file to be rejected. The
+  header struct is read directly, so such a key is displayed as an ordinary
+  metadata entry and cannot influence the reported header.
+
 ## [0.14.0] - 2026-08-09
 
 ### Added

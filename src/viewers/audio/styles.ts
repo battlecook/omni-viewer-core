@@ -82,10 +82,13 @@ export const audioViewerCss = mediaViewerCss + `
 /* The editor is absolutely positioned, so the wrapper has to reserve its band
    while it is shown. Without this it lands on the status line in waveform-only
    mode and covers the spectrogram in both mode. */
-.omni-audio__waveform-wrap.is-editing-region { padding-bottom: 30px; }
+.omni-audio__waveform-wrap.is-editing-region { padding-bottom: 28px; }
 
 .omni-audio__region-editor {
-    position: absolute; top: 100%; left: 0; z-index: 3;
+    /* bottom, not top:100% — absolute offsets resolve against the containing
+       block's padding box, so top:100% lands *below* the band the wrapper
+       reserves and the stage clips it. bottom:0 seats it inside that band. */
+    position: absolute; bottom: 0; left: 0; z-index: 3;
     display: flex; align-items: center; gap: 4px;
     /* No min-width: a narrow region would otherwise force the row past the
        right edge. The left offset is clamped to the wrapper when positioning. */

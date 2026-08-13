@@ -3,10 +3,12 @@ import {
     FlatBufferBuilder,
     tfliteAdvancedFixture,
     tfliteControlFlowFixture,
+    tfliteExternalBufferFixture,
     tfliteEmptyGraphFixture,
     tfliteFixture,
     tfliteAliasedVectorFixture,
     tfliteLargeBufferFixture,
+    tfliteOptionEdgeCasesFixture,
     tfliteWideGraphFixture
 } from './__tests__/fixture.js';
 import { parseTflite, TfliteParseError } from './index.js';
@@ -42,17 +44,30 @@ describe('parseTflite', () => {
         expect(model.operatorCodes[0]).toMatchObject({ builtinCode: 3, version: 3 });
     });
 
-    it('decodes builtin options with enum labels and skips schema defaults', () => {
+    it('decodes builtin options with enum labels and fills in omitted defaults', () => {
         expect(main.operators[0]).toMatchObject({
             id: 'op-0-0', operator: 'CONV_2D', optionsType: 'Conv2DOptions', inputs: [0, 1, 2], outputs: [3]
         });
+        // `padding` is absent from the buffer; SAME is its schema default, and a
+        // convolution that rendered no padding beside one that rendered VALID
+        // would read as "unspecified" rather than "SAME".
         expect(main.operators[0]!.options).toEqual([
             { name: 'padding', value: 'SAME' },
             { name: 'stride_w', value: '1' },
             { name: 'stride_h', value: '1' },
-            { name: 'fused_activation_function', value: 'RELU6' }
+            { name: 'fused_activation_function', value: 'RELU6' },
+            { name: 'dilation_w_factor', value: '1' },
+            { name: 'dilation_h_factor', value: '1' }
         ]);
-        expect(main.operators[1]!.options).toEqual([{ name: 'keep_num_dims', value: 'true' }]);
+        expect(main.operators[1]!.options).toEqual([
+            { name: 'fused_activation_function', value: 'NONE' },
+            { name: 'weights_format', value: 'DEFAULT' },
+            { name: 'keep_num_dims', value: 'true' }
+        ]);
+        // Optional markers stay hidden: absence means "not applicable", not false.
+        expect(main.operators[1]!.options.map(option => option.name))
+            .not.toContain('asymmetric_quantize_inputs');
+        // A false-by-default boolean stays hidden; only `exclusive` was written.
         expect(main.operators[3]!.options).toEqual([{ name: 'exclusive', value: 'true' }]);
     });
 
@@ -202,7 +217,166 @@ describe('parseTflite', () => {
         // making the whole model unviewable; the shape is still shown as stored.
         const odd = parseTflite(builder.finish(model));
         expect(odd.subgraphs[0]!.tensors[0]).toMatchObject({
-            shape: [2, -3], elementCount: '0', expectedBytes: '0'
+            shape: [2, -3], elementCount: '', expectedBytes: ''
+        });
+    });
+
+    it('marks truncated option vectors and never invents a subgraph reference', () => {
+        const edges = parseTflite(tfliteOptionEdgeCasesFixture());
+        const [ifOp, whileOp, reshape] = edges.subgraphs[0]!.operators;
+        // Every IfOptions field is a fallback, so the values render but the
+        // operator declared no subgraph and must offer no navigation.
+        expect(ifOp!.options).toEqual([
+            { name: 'then_subgraph_index', value: '0' },
+            { name: 'else_subgraph_index', value: '0' }
+        ]);
+        expect(ifOp!.subgraphRefs).toEqual([]);
+        // The same index named twice is one destination, not two links.
+        expect(whileOp!.subgraphRefs).toEqual([1]);
+        // A capped vector says so instead of looking complete.
+        expect(reshape!.options[0]!.value).toMatch(/^\[0, 1, .*, 63, … \(\+16\)\]$/);
+    });
+
+    it('resolves a tensor whose constant data lives in a separate file', () => {
+        const model = parseTflite(tfliteExternalBufferFixture());
+        expect(model.externalBuffers).toEqual([
+            { id: 7, group: 0, offset: '65536', length: '4096', packing: 'raw' }
+        ]);
+        // Without external_buffer support this reads as a 0-byte runtime tensor.
+        expect(model.subgraphs[0]!.tensors[0]).toMatchObject({
+            name: 'external_weights', location: 'external', dataBytes: '4096', expectedBytes: '4096'
+        });
+        expect(model.weightBytes).toBe('4096');
+        expect(model.warnings).toContainEqual({ key: 'tflite.warning.externalBuffers', args: { count: 1 } });
+    });
+
+    it('ignores an external buffer whose id is the "unused" sentinel', () => {
+        // schema.fbs: `A value of 0 indicates that the tensor uses the
+        // traditional embedded buffer field instead.` An entry declaring id 0
+        // must not capture tensors that never named an external buffer.
+        const model = parseTflite(tfliteExternalBufferFixture(2, 0, 0));
+        expect(model.subgraphs[0]!.tensors.map(tensor => tensor.location)).toEqual(['empty', 'empty', 'empty']);
+        expect(model.weightBytes).toBe('0');
+        expect(model.warnings.map(warning => warning.key)).not.toContain('tflite.warning.missingExternalBuffers');
+    });
+
+    it('warns when a tensor names an external buffer the model never declares', () => {
+        const model = parseTflite(tfliteExternalBufferFixture(0, 99));
+        expect(model.subgraphs[0]!.tensors[0]).toMatchObject({ location: 'empty', dataBytes: '0' });
+        expect(model.warnings).toContainEqual({ key: 'tflite.warning.missingExternalBuffers', args: { count: 1 } });
+    });
+
+    it('counts affected tensors, not distinct ids, when several share one bad reference', () => {
+        // The warning text speaks about tensors, so three tensors naming the
+        // same undeclared id must report three, not one.
+        const builder = new FlatBufferBuilder();
+        builder.startTable();
+        const buffer = builder.endTable();
+        const tensors = [0, 1, 2].map(index => {
+            const name = builder.createString(`t${index}`);
+            builder.startTable();
+            builder.addInt32(2, 0);
+            builder.addOffset(3, name);
+            builder.addInt32(10, 42);
+            return builder.endTable();
+        });
+        const tensorVector = builder.createOffsetVector(tensors);
+        builder.startTable();
+        builder.addOffset(0, tensorVector);
+        const subgraph = builder.endTable();
+        const subgraphVector = builder.createOffsetVector([subgraph]);
+        const bufferVector = builder.createOffsetVector([buffer]);
+        builder.startTable();
+        builder.addInt32(0, 3);
+        builder.addOffset(2, subgraphVector);
+        builder.addOffset(4, bufferVector);
+        const model = builder.endTable();
+        expect(parseTflite(builder.finish(model)).warnings)
+            .toContainEqual({ key: 'tflite.warning.missingExternalBuffers', args: { count: 3 } });
+    });
+
+    it('does not report an unreachable id-0 entry as an external buffer', () => {
+        const model = parseTflite(tfliteExternalBufferFixture(0, 0, 0));
+        expect(model.warnings.map(warning => warning.key)).not.toContain('tflite.warning.externalBuffers');
+    });
+
+    it('leaves a corrupt negative operator code unmapped instead of reading it as ADD', () => {
+        const builder = new FlatBufferBuilder();
+        builder.startTable();
+        const buffer = builder.endTable();
+        builder.startTable();
+        builder.addInt8(0, -1);
+        builder.addInt32(3, -1);
+        const code = builder.endTable();
+        const codeVector = builder.createOffsetVector([code]);
+        builder.startTable();
+        const subgraph = builder.endTable();
+        const subgraphVector = builder.createOffsetVector([subgraph]);
+        const bufferVector = builder.createOffsetVector([buffer]);
+        builder.startTable();
+        builder.addInt32(0, 3);
+        builder.addOffset(1, codeVector);
+        builder.addOffset(2, subgraphVector);
+        builder.addOffset(4, bufferVector);
+        const model = builder.endTable();
+        expect(parseTflite(builder.finish(model)).operatorCodes[0])
+            .toMatchObject({ builtinCode: -1, name: 'OP_-1', custom: false });
+    });
+
+    it('reports the declared quantization scale count, not the capped preview', () => {
+        const quantization = parseTflite(tfliteOptionEdgeCasesFixture()).subgraphs[0]!.tensors[0]!.quantization!;
+        expect(quantization.scale).toHaveLength(64);
+        expect(quantization.scaleCount).toBe(100);
+        expect(quantization.zeroPointCount).toBe(100);
+        expect(quantization.summary).toBe('per-axis[0] × 100');
+    });
+
+    it('counts a shape made entirely of unit dimensions', () => {
+        const builder = new FlatBufferBuilder();
+        builder.startTable();
+        const buffer = builder.endTable();
+        // 129 dimensions of 1: the product is 1, so the width gate must not trip.
+        const shape = builder.createIntVector(new Array(129).fill(1));
+        builder.startTable();
+        builder.addOffset(0, shape);
+        builder.addInt32(2, 0);
+        const tensor = builder.endTable();
+        const tensorVector = builder.createOffsetVector([tensor]);
+        builder.startTable();
+        builder.addOffset(0, tensorVector);
+        const subgraph = builder.endTable();
+        const subgraphVector = builder.createOffsetVector([subgraph]);
+        const bufferVector = builder.createOffsetVector([buffer]);
+        builder.startTable();
+        builder.addInt32(0, 3);
+        builder.addOffset(2, subgraphVector);
+        builder.addOffset(4, bufferVector);
+        const model = builder.endTable();
+        expect(parseTflite(builder.finish(model)).subgraphs[0]!.tensors[0]!.elementCount).toBe('1');
+    });
+
+    it('reports no element count for a shape whose product cannot be represented', () => {
+        const builder = new FlatBufferBuilder();
+        builder.startTable();
+        const buffer = builder.endTable();
+        const shape = builder.createIntVector(new Array(20).fill(65535));
+        builder.startTable();
+        builder.addOffset(0, shape);
+        builder.addInt32(2, 0);
+        const tensor = builder.endTable();
+        const tensorVector = builder.createOffsetVector([tensor]);
+        builder.startTable();
+        builder.addOffset(0, tensorVector);
+        const subgraph = builder.endTable();
+        const subgraphVector = builder.createOffsetVector([subgraph]);
+        const bufferVector = builder.createOffsetVector([buffer]);
+        builder.startTable();
+        builder.addInt32(0, 3);
+        builder.addOffset(2, subgraphVector);
+        builder.addOffset(4, bufferVector);
+        const model = builder.endTable();
+        expect(parseTflite(builder.finish(model)).subgraphs[0]!.tensors[0]).toMatchObject({
+            elementCount: '', expectedBytes: ''
         });
     });
 
@@ -229,10 +403,17 @@ describe('parseTflite', () => {
         expect(large).toMatchObject({ operator: 'BigCustom', custom: true, customOptionsBytes: '65536' });
 
         const sparsity = advanced.subgraphs[0]!.tensors[0]!.sparsity!;
-        expect(sparsity).toMatchObject({ traversalOrder: [0, 1], blockMap: [1], truncated: false });
+        expect(sparsity).toMatchObject({
+            traversalOrder: [0, 1], traversalOrderCount: 2,
+            blockMap: [1], blockMapCount: 1, dimensionCount: 2
+        });
         expect(sparsity.dimensions).toEqual([
-            { format: 'DENSE', denseSize: 4, arraySegments: [], arrayIndices: [], truncated: false },
-            { format: 'SPARSE_CSR', denseSize: 0, arraySegments: [0, 2, 4], arrayIndices: [0, 1, 0, 1], truncated: false }
+            { format: 'DENSE', denseSize: 4, arraySegments: [], arraySegmentCount: 0, arrayIndices: [], arrayIndexCount: 0 },
+            {
+                format: 'SPARSE_CSR', denseSize: 0,
+                arraySegments: [0, 2, 4], arraySegmentCount: 3,
+                arrayIndices: [0, 1, 0, 1], arrayIndexCount: 4
+            }
         ]);
     });
 
@@ -262,6 +443,9 @@ describe('parseTflite', () => {
         expect(model.subgraphs[0]!.tensors[0]!.hasRank).toBe(true);
         const controlFlow = parseTflite(tfliteControlFlowFixture());
         // `counter` is declared with an empty shape and no has_rank flag.
-        expect(controlFlow.subgraphs[0]!.tensors[0]).toMatchObject({ shape: [], hasRank: false });
+        // An unranked tensor cannot report an element count or an expected size.
+        expect(controlFlow.subgraphs[0]!.tensors[0]).toMatchObject({
+            shape: [], hasRank: false, elementCount: '', expectedBytes: ''
+        });
     });
 });

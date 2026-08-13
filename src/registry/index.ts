@@ -79,7 +79,10 @@ export const PCAPNG_MAGIC_SIGNATURES: readonly MagicSignature[] = [[{offset:0,by
 export const PSD_MAGIC_SIGNATURES: readonly MagicSignature[] = [[{offset:0,bytes:[0x38,0x42,0x50,0x53]}]];
 export const SHAPEFILE_MAGIC_SIGNATURES: readonly MagicSignature[] = [[{offset:0,bytes:[0x00,0x00,0x27,0x0a]}]];
 export const GGUF_MAGIC_SIGNATURES: readonly MagicSignature[] = [[{offset:0,bytes:[0x47,0x47,0x55,0x46]}]];
-/** A TFLite FlatBuffer opens with the root offset, then the 'TFL3' identifier. */
+/** A TFLite FlatBuffer opens with the root offset, then the 'TFL3' identifier.
+ *  Detection stays strict so content sniffing cannot claim unrelated files; the
+ *  parser is deliberately more lenient and merely warns on a foreign identifier,
+ *  which still reaches hosts that route by extension without sniff bytes. */
 export const TFLITE_MAGIC_SIGNATURES: readonly MagicSignature[] = [[{offset:4,bytes:[0x54,0x46,0x4c,0x33]}]];
 
 /** Farthest byte any signature needs (WebP reaches offset 8 + 4 = 12). */
@@ -149,6 +152,10 @@ export const MAT_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'mat',displayNameKey:
 // Safetensors has no fixed leading magic (the file opens with an 8-byte header
 // length), so it is admitted by extension and validated by the parser.
 export const SAFETENSORS_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'safetensors',displayNameKey:'safetensors.title',extensions:['safetensors'],priority:20,requiredServices:[],optionalServices:['clipboard']};
+// NPY has a fixed signature; NPZ is a ZIP container and is selected by its
+// explicit extension before generic container probing.
+export const NUMPY_MAGIC_PREFIX = [0x93, 0x4e, 0x55, 0x4d, 0x50, 0x59] as const;
+export const NUMPY_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'numpy',displayNameKey:'numpy.title',extensions:['npy','npz'],priority:20,requiredServices:[],optionalServices:['clipboard']};
 export const GGUF_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'gguf',displayNameKey:'gguf.title',extensions:['gguf'],priority:20,magicSignatures:GGUF_MAGIC_SIGNATURES,requiredServices:[],optionalServices:['clipboard']};
 // ONNX is a protobuf ModelProto with no fixed leading magic. The parser checks
 // its required IR version and graph fields after extension-based routing.
@@ -283,6 +290,7 @@ export const CORE_VIEWER_DESCRIPTORS: readonly ViewerDescriptor[] = [
     HDF5_VIEWER_DESCRIPTOR,
     MAT_VIEWER_DESCRIPTOR,
     SAFETENSORS_VIEWER_DESCRIPTOR,
+    NUMPY_VIEWER_DESCRIPTOR,
     GGUF_VIEWER_DESCRIPTOR,
     ONNX_VIEWER_DESCRIPTOR,
     TFLITE_VIEWER_DESCRIPTOR,
@@ -401,6 +409,10 @@ export function detectViewer(
     if (sniffBytes && looksLikeClassicMat(sniffBytes)) {
         const mat = descriptors.find(d => d.id === 'mat');
         if (mat && servicesMet(mat)) return { viewerId: 'mat', matchedBy: 'content' };
+    }
+    if (sniffBytes && NUMPY_MAGIC_PREFIX.every((byte, index) => sniffBytes[index] === byte)) {
+        const numpy = descriptors.find(d => d.id === 'numpy');
+        if (numpy && servicesMet(numpy)) return { viewerId: 'numpy', matchedBy: 'content' };
     }
     if (sniffBytes) {
         const unambiguous = descriptors.find(d =>

@@ -11,7 +11,7 @@ export interface TfliteSummaryItem { labelKey: string; value: string | number }
 export interface TfliteWarning { key: string; args?: Record<string, string | number> }
 export interface TfliteAttribute { name: string; value: string }
 
-export type TfliteBufferLocation = 'empty' | 'inline' | 'appended';
+export type TfliteBufferLocation = 'empty' | 'inline' | 'appended' | 'external';
 
 export interface TfliteBuffer {
     index: number;
@@ -32,30 +32,38 @@ export interface TfliteOperatorCode {
 }
 
 export interface TfliteQuantization {
+    /** Capped preview; `scaleCount` is how many the file declared. */
     scale: number[];
+    scaleCount: number;
     zeroPoint: string[];
+    zeroPointCount: number;
     min: number[];
+    minCount: number;
     max: number[];
+    maxCount: number;
     quantizedDimension: number;
     detailsType: string;
-    truncated: boolean;
     summary: string;
 }
 
 export interface TfliteDimensionMetadata {
     format: string;
     denseSize: number;
+    /** Capped previews; the `*Count` fields are what the file declared. */
     arraySegments: number[];
+    arraySegmentCount: number;
     arrayIndices: number[];
-    truncated: boolean;
+    arrayIndexCount: number;
 }
 
 export interface TfliteSparsity {
+    /** Capped previews; the `*Count` fields are what the file declared. */
     traversalOrder: number[];
+    traversalOrderCount: number;
     blockMap: number[];
+    blockMapCount: number;
     dimensions: TfliteDimensionMetadata[];
-    /** Set when the dimension list itself was capped. */
-    truncated: boolean;
+    dimensionCount: number;
 }
 
 export interface TfliteTensor {
@@ -68,8 +76,10 @@ export interface TfliteTensor {
     location: TfliteBufferLocation;
     /** Bytes actually stored for this tensor, from its buffer. */
     dataBytes: string;
-    /** Bytes the declared type and shape imply, for comparison with dataBytes. */
+    /** Bytes the declared type and shape imply, for comparison with dataBytes.
+     *  Empty when the shape or the element width makes it unknowable. */
     expectedBytes: string;
+    /** Empty when the tensor's rank or a dimension makes the count unknowable. */
     elementCount: string;
     isVariable: boolean;
     hasRank: boolean;
@@ -104,6 +114,15 @@ export interface TfliteSubgraph {
     outputs: number[];
 }
 
+/** An `ExternalBuffer` entry: constant data stored in a separate file. */
+export interface TfliteExternalBuffer {
+    id: number;
+    group: number;
+    offset: string;
+    length: string;
+    packing: string;
+}
+
 export interface TfliteMetadataEntry {
     name: string;
     buffer: number;
@@ -136,7 +155,9 @@ export interface TfliteDocument {
     metadata: TfliteMetadataEntry[];
     metadataBuffers: number[];
     signatures: TfliteSignature[];
-    /** Total bytes held by all buffers, inline and appended. */
+    externalBuffers: TfliteExternalBuffer[];
+    /** Total constant bytes: every inline and appended buffer, plus the external
+     *  buffers a tensor actually references. */
     weightBytes: string;
     summary: TfliteSummaryItem[];
     warnings: TfliteWarning[];
@@ -157,12 +178,11 @@ const MAX_QUANTIZATION_ITEMS = 64;
 const MAX_OPTION_ITEMS = 64;
 const MAX_SPARSITY_ITEMS = 64;
 const MAX_TENSOR_RANK = 1024;
-const MAX_TENSOR_PRODUCT_BITS = 4096;
+/** Beyond this the count is not a real tensor, and wide bigints get slow. */
+const MAX_TENSOR_PRODUCT_BITS = 128;
 const MAX_METADATA_TEXT_BYTES = 512;
 const FILE_IDENTIFIER = 'TFL3';
 const CUSTOM_OPERATOR_CODE = 32;
-/** Codes at or above the placeholder live in `builtin_code`, not the byte field. */
-const PLACEHOLDER_OPERATOR_CODE = 127;
 const decoder = new TextDecoder('utf-8');
 
 const TENSOR_TYPES: Record<number, string> = {
@@ -302,228 +322,320 @@ interface OptionField {
     kind: OptionKind;
     /** Labels for `enum` fields; unmapped values render as their raw number. */
     labels?: Record<number, string>;
-    /** Value that means "unset" and is therefore not rendered. */
-    absent?: number | boolean;
+    /**
+     * Schema default, rendered when the slot is absent. Fields without one are
+     * optional markers whose absence means "not applicable", so they stay
+     * hidden rather than claiming a value the model never expressed.
+     */
+    fallback?: number | boolean;
     /** Subgraph reference, surfaced separately for graph navigation. */
     subgraph?: true;
 }
 
 /**
- * Field layouts for the option tables a real model is likely to carry. Tables
- * that are absent here still render their union type name — FlatBuffers is not
- * self-describing, so unknown vtable slots cannot be named.
+ * Field layouts for the option tables a real model is likely to carry, mirrored
+ * from the normative `schema.fbs`. Tables absent here still render their union
+ * type name — FlatBuffers is not self-describing, so unknown vtable slots cannot
+ * be named. `fallback` carries the schema default: flatc omits default-valued
+ * scalars entirely, so without it a `padding: SAME` convolution would render no
+ * padding at all while a `VALID` one rendered normally.
  */
 const OPTION_FIELDS: Record<string, readonly OptionField[]> = {
     Conv2DOptions: [
-        { name: 'padding', slot: 0, kind: 'enum', labels: PADDING },
-        { name: 'stride_w', slot: 1, kind: 'int' }, { name: 'stride_h', slot: 2, kind: 'int' },
-        { name: 'fused_activation_function', slot: 3, kind: 'enum', labels: ACTIVATION, absent: 0 },
-        { name: 'dilation_w_factor', slot: 4, kind: 'int', absent: 1 },
-        { name: 'dilation_h_factor', slot: 5, kind: 'int', absent: 1 },
-        { name: 'quantized_bias_type', slot: 6, kind: 'enum', labels: TENSOR_TYPES, absent: 0 }
+        { name: 'padding', slot: 0, kind: 'enum', labels: PADDING, fallback: 0 },
+        { name: 'stride_w', slot: 1, kind: 'int', fallback: 0 },
+        { name: 'stride_h', slot: 2, kind: 'int', fallback: 0 },
+        { name: 'fused_activation_function', slot: 3, kind: 'enum', labels: ACTIVATION, fallback: 0 },
+        { name: 'dilation_w_factor', slot: 4, kind: 'int', fallback: 1 },
+        { name: 'dilation_h_factor', slot: 5, kind: 'int', fallback: 1 },
+        { name: 'quantized_bias_type', slot: 6, kind: 'enum', labels: TENSOR_TYPES }
     ],
     DepthwiseConv2DOptions: [
-        { name: 'padding', slot: 0, kind: 'enum', labels: PADDING },
-        { name: 'stride_w', slot: 1, kind: 'int' }, { name: 'stride_h', slot: 2, kind: 'int' },
-        { name: 'depth_multiplier', slot: 3, kind: 'int' },
-        { name: 'fused_activation_function', slot: 4, kind: 'enum', labels: ACTIVATION, absent: 0 },
-        { name: 'dilation_w_factor', slot: 5, kind: 'int', absent: 1 },
-        { name: 'dilation_h_factor', slot: 6, kind: 'int', absent: 1 }
+        { name: 'padding', slot: 0, kind: 'enum', labels: PADDING, fallback: 0 },
+        { name: 'stride_w', slot: 1, kind: 'int', fallback: 0 },
+        { name: 'stride_h', slot: 2, kind: 'int', fallback: 0 },
+        { name: 'depth_multiplier', slot: 3, kind: 'int', fallback: 0 },
+        { name: 'fused_activation_function', slot: 4, kind: 'enum', labels: ACTIVATION, fallback: 0 },
+        { name: 'dilation_w_factor', slot: 5, kind: 'int', fallback: 1 },
+        { name: 'dilation_h_factor', slot: 6, kind: 'int', fallback: 1 }
     ],
     ConcatEmbeddingsOptions: [
-        { name: 'num_channels', slot: 0, kind: 'int' },
+        { name: 'num_channels', slot: 0, kind: 'int', fallback: 0 },
         { name: 'num_columns_per_channel', slot: 1, kind: 'ints' },
         { name: 'embedding_dim_per_channel', slot: 2, kind: 'ints' }
     ],
-    LSHProjectionOptions: [{ name: 'type', slot: 0, kind: 'enum', labels: LSH_PROJECTION }],
+    LSHProjectionOptions: [
+        { name: 'type', slot: 0, kind: 'enum', labels: LSH_PROJECTION, fallback: 0 }
+    ],
     Pool2DOptions: [
-        { name: 'padding', slot: 0, kind: 'enum', labels: PADDING },
-        { name: 'stride_w', slot: 1, kind: 'int' }, { name: 'stride_h', slot: 2, kind: 'int' },
-        { name: 'filter_width', slot: 3, kind: 'int' }, { name: 'filter_height', slot: 4, kind: 'int' },
-        { name: 'fused_activation_function', slot: 5, kind: 'enum', labels: ACTIVATION, absent: 0 }
+        { name: 'padding', slot: 0, kind: 'enum', labels: PADDING, fallback: 0 },
+        { name: 'stride_w', slot: 1, kind: 'int', fallback: 0 },
+        { name: 'stride_h', slot: 2, kind: 'int', fallback: 0 },
+        { name: 'filter_width', slot: 3, kind: 'int', fallback: 0 },
+        { name: 'filter_height', slot: 4, kind: 'int', fallback: 0 },
+        { name: 'fused_activation_function', slot: 5, kind: 'enum', labels: ACTIVATION, fallback: 0 }
     ],
     SVDFOptions: [
-        { name: 'rank', slot: 0, kind: 'int' },
-        { name: 'fused_activation_function', slot: 1, kind: 'enum', labels: ACTIVATION, absent: 0 },
-        { name: 'asymmetric_quantize_inputs', slot: 2, kind: 'bool', absent: false }
+        { name: 'rank', slot: 0, kind: 'int', fallback: 0 },
+        { name: 'fused_activation_function', slot: 1, kind: 'enum', labels: ACTIVATION, fallback: 0 },
+        { name: 'asymmetric_quantize_inputs', slot: 2, kind: 'bool' }
     ],
     RNNOptions: [
-        { name: 'fused_activation_function', slot: 0, kind: 'enum', labels: ACTIVATION, absent: 0 },
-        { name: 'asymmetric_quantize_inputs', slot: 1, kind: 'bool', absent: false }
+        { name: 'fused_activation_function', slot: 0, kind: 'enum', labels: ACTIVATION, fallback: 0 },
+        { name: 'asymmetric_quantize_inputs', slot: 1, kind: 'bool' }
     ],
     FullyConnectedOptions: [
-        { name: 'fused_activation_function', slot: 0, kind: 'enum', labels: ACTIVATION, absent: 0 },
-        { name: 'weights_format', slot: 1, kind: 'enum', labels: WEIGHTS_FORMAT, absent: 0 },
-        { name: 'keep_num_dims', slot: 2, kind: 'bool', absent: false },
-        { name: 'asymmetric_quantize_inputs', slot: 3, kind: 'bool', absent: false },
-        { name: 'quantized_bias_type', slot: 4, kind: 'enum', labels: TENSOR_TYPES, absent: 0 }
+        { name: 'fused_activation_function', slot: 0, kind: 'enum', labels: ACTIVATION, fallback: 0 },
+        { name: 'weights_format', slot: 1, kind: 'enum', labels: WEIGHTS_FORMAT, fallback: 0 },
+        { name: 'keep_num_dims', slot: 2, kind: 'bool' },
+        { name: 'asymmetric_quantize_inputs', slot: 3, kind: 'bool' },
+        { name: 'quantized_bias_type', slot: 4, kind: 'enum', labels: TENSOR_TYPES }
     ],
-    SoftmaxOptions: [{ name: 'beta', slot: 0, kind: 'float' }],
+    SoftmaxOptions: [
+        { name: 'beta', slot: 0, kind: 'float', fallback: 0 }
+    ],
     ConcatenationOptions: [
-        { name: 'axis', slot: 0, kind: 'int' },
-        { name: 'fused_activation_function', slot: 1, kind: 'enum', labels: ACTIVATION, absent: 0 }
+        { name: 'axis', slot: 0, kind: 'int', fallback: 0 },
+        { name: 'fused_activation_function', slot: 1, kind: 'enum', labels: ACTIVATION, fallback: 0 }
     ],
     AddOptions: [
-        { name: 'fused_activation_function', slot: 0, kind: 'enum', labels: ACTIVATION, absent: 0 },
-        { name: 'pot_scale_int16', slot: 1, kind: 'bool', absent: true }
+        { name: 'fused_activation_function', slot: 0, kind: 'enum', labels: ACTIVATION, fallback: 0 },
+        { name: 'pot_scale_int16', slot: 1, kind: 'bool', fallback: true }
     ],
-    L2NormOptions: [{ name: 'fused_activation_function', slot: 0, kind: 'enum', labels: ACTIVATION, absent: 0 }],
+    L2NormOptions: [
+        { name: 'fused_activation_function', slot: 0, kind: 'enum', labels: ACTIVATION, fallback: 0 }
+    ],
     LocalResponseNormalizationOptions: [
-        { name: 'radius', slot: 0, kind: 'int' }, { name: 'bias', slot: 1, kind: 'float' },
-        { name: 'alpha', slot: 2, kind: 'float' }, { name: 'beta', slot: 3, kind: 'float' }
+        { name: 'radius', slot: 0, kind: 'int', fallback: 0 },
+        { name: 'bias', slot: 1, kind: 'float', fallback: 0 },
+        { name: 'alpha', slot: 2, kind: 'float', fallback: 0 },
+        { name: 'beta', slot: 3, kind: 'float', fallback: 0 }
     ],
     LSTMOptions: [
-        { name: 'fused_activation_function', slot: 0, kind: 'enum', labels: ACTIVATION, absent: 0 },
-        { name: 'cell_clip', slot: 1, kind: 'float', absent: 0 },
-        { name: 'proj_clip', slot: 2, kind: 'float', absent: 0 },
-        { name: 'kernel_type', slot: 3, kind: 'enum', labels: LSTM_KERNEL },
-        { name: 'asymmetric_quantize_inputs', slot: 4, kind: 'bool', absent: false }
+        { name: 'fused_activation_function', slot: 0, kind: 'enum', labels: ACTIVATION, fallback: 0 },
+        { name: 'cell_clip', slot: 1, kind: 'float', fallback: 0 },
+        { name: 'proj_clip', slot: 2, kind: 'float', fallback: 0 },
+        { name: 'kernel_type', slot: 3, kind: 'enum', labels: LSTM_KERNEL, fallback: 0 },
+        { name: 'asymmetric_quantize_inputs', slot: 4, kind: 'bool' }
     ],
     ResizeBilinearOptions: [
-        { name: 'align_corners', slot: 2, kind: 'bool', absent: false },
-        { name: 'half_pixel_centers', slot: 3, kind: 'bool', absent: false }
+        { name: 'align_corners', slot: 2, kind: 'bool' },
+        { name: 'half_pixel_centers', slot: 3, kind: 'bool' }
     ],
-    CallOptions: [{ name: 'subgraph', slot: 0, kind: 'uint', subgraph: true }],
-    ReshapeOptions: [{ name: 'new_shape', slot: 0, kind: 'ints' }],
+    CallOptions: [
+        { name: 'subgraph', slot: 0, kind: 'uint', fallback: 0, subgraph: true }
+    ],
+    ReshapeOptions: [
+        { name: 'new_shape', slot: 0, kind: 'ints' }
+    ],
     SkipGramOptions: [
-        { name: 'ngram_size', slot: 0, kind: 'int' }, { name: 'max_skip_size', slot: 1, kind: 'int' },
-        { name: 'include_all_ngrams', slot: 2, kind: 'bool', absent: false }
+        { name: 'ngram_size', slot: 0, kind: 'int', fallback: 0 },
+        { name: 'max_skip_size', slot: 1, kind: 'int', fallback: 0 },
+        { name: 'include_all_ngrams', slot: 2, kind: 'bool' }
     ],
-    SpaceToDepthOptions: [{ name: 'block_size', slot: 0, kind: 'int' }],
-    DepthToSpaceOptions: [{ name: 'block_size', slot: 0, kind: 'int' }],
-    EmbeddingLookupSparseOptions: [{ name: 'combiner', slot: 0, kind: 'enum', labels: COMBINER }],
-    MulOptions: [{ name: 'fused_activation_function', slot: 0, kind: 'enum', labels: ACTIVATION, absent: 0 }],
+    SpaceToDepthOptions: [
+        { name: 'block_size', slot: 0, kind: 'int', fallback: 0 }
+    ],
+    DepthToSpaceOptions: [
+        { name: 'block_size', slot: 0, kind: 'int', fallback: 0 }
+    ],
+    EmbeddingLookupSparseOptions: [
+        { name: 'combiner', slot: 0, kind: 'enum', labels: COMBINER, fallback: 0 }
+    ],
+    MulOptions: [
+        { name: 'fused_activation_function', slot: 0, kind: 'enum', labels: ACTIVATION, fallback: 0 }
+    ],
     GatherOptions: [
-        { name: 'axis', slot: 0, kind: 'int', absent: 0 }, { name: 'batch_dims', slot: 1, kind: 'int', absent: 0 }
+        { name: 'axis', slot: 0, kind: 'int', fallback: 0 },
+        { name: 'batch_dims', slot: 1, kind: 'int', fallback: 0 }
     ],
-    ReducerOptions: [{ name: 'keep_dims', slot: 0, kind: 'bool', absent: false }],
+    ReducerOptions: [
+        { name: 'keep_dims', slot: 0, kind: 'bool' }
+    ],
     SubOptions: [
-        { name: 'fused_activation_function', slot: 0, kind: 'enum', labels: ACTIVATION, absent: 0 },
-        { name: 'pot_scale_int16', slot: 1, kind: 'bool', absent: true }
+        { name: 'fused_activation_function', slot: 0, kind: 'enum', labels: ACTIVATION, fallback: 0 },
+        { name: 'pot_scale_int16', slot: 1, kind: 'bool', fallback: true }
     ],
-    DivOptions: [{ name: 'fused_activation_function', slot: 0, kind: 'enum', labels: ACTIVATION, absent: 0 }],
-    SqueezeOptions: [{ name: 'squeeze_dims', slot: 0, kind: 'ints' }],
+    DivOptions: [
+        { name: 'fused_activation_function', slot: 0, kind: 'enum', labels: ACTIVATION, fallback: 0 }
+    ],
+    SqueezeOptions: [
+        { name: 'squeeze_dims', slot: 0, kind: 'ints' }
+    ],
     SequenceRNNOptions: [
-        { name: 'time_major', slot: 0, kind: 'bool', absent: false },
-        { name: 'fused_activation_function', slot: 1, kind: 'enum', labels: ACTIVATION, absent: 0 },
-        { name: 'asymmetric_quantize_inputs', slot: 2, kind: 'bool', absent: false }
+        { name: 'time_major', slot: 0, kind: 'bool' },
+        { name: 'fused_activation_function', slot: 1, kind: 'enum', labels: ACTIVATION, fallback: 0 },
+        { name: 'asymmetric_quantize_inputs', slot: 2, kind: 'bool' }
     ],
     StridedSliceOptions: [
-        { name: 'begin_mask', slot: 0, kind: 'int', absent: 0 }, { name: 'end_mask', slot: 1, kind: 'int', absent: 0 },
-        { name: 'ellipsis_mask', slot: 2, kind: 'int', absent: 0 }, { name: 'new_axis_mask', slot: 3, kind: 'int', absent: 0 },
-        { name: 'shrink_axis_mask', slot: 4, kind: 'int', absent: 0 },
-        { name: 'offset', slot: 5, kind: 'bool', absent: false }
+        { name: 'begin_mask', slot: 0, kind: 'int', fallback: 0 },
+        { name: 'end_mask', slot: 1, kind: 'int', fallback: 0 },
+        { name: 'ellipsis_mask', slot: 2, kind: 'int', fallback: 0 },
+        { name: 'new_axis_mask', slot: 3, kind: 'int', fallback: 0 },
+        { name: 'shrink_axis_mask', slot: 4, kind: 'int', fallback: 0 },
+        { name: 'offset', slot: 5, kind: 'bool' }
     ],
-    SplitOptions: [{ name: 'num_splits', slot: 0, kind: 'int' }],
-    SplitVOptions: [{ name: 'num_splits', slot: 0, kind: 'int' }],
+    SplitOptions: [
+        { name: 'num_splits', slot: 0, kind: 'int', fallback: 0 }
+    ],
+    SplitVOptions: [
+        { name: 'num_splits', slot: 0, kind: 'int', fallback: 0 }
+    ],
     CastOptions: [
-        { name: 'in_data_type', slot: 0, kind: 'enum', labels: TENSOR_TYPES },
-        { name: 'out_data_type', slot: 1, kind: 'enum', labels: TENSOR_TYPES }
+        { name: 'in_data_type', slot: 0, kind: 'enum', labels: TENSOR_TYPES, fallback: 0 },
+        { name: 'out_data_type', slot: 1, kind: 'enum', labels: TENSOR_TYPES, fallback: 0 }
     ],
-    ArgMaxOptions: [{ name: 'output_type', slot: 0, kind: 'enum', labels: TENSOR_TYPES }],
-    ArgMinOptions: [{ name: 'output_type', slot: 0, kind: 'enum', labels: TENSOR_TYPES }],
+    ArgMaxOptions: [
+        { name: 'output_type', slot: 0, kind: 'enum', labels: TENSOR_TYPES, fallback: 0 }
+    ],
+    ArgMinOptions: [
+        { name: 'output_type', slot: 0, kind: 'enum', labels: TENSOR_TYPES, fallback: 0 }
+    ],
     TransposeConvOptions: [
-        { name: 'padding', slot: 0, kind: 'enum', labels: PADDING },
-        { name: 'stride_w', slot: 1, kind: 'int' }, { name: 'stride_h', slot: 2, kind: 'int' },
-        { name: 'fused_activation_function', slot: 3, kind: 'enum', labels: ACTIVATION, absent: 0 },
-        { name: 'quantized_bias_type', slot: 4, kind: 'enum', labels: TENSOR_TYPES, absent: 0 }
+        { name: 'padding', slot: 0, kind: 'enum', labels: PADDING, fallback: 0 },
+        { name: 'stride_w', slot: 1, kind: 'int', fallback: 0 },
+        { name: 'stride_h', slot: 2, kind: 'int', fallback: 0 },
+        { name: 'fused_activation_function', slot: 3, kind: 'enum', labels: ACTIVATION, fallback: 0 },
+        { name: 'quantized_bias_type', slot: 4, kind: 'enum', labels: TENSOR_TYPES }
     ],
-    SparseToDenseOptions: [{ name: 'validate_indices', slot: 0, kind: 'bool', absent: false }],
-    ShapeOptions: [{ name: 'out_type', slot: 0, kind: 'enum', labels: TENSOR_TYPES }],
+    SparseToDenseOptions: [
+        { name: 'validate_indices', slot: 0, kind: 'bool' }
+    ],
+    ShapeOptions: [
+        { name: 'out_type', slot: 0, kind: 'enum', labels: TENSOR_TYPES, fallback: 0 }
+    ],
     FakeQuantOptions: [
-        { name: 'min', slot: 0, kind: 'float' }, { name: 'max', slot: 1, kind: 'float' },
-        { name: 'num_bits', slot: 2, kind: 'int' },
-        { name: 'narrow_range', slot: 3, kind: 'bool', absent: false }
+        { name: 'min', slot: 0, kind: 'float', fallback: 0 },
+        { name: 'max', slot: 1, kind: 'float', fallback: 0 },
+        { name: 'num_bits', slot: 2, kind: 'int', fallback: 0 },
+        { name: 'narrow_range', slot: 3, kind: 'bool' }
     ],
-    PackOptions: [{ name: 'values_count', slot: 0, kind: 'int' }, { name: 'axis', slot: 1, kind: 'int' }],
-    OneHotOptions: [{ name: 'axis', slot: 0, kind: 'int' }],
-    UnpackOptions: [{ name: 'num', slot: 0, kind: 'int' }, { name: 'axis', slot: 1, kind: 'int' }],
+    PackOptions: [
+        { name: 'values_count', slot: 0, kind: 'int', fallback: 0 },
+        { name: 'axis', slot: 1, kind: 'int', fallback: 0 }
+    ],
+    OneHotOptions: [
+        { name: 'axis', slot: 0, kind: 'int', fallback: 0 }
+    ],
+    UnpackOptions: [
+        { name: 'num', slot: 0, kind: 'int', fallback: 0 },
+        { name: 'axis', slot: 1, kind: 'int', fallback: 0 }
+    ],
     BidirectionalSequenceLSTMOptions: [
-        { name: 'fused_activation_function', slot: 0, kind: 'enum', labels: ACTIVATION, absent: 0 },
-        { name: 'cell_clip', slot: 1, kind: 'float', absent: 0 },
-        { name: 'proj_clip', slot: 2, kind: 'float', absent: 0 },
-        { name: 'merge_outputs', slot: 3, kind: 'bool', absent: false },
-        { name: 'time_major', slot: 4, kind: 'bool' },
-        { name: 'asymmetric_quantize_inputs', slot: 5, kind: 'bool', absent: false }
+        { name: 'fused_activation_function', slot: 0, kind: 'enum', labels: ACTIVATION, fallback: 0 },
+        { name: 'cell_clip', slot: 1, kind: 'float', fallback: 0 },
+        { name: 'proj_clip', slot: 2, kind: 'float', fallback: 0 },
+        { name: 'merge_outputs', slot: 3, kind: 'bool' },
+        { name: 'time_major', slot: 4, kind: 'bool', fallback: true },
+        { name: 'asymmetric_quantize_inputs', slot: 5, kind: 'bool' }
     ],
     BidirectionalSequenceRNNOptions: [
-        { name: 'time_major', slot: 0, kind: 'bool', absent: false },
-        { name: 'fused_activation_function', slot: 1, kind: 'enum', labels: ACTIVATION, absent: 0 },
-        { name: 'merge_outputs', slot: 2, kind: 'bool', absent: false },
-        { name: 'asymmetric_quantize_inputs', slot: 3, kind: 'bool', absent: false }
+        { name: 'time_major', slot: 0, kind: 'bool' },
+        { name: 'fused_activation_function', slot: 1, kind: 'enum', labels: ACTIVATION, fallback: 0 },
+        { name: 'merge_outputs', slot: 2, kind: 'bool' },
+        { name: 'asymmetric_quantize_inputs', slot: 3, kind: 'bool' }
     ],
     UnidirectionalSequenceLSTMOptions: [
-        { name: 'fused_activation_function', slot: 0, kind: 'enum', labels: ACTIVATION, absent: 0 },
-        { name: 'cell_clip', slot: 1, kind: 'float', absent: 0 },
-        { name: 'proj_clip', slot: 2, kind: 'float', absent: 0 },
-        { name: 'time_major', slot: 3, kind: 'bool', absent: false },
-        { name: 'asymmetric_quantize_inputs', slot: 4, kind: 'bool', absent: false },
-        { name: 'diagonal_recurrent_tensors', slot: 5, kind: 'bool', absent: false }
+        { name: 'fused_activation_function', slot: 0, kind: 'enum', labels: ACTIVATION, fallback: 0 },
+        { name: 'cell_clip', slot: 1, kind: 'float', fallback: 0 },
+        { name: 'proj_clip', slot: 2, kind: 'float', fallback: 0 },
+        { name: 'time_major', slot: 3, kind: 'bool' },
+        { name: 'asymmetric_quantize_inputs', slot: 4, kind: 'bool' },
+        { name: 'diagonal_recurrent_tensors', slot: 5, kind: 'bool' }
     ],
     RangeOptions: [],
     ResizeNearestNeighborOptions: [
-        { name: 'align_corners', slot: 0, kind: 'bool', absent: false },
-        { name: 'half_pixel_centers', slot: 1, kind: 'bool', absent: false }
+        { name: 'align_corners', slot: 0, kind: 'bool' },
+        { name: 'half_pixel_centers', slot: 1, kind: 'bool' }
     ],
-    LeakyReluOptions: [{ name: 'alpha', slot: 0, kind: 'float' }],
-    MirrorPadOptions: [{ name: 'mode', slot: 0, kind: 'enum', labels: MIRROR_PAD }],
-    UniqueOptions: [{ name: 'idx_out_type', slot: 0, kind: 'enum', labels: TENSOR_TYPES }],
+    LeakyReluOptions: [
+        { name: 'alpha', slot: 0, kind: 'float', fallback: 0 }
+    ],
+    MirrorPadOptions: [
+        { name: 'mode', slot: 0, kind: 'enum', labels: MIRROR_PAD, fallback: 0 }
+    ],
+    UniqueOptions: [
+        { name: 'idx_out_type', slot: 0, kind: 'enum', labels: TENSOR_TYPES, fallback: 2 }
+    ],
     ReverseSequenceOptions: [
-        { name: 'seq_dim', slot: 0, kind: 'int' }, { name: 'batch_dim', slot: 1, kind: 'int', absent: 0 }
+        { name: 'seq_dim', slot: 0, kind: 'int', fallback: 0 },
+        { name: 'batch_dim', slot: 1, kind: 'int', fallback: 0 }
     ],
     IfOptions: [
-        { name: 'then_subgraph_index', slot: 0, kind: 'int', subgraph: true },
-        { name: 'else_subgraph_index', slot: 1, kind: 'int', subgraph: true }
+        { name: 'then_subgraph_index', slot: 0, kind: 'int', fallback: 0, subgraph: true },
+        { name: 'else_subgraph_index', slot: 1, kind: 'int', fallback: 0, subgraph: true }
     ],
     WhileOptions: [
-        { name: 'cond_subgraph_index', slot: 0, kind: 'int', subgraph: true },
-        { name: 'body_subgraph_index', slot: 1, kind: 'int', subgraph: true }
+        { name: 'cond_subgraph_index', slot: 0, kind: 'int', fallback: 0, subgraph: true },
+        { name: 'body_subgraph_index', slot: 1, kind: 'int', fallback: 0, subgraph: true }
     ],
-    CallOnceOptions: [{ name: 'init_subgraph_index', slot: 0, kind: 'int', subgraph: true }],
+    CallOnceOptions: [
+        { name: 'init_subgraph_index', slot: 0, kind: 'int', fallback: 0, subgraph: true }
+    ],
     BatchMatMulOptions: [
-        { name: 'adj_x', slot: 0, kind: 'bool', absent: false }, { name: 'adj_y', slot: 1, kind: 'bool', absent: false },
-        { name: 'asymmetric_quantize_inputs', slot: 2, kind: 'bool', absent: false }
+        { name: 'adj_x', slot: 0, kind: 'bool' },
+        { name: 'adj_y', slot: 1, kind: 'bool' },
+        { name: 'asymmetric_quantize_inputs', slot: 2, kind: 'bool' }
     ],
     CumsumOptions: [
-        { name: 'exclusive', slot: 0, kind: 'bool', absent: false },
-        { name: 'reverse', slot: 1, kind: 'bool', absent: false }
+        { name: 'exclusive', slot: 0, kind: 'bool' },
+        { name: 'reverse', slot: 1, kind: 'bool' }
     ],
     Conv3DOptions: [
-        { name: 'padding', slot: 0, kind: 'enum', labels: PADDING },
-        { name: 'stride_d', slot: 1, kind: 'int' }, { name: 'stride_w', slot: 2, kind: 'int' },
-        { name: 'stride_h', slot: 3, kind: 'int' },
-        { name: 'fused_activation_function', slot: 4, kind: 'enum', labels: ACTIVATION, absent: 0 },
-        { name: 'dilation_d_factor', slot: 5, kind: 'int', absent: 1 },
-        { name: 'dilation_w_factor', slot: 6, kind: 'int', absent: 1 },
-        { name: 'dilation_h_factor', slot: 7, kind: 'int', absent: 1 }
+        { name: 'padding', slot: 0, kind: 'enum', labels: PADDING, fallback: 0 },
+        { name: 'stride_d', slot: 1, kind: 'int', fallback: 0 },
+        { name: 'stride_w', slot: 2, kind: 'int', fallback: 0 },
+        { name: 'stride_h', slot: 3, kind: 'int', fallback: 0 },
+        { name: 'fused_activation_function', slot: 4, kind: 'enum', labels: ACTIVATION, fallback: 0 },
+        { name: 'dilation_d_factor', slot: 5, kind: 'int', fallback: 1 },
+        { name: 'dilation_w_factor', slot: 6, kind: 'int', fallback: 1 },
+        { name: 'dilation_h_factor', slot: 7, kind: 'int', fallback: 1 }
     ],
     HashtableOptions: [
-        { name: 'table_id', slot: 0, kind: 'int' },
-        { name: 'key_dtype', slot: 1, kind: 'enum', labels: TENSOR_TYPES },
-        { name: 'value_dtype', slot: 2, kind: 'enum', labels: TENSOR_TYPES }
+        { name: 'table_id', slot: 0, kind: 'int', fallback: 0 },
+        { name: 'key_dtype', slot: 1, kind: 'enum', labels: TENSOR_TYPES, fallback: 0 },
+        { name: 'value_dtype', slot: 2, kind: 'enum', labels: TENSOR_TYPES, fallback: 0 }
     ],
     VarHandleOptions: [
-        { name: 'container', slot: 0, kind: 'string' }, { name: 'shared_name', slot: 1, kind: 'string' }
+        { name: 'container', slot: 0, kind: 'string' },
+        { name: 'shared_name', slot: 1, kind: 'string' }
     ],
-    RandomOptions: [{ name: 'seed', slot: 0, kind: 'long', absent: 0 }, { name: 'seed2', slot: 1, kind: 'long', absent: 0 }],
-    BucketizeOptions: [{ name: 'boundaries', slot: 0, kind: 'floats' }],
-    GeluOptions: [{ name: 'approximate', slot: 0, kind: 'bool', absent: false }],
+    RandomOptions: [
+        { name: 'seed', slot: 0, kind: 'long', fallback: 0 },
+        { name: 'seed2', slot: 1, kind: 'long', fallback: 0 }
+    ],
+    BucketizeOptions: [
+        { name: 'boundaries', slot: 0, kind: 'floats' }
+    ],
+    GeluOptions: [
+        { name: 'approximate', slot: 0, kind: 'bool' }
+    ],
     StableHLOCompositeOptions: [
         { name: 'name', slot: 0, kind: 'string' },
-        { name: 'decomposition_subgraph_index', slot: 1, kind: 'int', subgraph: true },
-        { name: 'version', slot: 4, kind: 'int', absent: 0 }
+        { name: 'decomposition_subgraph_index', slot: 1, kind: 'int', fallback: 0, subgraph: true },
+        { name: 'version', slot: 4, kind: 'int', fallback: 0 }
     ],
-    StablehloConcatenateOptions: [{ name: 'dimension', slot: 0, kind: 'long' }],
+    StablehloConcatenateOptions: [
+        { name: 'dimension', slot: 0, kind: 'long', fallback: 0 }
+    ],
     StablehloSliceOptions: [
-        { name: 'start_indices', slot: 0, kind: 'longs' }, { name: 'limit_indices', slot: 1, kind: 'longs' },
+        { name: 'start_indices', slot: 0, kind: 'longs' },
+        { name: 'limit_indices', slot: 1, kind: 'longs' },
         { name: 'strides', slot: 2, kind: 'longs' }
     ],
-    StablehloIotaOptions: [{ name: 'iota_dimension', slot: 0, kind: 'long' }],
-    StablehloTransposeOptions: [{ name: 'permutation', slot: 0, kind: 'longs' }],
+    StablehloIotaOptions: [
+        { name: 'iota_dimension', slot: 0, kind: 'long', fallback: 0 }
+    ],
+    StablehloTransposeOptions: [
+        { name: 'permutation', slot: 0, kind: 'longs' }
+    ],
     DilateOptions: []
 };
 
 interface ParseState { objects: number; textBytes: number; items: number }
+
+/** A capped view of a vector plus the length the file declared. */
+interface Preview<T> { values: T[]; length: number }
 
 interface BufferRecord {
     /** Absolute position of the inline payload, `0` when there is none. */
@@ -682,32 +794,31 @@ class Table {
         return values;
     }
 
-    /** Display-only int vector, truncated at `limit` instead of rejected. */
-    intVectorPreview(slot: number, limit: number): number[] {
-        const vector = this.vector(slot, 4);
-        if (!vector) return [];
-        this.fb.claimItems(Math.min(vector.length, limit));
-        const values: number[] = [];
-        for (let index = 0; index < Math.min(vector.length, limit); index++) values.push(this.fb.i32(vector.start + index * 4));
-        return values;
+    /**
+     * Display-only vectors: capped at `limit`, but the declared `length` comes
+     * back too so callers can report an exact remainder rather than inventing
+     * one from the capped array.
+     */
+    intVectorPreview(slot: number, limit: number): Preview<number> {
+        return this.previewVector(slot, 4, limit, (start, index) => this.fb.i32(start + index * 4));
     }
 
-    floatVector(slot: number, limit = MAX_ITEMS): { values: number[]; truncated: boolean } {
-        const vector = this.vector(slot, 4);
-        if (!vector) return { values: [], truncated: false };
-        this.fb.claimItems(Math.min(vector.length, limit));
-        const values: number[] = [];
-        for (let index = 0; index < Math.min(vector.length, limit); index++) values.push(this.fb.f32(vector.start + index * 4));
-        return { values, truncated: vector.length > limit };
+    floatVector(slot: number, limit = MAX_ITEMS): Preview<number> {
+        return this.previewVector(slot, 4, limit, (start, index) => this.fb.f32(start + index * 4));
     }
 
-    longVector(slot: number, limit = MAX_ITEMS): { values: string[]; truncated: boolean } {
-        const vector = this.vector(slot, 8);
-        if (!vector) return { values: [], truncated: false };
-        this.fb.claimItems(Math.min(vector.length, limit));
-        const values: string[] = [];
-        for (let index = 0; index < Math.min(vector.length, limit); index++) values.push(this.fb.i64(vector.start + index * 8).toString());
-        return { values, truncated: vector.length > limit };
+    longVector(slot: number, limit = MAX_ITEMS): Preview<string> {
+        return this.previewVector(slot, 8, limit, (start, index) => this.fb.i64(start + index * 8).toString());
+    }
+
+    private previewVector<T>(slot: number, size: number, limit: number, read: (start: number, index: number) => T): Preview<T> {
+        const vector = this.vector(slot, size);
+        if (!vector) return { values: [], length: 0 };
+        const shown = Math.min(vector.length, limit);
+        this.fb.claimItems(shown);
+        const values: T[] = [];
+        for (let index = 0; index < shown; index++) values.push(read(vector.start, index));
+        return { values, length: vector.length };
     }
 
     /** Byte-vector extent without copying the payload. */
@@ -744,14 +855,27 @@ export function parseTflite(data: Uint8Array): TfliteDocument {
     const bufferRecords = model.tableVector(4).map(parseBufferRecord);
     const buffers = bufferRecords.map((record, index) => toBuffer(record, index));
     const metadataBuffers = model.intVector(5);
-    const subgraphs = model.tableVector(2).map((table, index) => parseSubgraph(table, index, operatorCodes, bufferRecords));
+    const externalBuffers = model.tableVector(9).map(parseExternalBuffer);
+    // Id 0 is the sentinel for "this tensor uses its embedded buffer", so an
+    // entry declaring it must never capture tensors that named nothing.
+    const externalById = new Map(externalBuffers.filter(buffer => buffer.id !== 0).map(buffer => [buffer.id, buffer]));
+    const usedExternal = new Set<number>();
+    // Counted per tensor, not per id: several tensors can name the same
+    // undeclared buffer, and the warning speaks about affected tensors.
+    const missingExternal = { tensors: 0 };
+    const subgraphs = model.tableVector(2).map((table, index) =>
+        parseSubgraph(table, index, operatorCodes, bufferRecords, { externalById, usedExternal, missingExternal }));
     const metadata = model.tableVector(6).map(table => parseMetadata(table, fb, bufferRecords));
     const signatures = model.tableVector(7).map(table => parseSignature(table, subgraphs));
 
     const primary = subgraphs[0];
     const operatorCount = subgraphs.reduce((total, subgraph) => total + subgraph.operators.length, 0);
     const tensorCount = subgraphs.reduce((total, subgraph) => total + subgraph.tensors.length, 0);
-    const weightBytes = bufferRecords.reduce((total, record) => total + record.size, 0n);
+    // Only external buffers a tensor actually references count as model weight
+    // bytes; an unreferenced entry would otherwise inflate the summary without
+    // any tensor to account for it.
+    const weightBytes = bufferRecords.reduce((total, record) => total + record.size, 0n) +
+        [...usedExternal].reduce((total, id) => total + toBigInt(externalById.get(id)?.length ?? '0'), 0n);
     const customOperators = new Set<string>();
     const flexOperators = new Set<string>();
     for (const code of operatorCodes) {
@@ -769,6 +893,9 @@ export function parseTflite(data: Uint8Array): TfliteDocument {
     if (flexOperators.size > 0) warnings.push({ key: 'tflite.warning.flexOps', args: { count: flexOperators.size } });
     const appended = bufferRecords.filter(record => record.offset > 1n).length;
     if (appended > 0) warnings.push({ key: 'tflite.warning.appendedBuffers', args: { count: appended } });
+    // Sentinel entries are unreachable by any tensor, so they are not counted.
+    if (externalById.size > 0) warnings.push({ key: 'tflite.warning.externalBuffers', args: { count: externalById.size } });
+    if (missingExternal.tensors > 0) warnings.push({ key: 'tflite.warning.missingExternalBuffers', args: { count: missingExternal.tensors } });
 
     return {
         format: 'tflite',
@@ -784,6 +911,7 @@ export function parseTflite(data: Uint8Array): TfliteDocument {
         metadata,
         metadataBuffers,
         signatures,
+        externalBuffers,
         weightBytes: weightBytes.toString(),
         summary: [
             { labelKey: 'tflite.summary.operators', value: operatorCount },
@@ -809,13 +937,10 @@ function readIdentifier(data: Uint8Array): string {
 
 function parseOperatorCode(table: Table, index: number): TfliteOperatorCode {
     // Codes below the placeholder live in the legacy byte field; from the
-    // placeholder up they are written to `builtin_code` instead, so the
-    // effective code is the larger of the two (schema.fbs `GetBuiltinCode`).
-    const deprecated = table.byte(0);
-    const declared = table.int(3);
-    const builtinCode = declared >= PLACEHOLDER_OPERATOR_CODE
-        ? declared
-        : Math.max(deprecated < 0 ? 0 : deprecated, declared);
+    // placeholder up they are written to `builtin_code` instead. Upstream
+    // `GetBuiltinCode` is a plain max over the two, taken verbatim here so the
+    // resolution matches the runtime's for every writer generation.
+    const builtinCode = Math.max(table.byte(0), table.int(3));
     const customCode = table.string(1);
     const custom = builtinCode === CUSTOM_OPERATOR_CODE;
     const name = custom
@@ -848,13 +973,21 @@ function bufferLocation(record: BufferRecord | undefined): TfliteBufferLocation 
     return record.dataLength > 0 ? 'inline' : 'empty';
 }
 
+interface ExternalBufferIndex {
+    externalById: Map<number, TfliteExternalBuffer>;
+    usedExternal: Set<number>;
+    /** Tensors naming an external buffer the model never declared. */
+    missingExternal: { tensors: number };
+}
+
 function parseSubgraph(
     table: Table,
     index: number,
     operatorCodes: TfliteOperatorCode[],
-    buffers: BufferRecord[]
+    buffers: BufferRecord[],
+    external: ExternalBufferIndex
 ): TfliteSubgraph {
-    const tensors = table.tableVector(0).map((tensor, tensorIndex) => parseTensor(tensor, tensorIndex, buffers));
+    const tensors = table.tableVector(0).map((tensor, tensorIndex) => parseTensor(tensor, tensorIndex, buffers, external));
     const operators = table.tableVector(3).map((operator, operatorIndex) => parseOperator(operator, operatorIndex, index, operatorCodes));
     return {
         index,
@@ -866,12 +999,30 @@ function parseSubgraph(
     };
 }
 
-function parseTensor(table: Table, index: number, buffers: BufferRecord[]): TfliteTensor {
+function parseTensor(
+    table: Table,
+    index: number,
+    buffers: BufferRecord[],
+    externalIndex: ExternalBufferIndex
+): TfliteTensor {
     const shape = table.intVector(0, MAX_TENSOR_RANK);
     const type = table.byte(1);
     const buffer = table.uint(2);
     const record = buffers[buffer];
-    const elementCount = tensorElementCount(shape);
+    // Schema 3d: a non-zero id points at constant data in a separate file, and
+    // the embedded `buffer` field is unused. Without this the tensor would claim
+    // to be a runtime activation holding 0 bytes.
+    const externalId = table.uint(10);
+    const external = externalId === 0 ? undefined : externalIndex.externalById.get(externalId);
+    if (external) externalIndex.usedExternal.add(externalId);
+    else if (externalId !== 0) externalIndex.missingExternal.tensors++;
+    // `has_rank` postdates the format, so pre-2022 models leave it unset while
+    // still carrying a real shape. Taking the schema's `false` default literally
+    // would claim an unknown rank for every such model, so a stored shape is
+    // treated as evidence of a known rank; only a shapeless tensor with the flag
+    // unset is unranked, and an unranked tensor has no knowable element count.
+    const hasRank = table.bool(8, shape.length > 0);
+    const elementCount = tensorElementCount(shape, hasRank);
     const bits = TYPE_BITS[type] ?? 0;
     const quantization = table.table(4);
     const sparsity = table.table(6);
@@ -882,17 +1033,12 @@ function parseTensor(table: Table, index: number, buffers: BufferRecord[]): Tfli
         shape,
         shapeSignature: table.intVector(7, MAX_TENSOR_RANK),
         buffer,
-        location: bufferLocation(record),
-        dataBytes: (record?.size ?? 0n).toString(),
-        expectedBytes: bits ? ((elementCount * BigInt(bits) + 7n) / 8n).toString() : '0',
-        elementCount: elementCount.toString(),
+        location: external ? 'external' : bufferLocation(record),
+        dataBytes: external ? external.length : (record?.size ?? 0n).toString(),
+        expectedBytes: elementCount !== undefined && bits ? ((elementCount * BigInt(bits) + 7n) / 8n).toString() : '',
+        elementCount: elementCount?.toString() ?? '',
         isVariable: table.bool(5),
-        // `has_rank` postdates the format, so pre-2022 models leave it unset
-        // while still carrying a real shape. Taking the schema's `false`
-        // default literally would claim an unknown rank for every such model,
-        // so a stored shape is treated as evidence of a known rank. Only a
-        // shapeless tensor with the flag unset is reported as unranked.
-        hasRank: table.bool(8, shape.length > 0),
+        hasRank,
         ...(quantization ? { quantization: parseQuantization(quantization) } : {}),
         ...(sparsity ? { sparsity: parseSparsity(sparsity) } : {})
     };
@@ -903,43 +1049,49 @@ function parseQuantization(table: Table): TfliteQuantization {
     const max = table.floatVector(1, MAX_QUANTIZATION_ITEMS);
     const scale = table.floatVector(2, MAX_QUANTIZATION_ITEMS);
     const zeroPoint = table.longVector(3, MAX_QUANTIZATION_ITEMS);
-    const detailsType = QUANTIZATION_DETAILS[table.byte(4)] ?? `DETAILS_${table.byte(4)}`;
+    const details = table.byte(4);
     const quantizedDimension = table.int(6);
-    const truncated = min.truncated || max.truncated || scale.truncated || zeroPoint.truncated;
     return {
         scale: scale.values,
+        scaleCount: scale.length,
         zeroPoint: zeroPoint.values,
+        zeroPointCount: zeroPoint.length,
         min: min.values,
+        minCount: min.length,
         max: max.values,
+        maxCount: max.length,
         quantizedDimension,
-        detailsType,
-        truncated,
-        summary: quantizationSummary(scale.values, zeroPoint.values, min.values, max.values, quantizedDimension, truncated)
+        detailsType: QUANTIZATION_DETAILS[details] ?? `DETAILS_${details}`,
+        summary: quantizationSummary(scale, zeroPoint.values, min.values, max.values, quantizedDimension)
     };
 }
 
 function quantizationSummary(
-    scale: number[],
+    scale: Preview<number>,
     zeroPoint: string[],
     min: number[],
     max: number[],
-    quantizedDimension: number,
-    truncated: boolean
+    quantizedDimension: number
 ): string {
-    if (scale.length > 1 || truncated) {
-        return `per-axis[${quantizedDimension}] × ${truncated ? `${scale.length}+` : scale.length}`;
-    }
-    if (scale.length === 1) return `scale=${formatNumber(scale[0]!)} · zero=${zeroPoint[0] ?? '0'}`;
+    // Only the scale list decides per-axis vs per-tensor; a long legacy min/max
+    // list on a single-scale tensor must not be mistaken for per-axis. The count
+    // is the declared one, so a capped preview still reports the real axis count.
+    if (scale.length > 1) return `per-axis[${quantizedDimension}] × ${scale.length}`;
+    if (scale.length === 1) return `scale=${formatNumber(scale.values[0]!)} · zero=${zeroPoint[0] ?? '0'}`;
     if (min.length && max.length) return `range=[${formatNumber(min[0]!)}, ${formatNumber(max[0]!)}]`;
     return '';
 }
 
 function parseSparsity(table: Table): TfliteSparsity {
     const dimensionTables = table.tableVector(2);
+    const traversalOrder = table.intVectorPreview(0, MAX_SPARSITY_ITEMS);
+    const blockMap = table.intVectorPreview(1, MAX_SPARSITY_ITEMS);
     return {
-        traversalOrder: table.intVectorPreview(0, MAX_SPARSITY_ITEMS),
-        blockMap: table.intVectorPreview(1, MAX_SPARSITY_ITEMS),
-        truncated: dimensionTables.length > MAX_SPARSITY_ITEMS,
+        traversalOrder: traversalOrder.values,
+        traversalOrderCount: traversalOrder.length,
+        blockMap: blockMap.values,
+        blockMapCount: blockMap.length,
+        dimensionCount: dimensionTables.length,
         dimensions: dimensionTables.slice(0, MAX_SPARSITY_ITEMS).map(dimension => {
             const format = dimension.byte(0);
             const segments = readSparseVector(dimension.table(3), dimension.byte(2));
@@ -948,8 +1100,9 @@ function parseSparsity(table: Table): TfliteSparsity {
                 format: DIMENSION_TYPES[format] ?? `FORMAT_${format}`,
                 denseSize: dimension.int(1),
                 arraySegments: segments.values,
+                arraySegmentCount: segments.length,
                 arrayIndices: indices.values,
-                truncated: segments.truncated || indices.truncated
+                arrayIndexCount: indices.length
             };
         })
     };
@@ -960,11 +1113,11 @@ function parseSparsity(table: Table): TfliteSparsity {
  * the union type selects which vector table to read. Index runs are long, so
  * these are previews and report whether anything was dropped.
  */
-function readSparseVector(table: Table | undefined, unionType: number): { values: number[]; truncated: boolean } {
-    if (!table) return { values: [], truncated: false };
+function readSparseVector(table: Table | undefined, unionType: number): Preview<number> {
+    if (!table) return { values: [], length: 0 };
     const size = unionType === 1 ? 4 : unionType === 2 ? 2 : 1;
     const vector = table.vector(0, size);
-    if (!vector) return { values: [], truncated: false };
+    if (!vector) return { values: [], length: 0 };
     const shown = Math.min(vector.length, MAX_SPARSITY_ITEMS);
     table.fb.claimItems(shown);
     const values: number[] = [];
@@ -973,7 +1126,7 @@ function readSparseVector(table: Table | undefined, unionType: number): { values
             : size === 2 ? table.fb.u16(vector.start + index * 2)
                 : table.fb.u8(vector.start + index));
     }
-    return { values, truncated: vector.length > shown };
+    return { values, length: vector.length };
 }
 
 function parseOperator(table: Table, index: number, subgraphIndex: number, operatorCodes: TfliteOperatorCode[]): TfliteOperator {
@@ -1012,18 +1165,21 @@ function decodeOptions(name: string, table: Table): { options: TfliteAttribute[]
     const options: TfliteAttribute[] = [];
     const subgraphRefs: number[] = [];
     for (const field of fields) {
-        const at = table.field(field.slot);
-        if (!at) continue;
-        const raw = readOptionValue(table, field);
+        const stored = table.field(field.slot) !== 0;
+        if (!stored && field.fallback === undefined) continue;
+        const raw = stored ? readOptionValue(table, field) : field.fallback;
         if (raw === undefined) continue;
-        if (field.subgraph && typeof raw === 'number' && raw >= 0) subgraphRefs.push(raw);
-        if (raw === field.absent) continue;
+        // Only a *stored* index is a reference the model actually declared; a
+        // fallback of 0 must not become a navigation link to subgraph 0.
+        if (stored && field.subgraph && typeof raw === 'number' && raw >= 0 && !subgraphRefs.includes(raw)) {
+            subgraphRefs.push(raw);
+        }
         options.push({ name: field.name, value: formatOptionValue(raw, field) });
     }
     return { options, subgraphRefs };
 }
 
-type OptionValue = number | boolean | string | number[];
+type OptionValue = number | bigint | boolean | string;
 
 function readOptionValue(table: Table, field: OptionField): OptionValue | undefined {
     switch (field.kind) {
@@ -1031,22 +1187,42 @@ function readOptionValue(table: Table, field: OptionField): OptionValue | undefi
         case 'enum': return table.byte(field.slot);
         case 'int': return table.int(field.slot);
         case 'uint': return table.uint(field.slot);
-        case 'long': return Number(table.long(field.slot));
+        case 'long': return table.long(field.slot);
         case 'float': return table.float(field.slot);
         case 'string': return table.string(field.slot);
-        case 'ints': return table.intVectorPreview(field.slot, MAX_OPTION_ITEMS);
-        case 'longs': return `[${table.longVector(field.slot, MAX_OPTION_ITEMS).values.join(', ')}]`;
-        case 'floats': return table.floatVector(field.slot, MAX_OPTION_ITEMS).values;
+        case 'ints': return listPreview(table.intVectorPreview(field.slot, MAX_OPTION_ITEMS), String);
+        case 'longs': return listPreview(table.longVector(field.slot, MAX_OPTION_ITEMS), value => value);
+        case 'floats': return listPreview(table.floatVector(field.slot, MAX_OPTION_ITEMS), formatNumber);
         default: return undefined;
     }
 }
 
+/** Render a capped vector, flagging the entries the cap dropped. */
+function listPreview<T>(preview: Preview<T>, format: (value: T) => string): string {
+    const shown = preview.values.map(format).join(', ');
+    const omitted = preview.length - preview.values.length;
+    return `[${shown}${omitted > 0 ? `, … (+${omitted})` : ''}]`;
+}
+
+/** Integers render exactly; only float-typed fields get significant-digit rounding. */
 function formatOptionValue(value: OptionValue, field: OptionField): string {
-    if (Array.isArray(value)) return `[${value.map(item => formatNumber(item)).join(', ')}]`;
-    if (typeof value === 'boolean') return String(value);
-    if (typeof value === 'string') return value;
+    if (typeof value === 'boolean' || typeof value === 'string' || typeof value === 'bigint') return String(value);
     if (field.labels) return field.labels[value] ?? String(value);
-    return formatNumber(value);
+    return field.kind === 'float' ? formatNumber(value) : String(value);
+}
+
+function parseExternalBuffer(table: Table): TfliteExternalBuffer {
+    return {
+        id: table.uint(0),
+        group: table.uint(1),
+        offset: table.ulong(2).toString(),
+        length: table.ulong(3).toString(),
+        packing: table.string(4)
+    };
+}
+
+function toBigInt(value: string): bigint {
+    return /^\d+$/.test(value) ? BigInt(value) : 0n;
 }
 
 function parseMetadata(table: Table, fb: FlatBufferReader, buffers: BufferRecord[]): TfliteMetadataEntry {
@@ -1086,18 +1262,31 @@ function parseSignature(table: Table, subgraphs: TfliteSubgraph[]): TfliteSignat
 }
 
 /**
- * Element count, or 0 when the shape cannot yield one. A negative dimension is
- * invalid in `shape` (unknown dims belong in `shape_signature`) and an absurd
- * product means a corrupt table, but this count only feeds display columns, so
- * one odd tensor degrades to "unknown" rather than making the model unviewable.
+ * Element count, or `undefined` when the shape cannot yield one: a tensor of
+ * unknown rank, a negative dimension (invalid in `shape` — unknown dims belong
+ * in `shape_signature`), or a product too large to be a real tensor. This count
+ * only feeds display columns, so one odd tensor degrades to "unknown" rather
+ * than making the whole model unviewable.
+ *
+ * The width gate runs first and costs O(1) per dimension. Measuring the running
+ * product instead would allocate a binary string per dimension, which a file
+ * that aliases one long shape vector across thousands of tensors turns into
+ * seconds of main-thread work.
  */
-function tensorElementCount(shape: number[]): bigint {
-    let count = 1n;
+function tensorElementCount(shape: number[], hasRank: boolean): bigint | undefined {
+    if (shape.length === 0) return hasRank ? 1n : undefined;
+    // A negative dimension invalidates the whole shape wherever it sits, so it
+    // is checked before a zero dimension can short-circuit the result.
+    if (shape.some(dimension => dimension < 0)) return undefined;
+    let bits = 0;
     for (const dimension of shape) {
-        if (dimension <= 0) return 0n;
-        count *= BigInt(dimension);
-        if (count.toString(2).length > MAX_TENSOR_PRODUCT_BITS) return 0n;
+        if (dimension === 0) return 0n;
+        if (dimension === 1) continue;
+        bits += 32 - Math.clz32(dimension);
+        if (bits > MAX_TENSOR_PRODUCT_BITS) return undefined;
     }
+    let count = 1n;
+    for (const dimension of shape) if (dimension !== 1) count *= BigInt(dimension);
     return count;
 }
 

@@ -21,6 +21,7 @@ import {
 } from './controller.js';
 import { encodeWavFromFloat32, isEngineSafeForFile, type AudioDecodeEngine } from './engine.js';
 import { analyzeWavSource, createBytesSource } from './wav-analyzer.js';
+import { iterateMp3Frames, readMp3Info } from './mp3-demux.js';
 import { audioViewerCss } from './styles.js';
 import { formatMediaTime } from '../video/controller.js';
 
@@ -187,6 +188,10 @@ export interface AudioWaveSurferCreateOptions {
     waveColor: string;
     progressColor: string;
     cursorColor: string;
+    /** Rate the engine decodes at. WaveSurfer defaults this to 8000, which
+     *  caps a spectrogram at 4 kHz and makes the reported rate wrong, so the
+     *  viewer always supplies the source rate (or a sane fallback). */
+    sampleRate?: number;
     /** Bar rendering, matching the original viewer's look. */
     barWidth?: number;
     barGap?: number;
@@ -233,8 +238,14 @@ export interface AudioViewerDeps {
 export interface AudioMountOptions extends MediaMountOptions {
     /** Waveform engine (WaveSurfer). Absent → basic `<audio>` player. */
     deps?: AudioViewerDeps;
-    /** Files above this size use engine peak analysis (default 50 MiB). */
+    /** Files above this size use peak analysis (default 50 MiB). Applies only
+     *  when the decoded size cannot be read from the header. */
     engineAnalyzeBytes?: number;
+    /** Peak analysis threshold on *decoded* bytes, used whenever the header
+     *  gives enough to compute it (default 400 MiB). File size is a poor proxy:
+     *  a 122 MiB WAV decodes to 245 MiB while a same-sized FLAC decodes to
+     *  five times that. */
+    analyzeDecodedBytes?: number;
 }
 
 export const AUDIO_VIEWER_META = {
@@ -253,6 +264,9 @@ let activeKeyboardOwner: object | undefined;
 
 const DEFAULT_MAX_BYTES = 128 * 1024 * 1024;
 const DEFAULT_ANALYZE_BYTES = 50 * 1024 * 1024;
+/** Decoded-size threshold. 400 MiB keeps a 12-minute stereo WAV (245 MiB) on
+ *  the full-decode path, where the spectrogram and channel levels work. */
+const DEFAULT_ANALYZE_DECODED_BYTES = 400 * 1024 * 1024;
 const ANALYZE_PEAK_COLUMNS = 8000;
 const REGION_COLOR = 'rgba(79,193,255,0.25)';
 const WAVE_COLOR = '#4fc1ff';
@@ -262,6 +276,51 @@ const WAVE_COLOR_SECONDARY = '#2f7d77';
 const PROGRESS_COLOR_SECONDARY = '#1f5c58';
 // Matches the original viewer: 4096-point FFT at 50% overlap reads as detailed
 // without being unusably slow, and 250px gives the mel bands room to separate.
+/** Used only when the source rate cannot be read from the file. Wrong for
+ *  48 kHz material, but every real format beats WaveSurfer's 8000 default. */
+const FALLBACK_DECODE_SAMPLE_RATE = 44100;
+
+/** What a full browser decode of this file would cost in memory. */
+export interface DecodedSizeEstimate {
+    sampleRate: number;
+    channels: number;
+    frames: number;
+    bytes: number;
+}
+
+/**
+ * Reads rate/channels/length from the container header, without decoding.
+ * WAV carries them in `fmt `, and mp3 frame headers give the rate plus an
+ * exact frame count for a few tens of milliseconds of work. Formats needing a
+ * real decoder return undefined and the caller falls back to file size.
+ */
+export function estimateDecodedSize(fileName: string, data: Uint8Array): DecodedSizeEstimate | undefined {
+    const extension = fileName.toLowerCase().split('.').pop() ?? '';
+    try {
+        if (extension === 'wav') {
+            const info = parseAudioInfo(fileName, data);
+            if (!info.sampleRate || !info.channels || !info.bitsPerSample) return undefined;
+            const bytesPerFrame = info.channels * (info.bitsPerSample / 8);
+            // parseAudioInfo stops at `fmt `, so derive length from the payload
+            // that follows the 44-byte canonical header.
+            const frames = Math.max(0, Math.floor((data.byteLength - 44) / bytesPerFrame));
+            return sized(info.sampleRate, info.channels, frames);
+        }
+        if (extension === 'mp3') {
+            const info = readMp3Info(data);
+            let frames = 0;
+            for (const frame of iterateMp3Frames(data, info)) frames += frame.samples;
+            return sized(info.sampleRate, info.channels, frames);
+        }
+    } catch {
+        // Malformed header — treat as unknown rather than failing the mount.
+    }
+    return undefined;
+}
+
+const sized = (sampleRate: number, channels: number, frames: number): DecodedSizeEstimate =>
+    ({ sampleRate, channels, frames, bytes: frames * channels * 4 });
+
 const SPECTROGRAM_FFT_SIZE = 4096;
 const SPECTROGRAM_OVERLAP = 2048;
 const SPECTROGRAM_HEIGHT = 250;
@@ -303,6 +362,11 @@ async function mountWaveformViewer(
     options: AudioMountOptions
 ): Promise<ViewerHandle> {
     const t = (key: string, args?: Record<string, string | number>): string => ctx.i18n.t(key, args);
+    // Header-derived facts, read without decoding. Drive both the rate the
+    // engine decodes at and the peaks-mode decision.
+    const decodedSize = estimateDecodedSize(input.fileName, input.data);
+    const sourceSampleRate = info.sampleRate ?? decodedSize?.sampleRate;
+    const decodeSampleRate = sourceSampleRate ?? FALLBACK_DECODE_SAMPLE_RATE;
     const root: HTMLElement | ShadowRoot =
         options.styleIsolation !== 'scoped' && container.attachShadow
             ? (container.shadowRoot ?? container.attachShadow({ mode: 'open' }))
@@ -570,7 +634,12 @@ async function mountWaveformViewer(
         if (typeof region.on !== 'function') return;
         const offs: Array<() => void> = [];
         for (const event of ['update', 'update-end']) {
-            const off = region.on(event, () => syncRegionEditor(region));
+            const off = region.on(event, () => {
+                syncRegionEditor(region);
+                // Dragging moves the region, so the status line has to follow
+                // it too — otherwise the editors and the summary disagree.
+                refreshStatus();
+            });
             if (typeof off === 'function') offs.push(off as () => void);
         }
         regionSyncCleanup = () => offs.forEach((off) => off());
@@ -747,6 +816,7 @@ async function mountWaveformViewer(
             surfer = library.createWaveSurfer({
                 container: waveform, height: 128, normalize: true,
                 waveColor: WAVE_COLOR, progressColor: PROGRESS_COLOR, cursorColor: '#ffffff',
+                sampleRate: decodeSampleRate,
                 barWidth: 2, barGap: 3, barRadius: 3, cursorWidth: 1,
                 splitChannels: [
                     { overlay: false, waveColor: WAVE_COLOR, progressColor: PROGRESS_COLOR },
@@ -810,7 +880,11 @@ async function mountWaveformViewer(
             // numberOfChannels is 1. Both would overwrite the real values the
             // engine analysis already wrote.
             if (decoded && !peaksMode) {
-                sampleRateValue.textContent = `${decoded.sampleRate.toLocaleString()} Hz`;
+                // The decoded rate is what we asked the engine to decode at,
+                // which for formats we cannot parse is a fallback rather than
+                // the file's own rate. Report the header value when there is one.
+                const rate = sourceSampleRate ?? decoded.sampleRate;
+                sampleRateValue.textContent = `${rate.toLocaleString()} Hz`;
                 channelsValue.textContent = channelLabel(decoded.numberOfChannels);
                 showChannelStats(decoded);
             }
@@ -848,8 +922,11 @@ async function mountWaveformViewer(
     // and preserves channels. The WASM engine covers the formats it cannot
     // read, at the cost of decoding the whole file into the wasm heap.
     let initialSource: { url: string; peaks?: number[][]; duration?: number } = { url };
-    const analyzeBytes = options.engineAnalyzeBytes ?? DEFAULT_ANALYZE_BYTES;
-    const large = input.data.byteLength > analyzeBytes;
+    // Prefer the decoded size when the header gives it: that is what a full
+    // browser decode actually costs, and it is what peaks mode trades away.
+    const large = decodedSize
+        ? decodedSize.bytes > (options.analyzeDecodedBytes ?? DEFAULT_ANALYZE_DECODED_BYTES)
+        : input.data.byteLength > (options.engineAnalyzeBytes ?? DEFAULT_ANALYZE_BYTES);
 
     const applyAnalysis = (analysis: {
         sampleRate: number; channels: number; duration: number; channelPeaks: number[][];

@@ -60,6 +60,8 @@ describe('detectViewer (stage 1)', () => {
             ['a.hdf5', 'hdf5'],
             ['a.he5', 'hdf5'],
             ['a.safetensors', 'safetensors'],
+            ['a.npy', 'numpy'],
+            ['a.npz', 'numpy'],
             ['a.gguf', 'gguf'],
             ['a.onnx', 'onnx'],
             ['a.tflite', 'tflite'],
@@ -82,6 +84,16 @@ describe('detectViewer (stage 1)', () => {
         for (const [fileName, expected] of table) {
             expect(detectViewer(fileName).viewerId, fileName).toBe(expected);
         }
+    });
+});
+
+describe('detectViewer (NumPy)', () => {
+    const NPY = new Uint8Array([0x93, 0x4e, 0x55, 0x4d, 0x50, 0x59, 1, 0]);
+
+    it('detects NPY/NPZ extensions and extensionless NPY content', () => {
+        expect(detectViewer('array.npy').viewerId).toBe('numpy');
+        expect(detectViewer('bundle.npz', undefined, undefined, new Uint8Array([0x50, 0x4b, 3, 4])).viewerId).toBe('numpy');
+        expect(detectViewer('array.bin', undefined, undefined, NPY)).toEqual({ viewerId: 'numpy', matchedBy: 'content' });
     });
 });
 

@@ -138,6 +138,9 @@ export function mountTfliteDocument(
     const shapeLabel = (tensor: TfliteTensor): string =>
         tensor.shape.join(' × ') || ctx.i18n.t(tensor.hasRank ? 'tflite.scalar' : 'tflite.unknownRank');
     const tensorDetail = (tensor: TfliteTensor): string => `${tensor.type}[${shapeLabel(tensor)}]`;
+    /** The fields the tensors table searches, so both tabs answer alike. */
+    const tensorSearchText = (tensor: TfliteTensor): string =>
+        `#${tensor.index} ${tensor.quantization?.summary ?? ''} ${ctx.i18n.t(`tflite.storage.${tensor.location}`)}`;
 
     const showSubgraph = (index: number): void => {
         const next = model.subgraphs[index];
@@ -203,14 +206,14 @@ export function mountTfliteDocument(
 
     const renderTensorTable = (): void => {
         const result = collectRows(activeSubgraph.tensors, tensor => queryMatches([
-            tensor.index, tensor.name, tensor.type, tensor.shape.join(' × '), tensor.quantization?.summary ?? '',
+            tensor.index, tensor.name, tensor.type, shapeLabel(tensor), tensor.quantization?.summary ?? '',
             ctx.i18n.t(`tflite.storage.${tensor.location}`)
         ]), tensor => [
             tensor.index,
             tensor.name || '—',
             tensor.type,
             shapeLabel(tensor),
-            tensor.elementCount,
+            tensor.elementCount || '—',
             formatByteCount(tensor.dataBytes),
             ctx.i18n.t(`tflite.storage.${tensor.location}`),
             tensor.quantization?.summary || '—',
@@ -252,11 +255,13 @@ export function mountTfliteDocument(
     };
 
     const renderBufferTable = (): void => {
+        // Every user is kept: the preview needs the true count for its remainder,
+        // and search must reach a tensor past the eighth one sharing a buffer.
         const users = new Map<number, string[]>();
         for (const subgraph of model.subgraphs) {
             for (const tensor of subgraph.tensors) {
                 const list = users.get(tensor.buffer) ?? [];
-                if (list.length < 8) list.push(tensor.name || `#${tensor.index}`);
+                list.push(tensor.name || `#${tensor.index}`);
                 users.set(tensor.buffer, list);
             }
         }
@@ -344,16 +349,31 @@ export function mountTfliteDocument(
         for (const item of positions) ranks.set(item.depth, (ranks.get(item.depth) ?? 0) + 1);
 
         const graphInputs = new Set(activeSubgraph.inputs);
+        // Sources are counted over *every* operator so the "showing X of Y"
+        // total does not shrink when the operator list is truncated.
         const usedTensors = new Set<number>();
-        for (const operator of shownOperators) for (const index of operator.inputs) if (index >= 0) usedTensors.add(index);
+        for (const operator of activeSubgraph.operators) for (const index of operator.inputs) if (index >= 0) usedTensors.add(index);
         const sourceTensors = activeSubgraph.tensors.filter(tensor =>
             graphInputs.has(tensor.index) || (tensor.location !== 'empty' && usedTensors.has(tensor.index)));
+        const wiredTensors = new Set<number>();
+        for (const operator of shownOperators) for (const index of operator.inputs) if (index >= 0) wiredTensors.add(index);
 
         const remainingAfterOperators = Math.max(0, MAX_GRAPH_CARDS - shownOperators.length);
-        const shownOutputs = activeSubgraph.outputs.slice(0, Math.min(MAX_GRAPH_OUTPUT_CARDS, remainingAfterOperators));
+        // A repeated output index would otherwise stack cards at one position.
+        const outputTensors = [...new Set(activeSubgraph.outputs)];
+        const shownOutputs = outputTensors.slice(0, Math.min(MAX_GRAPH_OUTPUT_CARDS, remainingAfterOperators));
         const sourceBudget = Math.max(0, remainingAfterOperators - shownOutputs.length);
-        const shownSources = sourceTensors.slice(0, sourceBudget);
-        const totalCards = activeSubgraph.operators.length + sourceTensors.length + activeSubgraph.outputs.length;
+        // Sources that actually wire to a drawn operator get the budget first.
+        const shownSources: TfliteTensor[] = [];
+        const collectSources = (wired: boolean): void => {
+            for (const tensor of sourceTensors) {
+                if (shownSources.length >= sourceBudget) return;
+                if (wiredTensors.has(tensor.index) === wired) shownSources.push(tensor);
+            }
+        };
+        collectSources(true);
+        collectSources(false);
+        const totalCards = activeSubgraph.operators.length + sourceTensors.length + outputTensors.length;
         const shownCards = shownOperators.length + shownSources.length + shownOutputs.length;
 
         const width = Math.max(720, (maxDepth + 3) * 220);
@@ -401,14 +421,14 @@ export function mountTfliteDocument(
         for (const tensorIndex of shownOutputs) connect(producer.get(tensorIndex) ?? sourceCards.get(tensorIndex), `output-${tensorIndex}`, true);
         canvas.append(svg);
 
-        const addCard = (id: string, title: string, detail: string, kind: string, selection?: Selection): void => {
+        const addCard = (id: string, title: string, detail: string, kind: string, selection?: Selection, extraSearch = ''): void => {
             const position = cardPositions.get(id);
             if (!position) return;
             const button = element('button', `omni-tflite__node omni-tflite__node--${kind}`) as HTMLButtonElement;
             button.type = 'button';
             button.style.left = `${position.x}px`;
             button.style.top = `${position.y}px`;
-            button.dataset.search = `${title} ${detail}`.toLowerCase();
+            button.dataset.search = `${title} ${detail} ${extraSearch}`.toLowerCase();
             if (selection) cardSelections.set(button, selection);
             button.append(element('strong', undefined, title || '—'), element('small', undefined, detail));
             button.onclick = () => {
@@ -422,7 +442,7 @@ export function mountTfliteDocument(
         };
         for (const tensor of shownSources) {
             addCard(`tensor-${tensor.index}`, tensor.name || `#${tensor.index}`, tensorDetail(tensor),
-                graphInputs.has(tensor.index) ? 'input' : 'constant', { kind: 'tensor', tensor });
+                graphInputs.has(tensor.index) ? 'input' : 'constant', { kind: 'tensor', tensor }, tensorSearchText(tensor));
         }
         for (const item of positions) {
             addCard(item.operator.id, item.operator.operator, ctx.i18n.t('tflite.opDetail', { index: item.operator.index, version: item.operator.version }),
@@ -431,7 +451,7 @@ export function mountTfliteDocument(
         for (const tensorIndex of shownOutputs) {
             const tensor = tensorAt(tensorIndex);
             addCard(`output-${tensorIndex}`, tensorLabel(tensorIndex), tensor ? tensorDetail(tensor) : '—', 'output',
-                tensor ? { kind: 'tensor', tensor } : undefined);
+                tensor ? { kind: 'tensor', tensor } : undefined, tensor ? tensorSearchText(tensor) : '');
         }
         if (totalCards > shownCards) scroll.append(element('div', 'omni-tflite__graph-limit', ctx.i18n.t('tflite.graphLimited', { shown: shownCards, total: totalCards })));
         if (edgesOmitted) scroll.append(element('div', 'omni-tflite__graph-limit', ctx.i18n.t('tflite.graphEdgesLimited', { count: MAX_GRAPH_EDGES })));
@@ -493,9 +513,9 @@ export function mountTfliteDocument(
         );
         const facts: Array<[string, string]> = [
             [ctx.i18n.t('tflite.column.index'), String(tensor.index)],
-            [ctx.i18n.t('tflite.column.elements'), tensor.elementCount],
+            [ctx.i18n.t('tflite.column.elements'), tensor.elementCount || '—'],
             [ctx.i18n.t('tflite.column.dataSize'), formatByteCount(tensor.dataBytes)],
-            [ctx.i18n.t('tflite.info.expectedSize'), formatByteCount(tensor.expectedBytes)],
+            [ctx.i18n.t('tflite.info.expectedSize'), tensor.expectedBytes ? formatByteCount(tensor.expectedBytes) : '—'],
             [ctx.i18n.t('tflite.column.buffer'), String(tensor.buffer)]
         ];
         if (tensor.shapeSignature.length) facts.push([ctx.i18n.t('tflite.info.shapeSignature'), tensor.shapeSignature.join(' × ')]);
@@ -509,18 +529,37 @@ export function mountTfliteDocument(
             inspector.append(element('h3', undefined, ctx.i18n.t('tflite.column.quantization')));
             const quantization = element('div', 'omni-tflite__attribute');
             quantization.append(element('b', undefined, tensor.quantization.summary || '—'));
+            // The remainder comes from the declared count, not the capped array,
+            // so a per-channel tensor reports how many scales it really has.
             if (tensor.quantization.scale.length) {
-                quantization.append(element('div', undefined, `scale: ${previewItems(tensor.quantization.scale, value => String(value), 16)}${tensor.quantization.truncated ? ', …' : ''}`));
+                quantization.append(element('div', undefined,
+                    `scale: ${previewItems(tensor.quantization.scale, String, 16, tensor.quantization.scaleCount)}`));
             }
             if (tensor.quantization.zeroPoint.length) {
-                quantization.append(element('div', undefined, `zero: ${previewItems(tensor.quantization.zeroPoint, value => value, 16)}${tensor.quantization.truncated ? ', …' : ''}`));
+                quantization.append(element('div', undefined,
+                    `zero: ${previewItems(tensor.quantization.zeroPoint, value => value, 16, tensor.quantization.zeroPointCount)}`));
             }
             inspector.append(quantization);
         }
         if (tensor.sparsity) {
+            const sparsity = tensor.sparsity;
             inspector.append(element('h3', undefined, ctx.i18n.t('tflite.info.sparsity')));
-            inspector.append(element('div', 'omni-tflite__attribute',
-                `${ctx.i18n.t('tflite.info.traversalOrder')}: ${tensor.sparsity.traversalOrder.join(', ') || '—'} · ${tensor.sparsity.dimensions.map(dimension => dimension.format).join(', ')}`));
+            const row = element('div', 'omni-tflite__attribute');
+            row.append(element('div', undefined,
+                `${ctx.i18n.t('tflite.info.traversalOrder')}: ${previewItems(sparsity.traversalOrder, String, 16, sparsity.traversalOrderCount) || '—'}`));
+            if (sparsity.blockMapCount) {
+                row.append(element('div', undefined,
+                    `${ctx.i18n.t('tflite.info.blockMap')}: ${previewItems(sparsity.blockMap, String, 16, sparsity.blockMapCount)}`));
+            }
+            for (const dimension of sparsity.dimensions.slice(0, 8)) {
+                const segments = previewItems(dimension.arraySegments, String, 8, dimension.arraySegmentCount);
+                row.append(element('div', undefined,
+                    `${dimension.format} · ${dimension.denseSize}${segments ? ` · ${segments}` : ''}`));
+            }
+            if (sparsity.dimensionCount > 8) {
+                row.append(element('div', undefined, ctx.i18n.t('tflite.moreItems', { count: sparsity.dimensionCount - 8 })));
+            }
+            inspector.append(row);
         }
     };
 
@@ -606,9 +645,12 @@ function collectRows<T>(
     return { rows, total };
 }
 
-function previewItems<T>(items: T[], format: (item: T) => string, limit = 20): string {
-    const visible = items.slice(0, limit).map(format).join(', ');
-    return items.length > limit ? `${visible}, … (+${items.length - limit})` : visible;
+/** `total` defaults to the array length, but may exceed it when the parser
+ *  already capped the list — the remainder must reflect the declared count. */
+function previewItems<T>(items: T[], format: (item: T) => string, limit = 20, total = items.length): string {
+    const shown = Math.min(limit, items.length);
+    const visible = items.slice(0, shown).map(format).join(', ');
+    return total > shown ? `${visible}, … (+${total - shown})` : visible;
 }
 
 function textMatches(query: string, ...values: Array<string | number>): boolean {

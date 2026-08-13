@@ -1,8 +1,13 @@
+/**
+ * Only the enum tables are imported. Reading the file is done here: see
+ * preflightGguf, which walks metadata *and* the tensor index from source bytes.
+ * These tables are the part of @huggingface/gguf worth depending on -- new ggml
+ * quantization types land there, and hand-maintaining them would drift.
+ */
 import {
     GGMLFileQuantizationType,
     GGMLQuantizationType,
     GGUFValueType,
-    gguf,
     type GGUFParseOutput,
     type GGUFTypedMetadata,
     type MetadataValue
@@ -135,40 +140,39 @@ const GGML_STORAGE_LAYOUTS: Readonly<Partial<Record<GGMLQuantizationType, GgmlSt
     [GGMLQuantizationType.Q2_0]: storage(64, 18)
 };
 /**
- * The upstream parser necessarily owns the complete tensor index. Do not then
- * multiply that attacker-controlled allocation across the document model,
+ * Entries kept for display. The walk visits every metadata key and every tensor,
+ * but only this many are retained, so peak memory is independent of how many
+ * there are -- and the retained set is not multiplied across the document model,
  * table rows, structure text, and clipboard JSON.
  */
 export const GGUF_PREVIEW_ENTRY_LIMIT = 1_000;
 /** Total user-controlled characters copied into normalized display structures. */
 export const GGUF_NORMALIZED_TEXT_BUDGET = 2_000_000;
-/** Admission limits enforced from source bytes before @huggingface/gguf allocates entry objects. */
+/**
+ * Structural admission limits, enforced from the source header before the walk
+ * starts. These bound how many *entries* a file may declare, which no amount of
+ * streaming can make free: each one still has to be visited.
+ *
+ * Note what is deliberately absent: there is no ceiling on metadata array
+ * elements. Array bodies are skipped rather than materialized, so vocabulary size
+ * no longer decides whether a document can be built -- the ceiling that rejected
+ * ordinary Qwen3 and Llama 3 files in
+ * https://github.com/battlecook/vscode-omni-viewer/issues/18 is gone rather than
+ * raised. What replaces it is exact instead of tuned: an array cannot declare more
+ * elements than the remaining file bytes can physically hold (see readGgufValue).
+ */
 export const GGUF_PARSE_TENSOR_LIMIT = 100_000;
 export const GGUF_PARSE_METADATA_LIMIT = 10_000;
-/**
- * Total metadata array elements. Numeric elements land in packed JS arrays (~8 B
- * each), but INT64/UINT64 subtypes become BigInt objects, so keep the headroom
- * modest: a 256K-vocab model's `tokens` + `token_type` + `merges` is ~1M elements,
- * and the Qwen3 file from issue #18 measures 455,265.
- */
-export const GGUF_PARSE_ARRAY_ELEMENT_LIMIT = 2_000_000;
+/** Cumulative declared metadata string bytes; caps the text a document may draw from. */
 export const GGUF_PARSE_STRING_BYTE_LIMIT = 16 * 1024 * 1024;
-/**
- * Caps the metadata elements that become individual JS objects upstream. String
- * *content* is already bounded by GGUF_PARSE_STRING_BYTE_LIMIT, so what is left to
- * bound is per-object overhead (~50-60 B each in V8), i.e. roughly 60 MB here.
- *
- * Real tokenizers sit well under this: `tokens` + `merges` is ~303K for Qwen3
- * (151,936-entry vocab), ~408K for Llama 3, and ~756K for a 256K-vocab BPE model.
- * The previous 300K ceiling cut through that range and rejected most current
- * models -- see https://github.com/battlecook/vscode-omni-viewer/issues/18.
- */
-export const GGUF_PARSE_COMPLEX_ARRAY_LIMIT = 1_000_000;
+/** Mirrors ggml's tensor rank ceiling; llama.cpp writes at most four dimensions. */
+const MAX_TENSOR_DIMENSIONS = 8;
 
 /**
  * Parses a remote GGUF URL. Node local files use the abortable `./node` helper.
- * Tensor payload bytes are not decoded; @huggingface/gguf range-reads only the
- * metadata and tensor-info prefix.
+ * Tensor payload bytes are never read: only the metadata block and the tensor
+ * index that follows it are range-read, and array bodies within the metadata are
+ * skipped rather than decoded.
  */
 export async function parseGgufUri(uri: string, options: GgufParseOptions = {}): Promise<GgufDocument> {
     let remoteFileSize: number | undefined;
@@ -178,53 +182,17 @@ export async function parseGgufUri(uri: string, options: GgufParseOptions = {}):
             && (!Number.isSafeInteger(options.fileByteLength) || options.fileByteLength < 0)) {
             throw new Error('GGUF host-provided file byte length must be a non-negative safe integer.');
         }
-        const fetchImpl = options.fetch ?? globalThis.fetch;
-        let sourceHeader: GgufHeaderInfo | undefined;
-        let preflighting = true;
-        // Replaying the preflight's chunks to the upstream parser is what makes the
-        // preflight binding: without a cache hit the parser refetches, and a hostile
-        // server can serve small metadata to the preflight and huge metadata to the
-        // real parse. Hits require our range keys to match the upstream reader's --
-        // see GgufPreflightReader.CHUNK_BYTES for the constant that has to stay in sync.
-        const replayCache = new Map<string, CachedRangeResponse>();
         const rangeFetch = validatedRangeFetch(
-            fetchImpl,
+            options.fetch ?? globalThis.fetch,
             options.signal,
             options.fileByteLength,
-            (size) => { remoteFileSize = size; },
-            (bytes) => {
-                const header = parseGgufHeader(bytes);
-                validateSourceHeaderResourceLimits(header);
-                sourceHeader = header;
-            },
-            replayCache,
-            () => preflighting
+            (size) => { remoteFileSize = size; }
         );
-        const preflight = await preflightGgufMetadata(rangeFetch, options.signal);
-        preflighting = false;
-        if (preflight.overflow) {
-            // Handing this file to the upstream parser would allocate the very arrays
-            // the budget refused, so report what the preflight already read instead.
-            return partialGguf(
-                preflight,
-                options.fileSize
-                    ?? (remoteFileSize === undefined ? 'Unknown' : formatByteSize(remoteFileSize))
-            );
-        }
-        const output = await gguf(uri, {
-            typedMetadata: true,
-            fetch: rangeFetch
-        });
+        const source = await preflightGguf(uri, rangeFetch, options.signal);
         throwIfAborted(options.signal);
-        if (!sourceHeader) throw new Error('GGUF source header was not available from the initial range response.');
         const displayFileSize = options.fileSize
             ?? (remoteFileSize === undefined ? 'Unknown' : formatByteSize(remoteFileSize));
-        return normalizeGguf(
-            output,
-            displayFileSize,
-            remoteFileSize ?? options.fileByteLength,
-            sourceHeader
-        );
+        return preflightDocument(source, displayFileSize, remoteFileSize ?? options.fileByteLength);
     } catch (error) {
         if (options.signal?.aborted) throw abortReason(options.signal);
         const displayFileSize = options.fileSize
@@ -233,7 +201,7 @@ export async function parseGgufUri(uri: string, options: GgufParseOptions = {}):
     }
 }
 
-/** Parses a complete in-memory input while preserving the upstream range-reader path. */
+/** Parses a complete in-memory input through the same range reader as a remote URL. */
 export function parseGgufBytes(
     input: Uint8Array,
     options: GgufBytesParseOptions = {}
@@ -246,7 +214,12 @@ export function parseGgufBytes(
     });
 }
 
-/** Converts @huggingface/gguf output to Omni Viewer's JSON-safe document model. */
+/**
+ * Converts @huggingface/gguf output to Omni Viewer's JSON-safe document model.
+ * Retained as a public adapter for hosts that call `gguf()` themselves; the
+ * viewer's own parse path builds the same document from source bytes and shares
+ * every accumulator and check below, so the two cannot drift apart.
+ */
 export function normalizeGguf(
     output: HuggingFaceGgufOutput,
     fileSize = 'Unknown',
@@ -255,15 +228,32 @@ export function normalizeGguf(
 ): GgufDocument {
     const header = validateHeader(output, sourceHeader);
     if (typeof header === 'string') return invalid(fileSize, header);
-    const layout = validateLayout(output, fileByteLength);
+
+    const alignment = validateAlignment(rawAlignmentValue(rawMetadata(output)['general.alignment']));
+    if (typeof alignment === 'string') return invalid(fileSize, alignment);
+    // Upstream reports this field too, but we recompute it below: its GGML_PAD is a
+    // 32-bit bitwise operation. Only its sign and type are worth checking here.
+    if (typeof output.tensorDataOffset !== 'bigint' || output.tensorDataOffset < 0n) {
+        return invalid(fileSize, 'GGUF tensor data offset is outside the supported non-negative range.');
+    }
+    const tensorInfoStart = output.tensorInfoByteRange?.[0];
+    const tensorInfoEnd = output.tensorInfoByteRange?.[1];
+    if (!Number.isSafeInteger(tensorInfoStart)
+        || !Number.isSafeInteger(tensorInfoEnd)
+        || tensorInfoStart < 0
+        || tensorInfoEnd < tensorInfoStart) {
+        return invalid(fileSize, 'GGUF tensor index byte range is invalid.');
+    }
+    const layout = resolveLayout(alignment, tensorInfoEnd, fileByteLength);
     if (typeof layout === 'string') return invalid(fileSize, layout);
 
-    const warnings: GgufWarning[] = [];
-    const textBudget = new CharacterBudget(GGUF_NORMALIZED_TEXT_BUDGET);
-    const version = header.version;
-    const architecture = budgetedScalarMetadata(output, 'general.architecture', textBudget);
-    const modelName = budgetedScalarMetadata(output, 'general.name', textBudget);
-    const generalType = budgetedScalarMetadata(output, 'general.type', textBudget);
+    const text = new CharacterBudget(GGUF_NORMALIZED_TEXT_BUDGET);
+    const scalars: GgufScalarMetadata = {
+        architecture: budgetedScalarMetadata(output, 'general.architecture', text),
+        name: budgetedScalarMetadata(output, 'general.name', text),
+        type: budgetedScalarMetadata(output, 'general.type', text),
+        fileType: numberMetadata(output, 'general.file_type')
+    };
     const typedMetadata = output.typedMetadata as Record<string, TypedMetadataEntry>;
     const metadata: GgufMetadataEntry[] = [];
     let parsedMetadataCount = 0;
@@ -271,88 +261,103 @@ export function normalizeGguf(
         if (!Object.prototype.hasOwnProperty.call(typedMetadata, key) || INTERNAL_METADATA_KEYS.has(key)) continue;
         parsedMetadataCount += 1;
         if (metadata.length < GGUF_PREVIEW_ENTRY_LIMIT) {
-            metadata.push(normalizeMetadataEntry(key, typedMetadata[key]!, textBudget));
+            metadata.push(normalizeMetadataEntry(key, typedMetadata[key]!, text));
         }
     }
 
-    const dtypeCounts = new Map<string, number>();
-    let totalParameters = 0n;
-    let unknownDtype = false;
-    const tensors: GgufTensor[] = [];
-    const rawPreviewLines: string[] = [];
+    const walk = new TensorIndexWalk(alignment, text);
     for (const tensor of output.tensorInfos) {
-        const dtype = quantizationTypeName(Number(tensor.dtype));
-        if (dtype.startsWith('UNKNOWN')) unknownDtype = true;
-        dtypeCounts.set(dtype, (dtypeCounts.get(dtype) ?? 0) + 1);
-
-        const elements = tensor.shape.reduce((count, dimension) => count * dimension, 1n);
-        totalParameters += elements;
-        if (tensors.length < GGUF_PREVIEW_ENTRY_LIMIT) {
-            const absoluteOffset = layout.tensorDataOffset + tensor.offset;
-            const normalized = {
-                name: textBudget.take(tensor.name, MAX_IDENTIFIER_CHARS),
-                dtype,
-                shape: tensor.shape.map(String),
-                elements: elements.toString(),
-                offset: tensor.offset.toString(),
-                absoluteOffset: absoluteOffset.toString()
-            };
-            tensors.push(normalized);
-            rawPreviewLines.push(
-                textBudget.take(
-                    `${normalized.name}  `
-                    + `[${normalized.shape.length ? normalized.shape.join(' × ') : 'scalar'}]  ${normalized.dtype}`,
-                    MAX_DISPLAY_STRING_CHARS
-                )
-            );
-        }
+        const failure = walk.add(tensor.name, tensor.shape, Number(tensor.dtype), tensor.offset);
+        if (failure) return invalid(fileSize, failure);
     }
 
-    if (unknownDtype || layout.unverifiedTensorStorage) {
-        warnings.push({ key: 'gguf.warning.unverifiedDtype' });
-    }
-    // Only reachable for callers that invoke normalizeGguf without a source header:
-    // when one is supplied, validateHeader has already rejected this same mismatch
-    // outright, because a verified header makes a disagreeing count an error rather
-    // than something worth rendering.
-    const declaredMetadataCount = header.metadataCount;
-    if (declaredMetadataCount !== undefined && declaredMetadataCount !== BigInt(parsedMetadataCount)) {
-        warnings.push({ key: 'gguf.warning.metadataCountMismatch' });
-    }
-    if (output.tensorInfos.length > tensors.length) {
+    return assembleGgufDocument({
+        version: header.version,
+        littleEndian: output.littleEndian,
+        metadata,
+        metadataCount: parsedMetadataCount,
+        // Only reachable for callers that invoke normalizeGguf without a source
+        // header: when one is supplied, validateHeader has already rejected this
+        // same mismatch outright, because a verified header makes a disagreeing
+        // count an error rather than something worth rendering.
+        metadataCountMismatch: header.metadataCount !== BigInt(parsedMetadataCount),
+        scalars,
+        walk,
+        layout,
+        text
+    }, fileSize);
+}
+
+interface GgufScalarMetadata {
+    architecture?: string | undefined;
+    name?: string | undefined;
+    type?: string | undefined;
+    fileType?: number | undefined;
+}
+
+interface GgufAssembly {
+    version: 1 | 2 | 3;
+    littleEndian: boolean;
+    metadata: GgufMetadataEntry[];
+    metadataCount: number;
+    metadataCountMismatch: boolean;
+    scalars: GgufScalarMetadata;
+    walk: TensorIndexWalk;
+    layout: ResolvedLayout;
+    text: CharacterBudget;
+}
+
+/**
+ * Renders the document from accumulated totals. Every input here is already
+ * bounded -- `metadata` and `walk.preview` hold at most GGUF_PREVIEW_ENTRY_LIMIT
+ * rows each, and the counts and parameter sum are scalars -- so this stage costs
+ * the same whether the file declared ten tensors or a hundred thousand.
+ */
+function assembleGgufDocument(source: GgufAssembly, fileSize: string): GgufDocument {
+    const { walk, layout, text } = source;
+    const tensors = walk.finish(layout.tensorDataOffset, layout.fileByteLength);
+    if (typeof tensors === 'string') return invalid(fileSize, tensors);
+
+    const warnings: GgufWarning[] = [];
+    if (walk.unknownDtype || walk.unverifiedStorage) warnings.push({ key: 'gguf.warning.unverifiedDtype' });
+    if (source.metadataCountMismatch) warnings.push({ key: 'gguf.warning.metadataCountMismatch' });
+    if (walk.count > tensors.length) {
         warnings.push({
             key: 'gguf.warning.tensorsLimited',
-            args: { shown: tensors.length, total: output.tensorInfos.length }
+            args: { shown: tensors.length, total: walk.count }
         });
     }
-    if (parsedMetadataCount > metadata.length) {
+    if (source.metadataCount > source.metadata.length) {
         warnings.push({
             key: 'gguf.warning.metadataLimited',
-            args: { shown: metadata.length, total: parsedMetadataCount }
+            args: { shown: source.metadata.length, total: source.metadataCount }
         });
     }
-    const fileType = numberMetadata(output, 'general.file_type');
-    const quantization = fileType === undefined
-        ? dominantDtype(dtypeCounts)
-        : fileQuantizationTypeName(fileType);
+
+    const rawPreviewLines = tensors.map((tensor) => text.take(
+        `${tensor.name}  [${tensor.shape.length ? tensor.shape.join(' × ') : 'scalar'}]  ${tensor.dtype}`,
+        MAX_DISPLAY_STRING_CHARS
+    ));
 
     const summary: GgufSummaryItem[] = [
-        { labelKey: 'gguf.summary.version', value: `GGUF v${version}` },
-        { labelKey: 'gguf.summary.architecture', value: architecture ?? '—' },
-        { labelKey: 'gguf.summary.tensors', value: output.tensorInfos.length },
-        { labelKey: 'gguf.summary.parameters', value: formatBigCount(totalParameters) },
-        { labelKey: 'gguf.summary.quantization', value: quantization ?? '—' },
-        { labelKey: 'gguf.summary.metadataKeys', value: parsedMetadataCount }
+        { labelKey: 'gguf.summary.version', value: `GGUF v${source.version}` },
+        { labelKey: 'gguf.summary.architecture', value: source.scalars.architecture ?? '—' },
+        { labelKey: 'gguf.summary.tensors', value: walk.count },
+        { labelKey: 'gguf.summary.parameters', value: formatBigCount(walk.totalParameters) },
+        { labelKey: 'gguf.summary.quantization', value: walk.quantization(source.scalars.fileType) ?? '—' },
+        { labelKey: 'gguf.summary.metadataKeys', value: source.metadataCount }
     ];
-    if (generalType) summary.splice(2, 0, { labelKey: 'gguf.summary.type', value: generalType });
+    if (source.scalars.type) {
+        summary.splice(2, 0, { labelKey: 'gguf.summary.type', value: source.scalars.type });
+    }
 
     const tables: GgufTable[] = [
         {
             titleKey: 'gguf.table.tensors',
-            titleArgs: { count: output.tensorInfos.length },
+            titleArgs: { count: walk.count },
             headerKeys: ['gguf.column.name', 'gguf.column.dtype', 'gguf.column.shape', 'gguf.column.parameters', 'gguf.column.offset'],
             rows: tensors.map((tensor) => [
-                textBudget.take(tensor.name, MAX_IDENTIFIER_CHARS),
+                text.take(tensor.name, MAX_IDENTIFIER_CHARS),
                 tensor.dtype,
                 tensor.shape.length ? tensor.shape.join(' × ') : 'scalar',
                 tensor.elements,
@@ -361,42 +366,198 @@ export function normalizeGguf(
         },
         {
             titleKey: 'gguf.table.metadata',
-            titleArgs: { count: parsedMetadataCount },
+            titleArgs: { count: source.metadataCount },
             headerKeys: ['gguf.column.key', 'gguf.column.type', 'gguf.column.value'],
-            rows: metadata.map((entry) => [
-                textBudget.take(entry.key, MAX_IDENTIFIER_CHARS),
+            rows: source.metadata.map((entry) => [
+                text.take(entry.key, MAX_IDENTIFIER_CHARS),
                 entry.type,
-                textBudget.take(entry.value, MAX_DISPLAY_STRING_CHARS)
+                text.take(entry.value, MAX_DISPLAY_STRING_CHARS)
             ])
         }
     ];
 
-    if (textBudget.truncated) {
-        warnings.push({ key: 'gguf.warning.textTruncated' });
-    }
-
-    const rawPreview = rawPreviewLines.length ? rawPreviewLines.join('\n') : undefined;
+    if (text.truncated) warnings.push({ key: 'gguf.warning.textTruncated' });
 
     return {
         format: 'gguf',
-        title: modelName ?? 'GGUF model',
+        title: source.scalars.name ?? 'GGUF model',
         fileSize: truncate(fileSize, MAX_FILE_SIZE_LABEL_CHARS),
-        ...(version === undefined ? {} : { version }),
-        byteOrder: output.littleEndian ? 'little-endian' : 'big-endian',
+        version: source.version,
+        byteOrder: source.littleEndian ? 'little-endian' : 'big-endian',
         tensorDataOffset: layout.tensorDataOffset.toString(),
         summary,
-        metadata,
+        metadata: source.metadata,
         tensors,
         tables,
-        rawPreview,
+        rawPreview: rawPreviewLines.length ? rawPreviewLines.join('\n') : undefined,
         warnings
     };
 }
 
-interface ValidatedLayout {
+/** A tensor kept for display; its offset stays relative until the layout is known. */
+interface PreviewTensor {
+    name: string;
+    dtype: string;
+    shape: string[];
+    elements: string;
+    offset: bigint;
+}
+
+/**
+ * Folds the tensor index into constant-size state as it is visited, so callers may
+ * stream a hundred thousand entries through `add` while holding only the first
+ * GGUF_PREVIEW_ENTRY_LIMIT of them.
+ *
+ * The bounds check is the part that has to be a fold rather than a per-entry test:
+ * a tensor's absolute position needs `tensorDataOffset`, which is not known until
+ * the index has been walked to its end. Tracking the single entry that reaches
+ * furthest into the file is sufficient -- if that one fits, every other one does.
+ */
+class TensorIndexWalk {
+    readonly preview: PreviewTensor[] = [];
+    count = 0;
+    totalParameters = 0n;
+    unknownDtype = false;
+    unverifiedStorage = false;
+    private readonly dtypeCounts = new Map<string, number>();
+    private furthest: { name: string; end: bigint; startOnly: boolean } | undefined;
+
+    constructor(readonly alignment: bigint, private readonly text: CharacterBudget) {}
+
+    /** Returns a rejection message when the tensor is structurally invalid. */
+    add(name: string, shape: readonly bigint[], dtype: number, offset: bigint): string | undefined {
+        const label = `GGUF tensor "${truncate(name, MAX_IDENTIFIER_CHARS)}"`;
+        if (typeof offset !== 'bigint' || offset < 0n) {
+            return 'GGUF tensor offset is outside the supported non-negative range.';
+        }
+        if (offset % this.alignment !== 0n) return `${label} offset is not aligned to general.alignment.`;
+        if (shape.some((dimension) => typeof dimension !== 'bigint' || dimension < 0n)) {
+            return `${label} has an invalid shape.`;
+        }
+
+        this.count += 1;
+        const dtypeName = quantizationTypeName(dtype);
+        if (dtypeName.startsWith('UNKNOWN')) this.unknownDtype = true;
+        this.dtypeCounts.set(dtypeName, (this.dtypeCounts.get(dtypeName) ?? 0) + 1);
+        const elements = shape.reduce((count, dimension) => count * dimension, 1n);
+        this.totalParameters += elements;
+
+        const storage = GGML_STORAGE_LAYOUTS[dtype as GGMLQuantizationType];
+        let end: bigint;
+        let startOnly = false;
+        if (storage === undefined) {
+            // An unknown dtype has no computable payload length, so only the start
+            // can be placed. A tensor with elements must begin strictly inside the
+            // file; an empty one may sit exactly at its end.
+            this.unverifiedStorage = true;
+            startOnly = true;
+            end = offset + (shape.every((dimension) => dimension > 0n) ? 1n : 0n);
+        } else {
+            const rowElements = shape[0] ?? 1n;
+            if (rowElements !== 0n && rowElements % storage.blockElements !== 0n) {
+                return `${label} shape is not divisible by its dtype block size.`;
+            }
+            end = offset + (elements === 0n ? 0n : elements / storage.blockElements * storage.blockBytes);
+        }
+        if (this.furthest === undefined || end > this.furthest.end) {
+            this.furthest = { name: truncate(name, MAX_IDENTIFIER_CHARS), end, startOnly };
+        }
+
+        if (this.preview.length < GGUF_PREVIEW_ENTRY_LIMIT) {
+            this.preview.push({
+                name: this.text.take(name, MAX_IDENTIFIER_CHARS),
+                dtype: dtypeName,
+                shape: shape.map(String),
+                elements: elements.toString(),
+                offset
+            });
+        }
+        return undefined;
+    }
+
+    /** Applies the layout-dependent bounds check and resolves absolute offsets. */
+    finish(tensorDataOffset: bigint, fileByteLength?: bigint): GgufTensor[] | string {
+        if (fileByteLength !== undefined) {
+            // With zero tensors there is no tensor data section, so its alignment
+            // padding is never written: such files legitimately end at the tensor
+            // index. Keep the check strict otherwise -- the bound below is measured
+            // from this offset.
+            if (this.count > 0 && tensorDataOffset > fileByteLength) {
+                return 'GGUF tensor data offset extends past the end of the file.';
+            }
+            if (this.furthest !== undefined && tensorDataOffset + this.furthest.end > fileByteLength) {
+                return this.furthest.startOnly
+                    ? `GGUF tensor "${this.furthest.name}" starts at or past the end of the file.`
+                    : `GGUF tensor "${this.furthest.name}" extends past the end of the file.`;
+            }
+        }
+        return this.preview.map((tensor) => ({
+            name: tensor.name,
+            dtype: tensor.dtype,
+            shape: tensor.shape,
+            elements: tensor.elements,
+            offset: tensor.offset.toString(),
+            absoluteOffset: (tensorDataOffset + tensor.offset).toString()
+        }));
+    }
+
+    quantization(fileType?: number): string | undefined {
+        return fileType === undefined ? dominantDtype(this.dtypeCounts) : fileQuantizationTypeName(fileType);
+    }
+}
+
+interface ResolvedLayout {
     alignment: bigint;
     tensorDataOffset: bigint;
-    unverifiedTensorStorage: boolean;
+    fileByteLength?: bigint;
+}
+
+function rawAlignmentValue(value: MetadataValue | undefined): bigint | string | undefined {
+    if (value === undefined) return undefined;
+    if (typeof value === 'bigint') return value;
+    if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
+    return 'GGUF general.alignment must be a positive uint32 integer.';
+}
+
+function validateAlignment(value: bigint | string | undefined): bigint | string {
+    if (typeof value === 'string') return value;
+    const alignment = value ?? DEFAULT_ALIGNMENT;
+    // ggml's loader rejects any alignment that is not a power of two
+    // (ggml/src/gguf.cpp: "alignment %zu is not a power of 2"), so a file that gets
+    // here is one no llama.cpp-based tool would load. Reject it rather than report
+    // offsets nothing else agrees with.
+    if (alignment <= 0n || alignment > MAX_UINT32 || (alignment & (alignment - 1n)) !== 0n) {
+        return 'GGUF general.alignment must be a uint32 power of two.';
+    }
+    return alignment;
+}
+
+function resolveLayout(
+    alignment: bigint,
+    tensorInfoEnd: number,
+    fileByteLength?: number | bigint
+): ResolvedLayout | string {
+    // Equivalent to ggml's GGML_PAD bit mask for the power-of-two alignments
+    // accepted above, but stays in bigint so it cannot silently lose precision.
+    const tensorDataOffset = alignUp(BigInt(tensorInfoEnd), alignment);
+    if (tensorDataOffset > BigInt(Number.MAX_SAFE_INTEGER)) {
+        return 'GGUF tensor data offset is outside the supported non-negative range.';
+    }
+    if (fileByteLength === undefined) return { alignment, tensorDataOffset };
+
+    let actualFileSize: bigint;
+    if (typeof fileByteLength === 'bigint') {
+        actualFileSize = fileByteLength;
+    } else if (Number.isSafeInteger(fileByteLength)) {
+        actualFileSize = BigInt(fileByteLength);
+    } else {
+        return 'GGUF file size is outside the supported non-negative range.';
+    }
+    if (actualFileSize < 0n) return 'GGUF file size is outside the supported non-negative range.';
+    if (BigInt(tensorInfoEnd) > actualFileSize) {
+        return 'GGUF tensor index extends past the end of the file.';
+    }
+    return { alignment, tensorDataOffset, fileByteLength: actualFileSize };
 }
 
 function validateHeader(
@@ -442,121 +603,12 @@ function validateHeader(
     };
 }
 
-function validateLayout(output: HuggingFaceGgufOutput, fileByteLength?: number | bigint): ValidatedLayout | string {
-    const rawAlignment = rawMetadata(output)['general.alignment'];
-    let alignment: bigint;
-    if (rawAlignment === undefined) {
-        alignment = DEFAULT_ALIGNMENT;
-    } else if (typeof rawAlignment === 'bigint') {
-        alignment = rawAlignment;
-    } else if (typeof rawAlignment === 'number' && Number.isSafeInteger(rawAlignment)) {
-        alignment = BigInt(rawAlignment);
-    } else {
-        return 'GGUF general.alignment must be a positive uint32 integer.';
-    }
-    // ggml's loader rejects any alignment that is not a power of two
-    // (ggml/src/gguf.cpp: "alignment %zu is not a power of 2"), so a file that gets
-    // here is one no llama.cpp-based tool would load. Reject it rather than report
-    // offsets nothing else agrees with.
-    if (alignment <= 0n || alignment > MAX_UINT32 || (alignment & (alignment - 1n)) !== 0n) {
-        return 'GGUF general.alignment must be a uint32 power of two.';
-    }
-    if (typeof output.tensorDataOffset !== 'bigint' || output.tensorDataOffset < 0n) {
-        return 'GGUF tensor data offset is outside the supported non-negative range.';
-    }
-
-    const tensorInfoStart = output.tensorInfoByteRange?.[0];
-    const tensorInfoEnd = output.tensorInfoByteRange?.[1];
-    if (!Number.isSafeInteger(tensorInfoStart)
-        || !Number.isSafeInteger(tensorInfoEnd)
-        || tensorInfoStart < 0
-        || tensorInfoEnd < tensorInfoStart) {
-        return 'GGUF tensor index byte range is invalid.';
-    }
-    // Equivalent to upstream's GGML_PAD bit mask for the power-of-two alignments
-    // accepted above, but stays in bigint so it cannot silently lose precision.
-    const tensorDataOffset = alignUp(BigInt(tensorInfoEnd), alignment);
-    if (tensorDataOffset > BigInt(Number.MAX_SAFE_INTEGER)) {
-        return 'GGUF tensor data offset is outside the supported non-negative range.';
-    }
-
-    let actualFileSize: bigint | undefined;
-    if (fileByteLength !== undefined) {
-        if (typeof fileByteLength === 'bigint') {
-            actualFileSize = fileByteLength;
-        } else if (Number.isSafeInteger(fileByteLength)) {
-            actualFileSize = BigInt(fileByteLength);
-        } else {
-            return 'GGUF file size is outside the supported non-negative range.';
-        }
-        if (actualFileSize < 0n) return 'GGUF file size is outside the supported non-negative range.';
-        if (BigInt(tensorInfoEnd) > actualFileSize) {
-            return 'GGUF tensor index extends past the end of the file.';
-        }
-        // With zero tensors there is no tensor data section, so its alignment padding
-        // is never written: such files legitimately end at the tensor index. Only the
-        // index end (checked above) has to fit. Keep the check strict otherwise — the
-        // per-tensor bounds below are computed from this offset.
-        if (output.tensorInfos.length > 0 && tensorDataOffset > actualFileSize) {
-            return 'GGUF tensor data offset extends past the end of the file.';
-        }
-    }
-
-    let unverifiedTensorStorage = false;
-    for (const tensor of output.tensorInfos) {
-        if (typeof tensor.offset !== 'bigint' || tensor.offset < 0n) {
-            return 'GGUF tensor offset is outside the supported non-negative range.';
-        }
-        if (tensor.offset % alignment !== 0n) {
-            return `GGUF tensor "${truncate(tensor.name, MAX_IDENTIFIER_CHARS)}" offset is not aligned to general.alignment.`;
-        }
-        const absoluteOffset = tensorDataOffset + tensor.offset;
-        const byteLength = tensorStorageByteLength(tensor);
-        if (typeof byteLength === 'string') return byteLength;
-        if (byteLength === undefined) {
-            unverifiedTensorStorage = true;
-            const hasElements = tensor.shape.every((dimension) => dimension > 0n);
-            if (actualFileSize !== undefined
-                && (absoluteOffset > actualFileSize || (hasElements && absoluteOffset === actualFileSize))) {
-                return `GGUF tensor "${truncate(tensor.name, MAX_IDENTIFIER_CHARS)}" starts at or past the end of the file.`;
-            }
-            continue;
-        }
-        if (actualFileSize !== undefined) {
-            if (absoluteOffset + byteLength > actualFileSize) {
-                return `GGUF tensor "${truncate(tensor.name, MAX_IDENTIFIER_CHARS)}" extends past the end of the file.`;
-            }
-        }
-    }
-    return { alignment, tensorDataOffset, unverifiedTensorStorage };
-}
-
 function storage(blockElements: number, blockBytes: number): GgmlStorageLayout {
     return { blockElements: BigInt(blockElements), blockBytes: BigInt(blockBytes) };
 }
 
 function alignUp(offset: bigint, alignment: bigint): bigint {
     return offset + (alignment - offset % alignment) % alignment;
-}
-
-function tensorStorageByteLength(
-    tensor: HuggingFaceGgufOutput['tensorInfos'][number]
-): bigint | string | undefined {
-    if (tensor.shape.some((dimension) => typeof dimension !== 'bigint' || dimension < 0n)) {
-        return `GGUF tensor "${truncate(tensor.name, MAX_IDENTIFIER_CHARS)}" has an invalid shape.`;
-    }
-
-    const dtype = Number(tensor.dtype) as GGMLQuantizationType;
-    const storageLayout = GGML_STORAGE_LAYOUTS[dtype];
-    if (!storageLayout) return undefined;
-
-    const rowElements = tensor.shape[0] ?? 1n;
-    if (rowElements !== 0n && rowElements % storageLayout.blockElements !== 0n) {
-        return `GGUF tensor "${truncate(tensor.name, MAX_IDENTIFIER_CHARS)}" shape is not divisible by its dtype block size.`;
-    }
-    const elements = tensor.shape.reduce((count, dimension) => count * dimension, 1n);
-    if (elements === 0n) return 0n;
-    return elements / storageLayout.blockElements * storageLayout.blockBytes;
 }
 
 interface TypedMetadataEntry {
@@ -709,62 +761,22 @@ interface SatisfiedByteRange extends ByteRange {
     total: number;
 }
 
-interface CachedRangeResponse {
-    body: Uint8Array;
-    headers: Array<[string, string]>;
-    status: number;
-    statusText: string;
-}
-
 /**
- * Ceiling on replayed preflight bytes. The preflight can only walk as far as the
- * metadata parse limits allow (~25 MB worst case), so this never evicts for a file
- * we would accept; it exists so a future limit change cannot turn the cache into
- * unbounded growth. Evicting only costs a refetch — see replayCache below for why
- * we would rather not take that trade on the metadata region itself.
- */
-const REPLAY_CACHE_MAX_BYTES = 48 * 1024 * 1024;
-
-function cacheReplayedRange(cache: Map<string, CachedRangeResponse>, key: string, entry: CachedRangeResponse): void {
-    cache.set(key, entry);
-    let cachedBytes = 0;
-    for (const value of cache.values()) cachedBytes += value.body.byteLength;
-    for (const [oldestKey, oldest] of cache) {
-        if (cachedBytes <= REPLAY_CACHE_MAX_BYTES) break;
-        cache.delete(oldestKey);
-        cachedBytes -= oldest.body.byteLength;
-    }
-}
-
-/**
- * Wraps the transport expected by @huggingface/gguf. A server that ignores
- * Range must be rejected before anybody calls response.arrayBuffer(); otherwise
- * a multi-gigabyte model can be materialized just to inspect its header.
+ * Wraps the transport used by the preflight reader. A server that ignores Range
+ * must be rejected before anybody calls response.arrayBuffer(); otherwise a
+ * multi-gigabyte model can be materialized just to inspect its header.
  */
 function validatedRangeFetch(
     baseFetch: typeof fetch,
     signal?: AbortSignal,
     expectedFileSize?: number,
-    onFileSize?: (size: number) => void,
-    onInitialBytes?: (bytes: Uint8Array) => void,
-    replayCache?: Map<string, CachedRangeResponse>,
-    shouldCache?: () => boolean
+    onFileSize?: (size: number) => void
 ): typeof fetch {
     let knownTotal: number | undefined;
     return (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
         throwIfAborted(signal);
         const requested = parseRequestedRange(new Headers(init?.headers).get('range'));
         if (!requested) throw new Error('GGUF remote parsing requires a bounded byte Range request.');
-        const cacheKey = `${requested.start}-${requested.end}`;
-        const cached = replayCache?.get(cacheKey);
-        if (cached) {
-            replayCache?.delete(cacheKey);
-            return new Response(cached.body.slice().buffer as ArrayBuffer, {
-                status: cached.status,
-                statusText: cached.statusText,
-                headers: cached.headers
-            });
-        }
 
         const response = await baseFetch(input, {
             ...init,
@@ -804,53 +816,12 @@ function validatedRangeFetch(
         }
         const expectedBytes = received.end - received.start + 1;
         const body = await readBoundedResponse(response, expectedBytes, signal);
-        if (received.start === 0) onInitialBytes?.(body);
-        if (replayCache && shouldCache?.()) {
-            cacheReplayedRange(replayCache, cacheKey, {
-                body,
-                headers: [...response.headers.entries()],
-                status: response.status,
-                statusText: response.statusText
-            });
-        }
         return new Response(body.buffer as ArrayBuffer, {
             status: response.status,
             statusText: response.statusText,
             headers: response.headers
         });
     }) as typeof fetch;
-}
-
-function parseGgufHeader(bytes: Uint8Array): GgufHeaderInfo {
-    if (bytes.byteLength < 8
-        || bytes[0] !== 0x47
-        || bytes[1] !== 0x47
-        || bytes[2] !== 0x55
-        || bytes[3] !== 0x46) {
-        throw new Error('Not a valid GGUF file: the source header is incomplete or invalid.');
-    }
-    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    const littleVersion = view.getUint32(4, true);
-    const littleEndian = (littleVersion & 0xffff) !== 0;
-    const version = view.getUint32(4, littleEndian);
-    if (version !== 1 && version !== 2 && version !== 3) {
-        throw new Error(`GGUF source uses unsupported version "${version}".`);
-    }
-
-    const countBytes = version === 1 ? 4 : 8;
-    const requiredBytes = 8 + countBytes * 2;
-    if (bytes.byteLength < requiredBytes) {
-        throw new Error('Not a valid GGUF file: the source header is incomplete.');
-    }
-    const readCount = (offset: number): bigint => version === 1
-        ? BigInt(view.getUint32(offset, littleEndian))
-        : view.getBigUint64(offset, littleEndian);
-    return {
-        version,
-        tensorCount: readCount(8),
-        metadataCount: readCount(8 + countBytes),
-        littleEndian
-    };
 }
 
 function validateSourceHeaderResourceLimits(header: GgufHeaderInfo): void {
@@ -867,38 +838,45 @@ function validateSourceHeaderResourceLimits(header: GgufHeaderInfo): void {
 }
 
 interface GgufMetadataBudget {
-    arrayElements: bigint;
-    complexArrayElements: bigint;
     stringBytes: bigint;
+    /** Set once the cumulative limit is reached; further strings are skipped. */
+    exhausted: boolean;
 }
-
-/**
- * A cumulative budget stopped the metadata walk. Distinct from a structural error:
- * the bytes read so far are valid and still worth showing, so this unwinds to a
- * partial document instead of an invalid one.
- */
-class GgufBudgetExceeded extends Error {}
 
 /** Preview of one metadata entry, gathered without materializing whole arrays. */
 interface GgufPreflightEntry {
     key: string;
     type: number;
     subType?: number;
-    /** Exact declared length; kept as bigint because an over-budget array can be huge. */
+    /** Exact declared length; kept as bigint because a declared array can be huge. */
     arrayLength?: bigint;
     /** Display text for a scalar, or for the first ARRAY_PREVIEW_ITEMS array items. */
     preview: string[];
+    /**
+     * The scalar's text before the shared character budget could truncate it.
+     * `general.alignment` and `general.file_type` are parsed from this, so a
+     * document whose budget ran out mid-walk still computes correct offsets.
+     */
+    raw?: string;
 }
+
+/** Metadata keys the document model reads as values rather than rendering as rows. */
+const SCALAR_METADATA_KEYS = new Set([
+    'general.alignment',
+    'general.architecture',
+    'general.file_type',
+    'general.name',
+    'general.type'
+]);
 
 interface GgufPreflightResult {
     header: GgufHeaderInfo;
     entries: GgufPreflightEntry[];
-    /**
-     * Set when a cumulative budget stopped the walk, leaving `entries` a prefix of
-     * the file's metadata. The upstream parser must not run in that case: it would
-     * allocate exactly the arrays the budget refused.
-     */
-    overflow?: string;
+    /** Captured regardless of the preview cap, so a late key still reaches the model. */
+    scalars: Map<string, GgufPreflightEntry>;
+    text: CharacterBudget;
+    tensors: TensorIndexWalk;
+    tensorInfoEnd: number;
 }
 
 const FIXED_VALUE_BYTES: Readonly<Record<number, number>> = {
@@ -911,15 +889,22 @@ const FIXED_VALUE_BYTES: Readonly<Record<number, number>> = {
 };
 
 /**
- * Walks metadata from the source bytes before the third-party parser runs, keeping
- * only a bounded preview per entry. Array bodies are skipped past ARRAY_PREVIEW_ITEMS,
- * so peak memory here is independent of vocabulary size.
+ * Reads everything the document needs directly from the source bytes: the header,
+ * the metadata block, and the tensor index that follows it.
+ *
+ * Two separate properties keep this constant-memory. Metadata array bodies are
+ * skipped past ARRAY_PREVIEW_ITEMS, so a 512K-entry vocabulary costs the same as a
+ * 32-entry one. The tensor index is walked to its end -- it has to be, because
+ * entries are variable-length and `tensorDataOffset` is the aligned position after
+ * the last of them -- but only the first GGUF_PREVIEW_ENTRY_LIMIT are retained,
+ * with the rest folded into running sums by TensorIndexWalk.
  */
-async function preflightGgufMetadata(
+async function preflightGguf(
+    uri: string,
     fetchRange: typeof fetch,
     signal?: AbortSignal
 ): Promise<GgufPreflightResult> {
-    const reader = new GgufPreflightReader(fetchRange, signal);
+    const reader = new GgufPreflightReader(uri, fetchRange, signal);
     const magic = await reader.read(4);
     if (magic[0] !== 0x47 || magic[1] !== 0x47 || magic[2] !== 0x55 || magic[3] !== 0x46) {
         throw new Error('Not a valid GGUF file: invalid magic bytes.');
@@ -937,30 +922,121 @@ async function preflightGgufMetadata(
     const header: GgufHeaderInfo = { version, tensorCount, metadataCount, littleEndian };
     validateSourceHeaderResourceLimits(header);
 
-    const budget: GgufMetadataBudget = { arrayElements: 0n, complexArrayElements: 0n, stringBytes: 0n };
+    const budget: GgufMetadataBudget = { stringBytes: 0n, exhausted: false };
     const text = new CharacterBudget(GGUF_NORMALIZED_TEXT_BUDGET);
     const entries: GgufPreflightEntry[] = [];
-    try {
-        for (let index = 0n; index < metadataCount; index += 1n) {
-            const key = await readGgufString(reader, version, littleEndian, budget, text, MAX_IDENTIFIER_CHARS);
-            const type = await reader.readU32(littleEndian);
-            const entry: GgufPreflightEntry = { key: key ?? '', type, preview: [] };
-            // Registered before its value is read so the entry that trips a budget --
-            // the informative one -- still reaches the partial document.
-            if (entries.length < GGUF_PREVIEW_ENTRY_LIMIT) entries.push(entry);
-            await readGgufValue(reader, type, version, littleEndian, budget, text, 0, entry);
-        }
-    } catch (error) {
-        if (!(error instanceof GgufBudgetExceeded)) throw error;
-        return { header, entries, overflow: error.message };
+    const scalars = new Map<string, GgufPreflightEntry>();
+    for (let index = 0n; index < metadataCount; index += 1n) {
+        const key = await readGgufString(reader, version, littleEndian, MAX_IDENTIFIER_CHARS, budget) ?? '';
+        const type = await reader.readU32(littleEndian);
+        const rendered = entries.length < GGUF_PREVIEW_ENTRY_LIMIT;
+        const wanted = SCALAR_METADATA_KEYS.has(key);
+        // Entries past the preview cap are walked for positioning only. Decoding
+        // them would spend the shared text budget on rows nothing renders, and
+        // starve the rows that do get rendered.
+        const entry = rendered || wanted
+            ? { key: rendered ? text.take(key, MAX_IDENTIFIER_CHARS) : key, type, preview: [] }
+            : undefined;
+        if (entry && rendered) entries.push(entry);
+        if (entry && wanted && !scalars.has(key)) scalars.set(key, entry);
+        await readGgufValue(
+            reader, type, version, littleEndian, budget, rendered ? text : undefined, 0, entry
+        );
     }
-    return { header, entries };
+    // Text dropped by the cumulative string limit is reported the same way any
+    // other per-field truncation is.
+    if (budget.exhausted) text.truncated = true;
+
+    // Needed before the walk starts: every tensor offset is checked against it.
+    const alignment = validateAlignment(preflightAlignment(scalars.get('general.alignment')));
+    if (typeof alignment === 'string') throw new Error(alignment);
+
+    const walk = new TensorIndexWalk(alignment, text);
+    for (let index = 0n; index < tensorCount; index += 1n) {
+        // Tensor names are not charged against the cumulative metadata string
+        // budget: they are bounded by GGUF_PARSE_TENSOR_LIMIT and are read one at a
+        // time, and a document should not lose its tensor table to a fat vocabulary.
+        const name = await readGgufString(reader, version, littleEndian, MAX_IDENTIFIER_CHARS) ?? '';
+        const dimensions = await reader.readU32(littleEndian);
+        if (dimensions > MAX_TENSOR_DIMENSIONS) {
+            throw new Error(
+                `GGUF tensor "${truncate(name, MAX_IDENTIFIER_CHARS)}" declares ${dimensions} dimensions, `
+                + `more than ggml supports (${MAX_TENSOR_DIMENSIONS}).`
+            );
+        }
+        const shape: bigint[] = [];
+        for (let axis = 0; axis < dimensions; axis += 1) {
+            shape.push(await reader.readCount(version, littleEndian));
+        }
+        const dtype = await reader.readU32(littleEndian);
+        // The tensor offset is a uint64 in every GGUF version, unlike the sizes above.
+        const offsetBytes = await reader.read(8);
+        const offset = new DataView(offsetBytes.buffer, offsetBytes.byteOffset, 8)
+            .getBigUint64(0, littleEndian);
+        const failure = walk.add(name, shape, dtype, offset);
+        if (failure) throw new Error(failure);
+    }
+
+    return { header, entries, scalars, text, tensors: walk, tensorInfoEnd: reader.position };
+}
+
+/** Builds the document from a completed preflight walk. */
+function preflightDocument(
+    source: GgufPreflightResult,
+    fileSize: string,
+    fileByteLength?: number
+): GgufDocument {
+    const { header, entries, scalars, text, tensors: walk } = source;
+    const layout = resolveLayout(walk.alignment, source.tensorInfoEnd, fileByteLength);
+    if (typeof layout === 'string') return invalid(fileSize, layout);
+
+    return assembleGgufDocument({
+        version: header.version,
+        littleEndian: header.littleEndian,
+        metadata: entries.map(preflightMetadataEntry),
+        metadataCount: Number(header.metadataCount),
+        // The walk consumes exactly the declared number of entries or fails, so a
+        // count that disagrees with the header is not representable here.
+        metadataCountMismatch: false,
+        scalars: {
+            architecture: preflightText(scalars.get('general.architecture'), text),
+            name: preflightText(scalars.get('general.name'), text),
+            type: preflightText(scalars.get('general.type'), text),
+            fileType: preflightUnsigned(scalars.get('general.file_type'))
+        },
+        walk,
+        layout,
+        text
+    }, fileSize);
+}
+
+/** Scalars are stored as their formatted text; only unsigned digits round-trip. */
+function preflightUnsigned(entry?: GgufPreflightEntry): number | undefined {
+    if (entry?.raw === undefined || entry.arrayLength !== undefined) return undefined;
+    if (FIXED_VALUE_BYTES[entry.type] === undefined || !/^\d+$/.test(entry.raw)) return undefined;
+    const value = Number(entry.raw);
+    return Number.isSafeInteger(value) ? value : undefined;
+}
+
+function preflightAlignment(entry?: GgufPreflightEntry): bigint | string | undefined {
+    if (entry === undefined) return undefined;
+    if (entry.raw === undefined || entry.arrayLength !== undefined
+        || FIXED_VALUE_BYTES[entry.type] === undefined || !/^\d+$/.test(entry.raw)) {
+        return 'GGUF general.alignment must be a positive uint32 integer.';
+    }
+    return BigInt(entry.raw);
+}
+
+function preflightText(entry: GgufPreflightEntry | undefined, text: CharacterBudget): string | undefined {
+    if (entry?.raw === undefined || entry.arrayLength !== undefined) return undefined;
+    return text.take(entry.raw, MAX_IDENTIFIER_CHARS);
 }
 
 /**
  * Reads one metadata value, advancing the reader past it exactly. `entry`, when
  * given, receives the preview; otherwise the value is walked for budget accounting
- * and reader positioning only.
+ * and reader positioning only. `text`, when given, charges the preview against the
+ * shared display budget; `entry.raw` always keeps the uncharged scalar text.
  */
 async function readGgufValue(
     reader: GgufPreflightReader,
@@ -968,30 +1044,28 @@ async function readGgufValue(
     version: 1 | 2 | 3,
     littleEndian: boolean,
     budget: GgufMetadataBudget,
-    text: CharacterBudget,
+    text: CharacterBudget | undefined,
     depth: number,
     entry?: GgufPreflightEntry
-): Promise<string | undefined> {
+): Promise<void> {
     const size = FIXED_VALUE_BYTES[type];
     if (size !== undefined) {
         if (!entry) {
             await reader.skip(size);
-            return undefined;
+            return;
         }
-        const value = formatFixedValue(type, await reader.read(size), littleEndian);
-        entry.preview.push(value);
-        return value;
+        record(entry, text, formatFixedValue(type, await reader.read(size), littleEndian), depth);
+        return;
     }
     if (type === GGUFValueType.STRING) {
         const value = await readGgufString(
-            reader, version, littleEndian, budget, text, entry ? MAX_ARRAY_ITEM_CHARS : 0
+            reader, version, littleEndian, entry ? MAX_ARRAY_ITEM_CHARS : 0, budget
         );
-        if (!entry) return undefined;
+        if (!entry) return;
         // Top-level strings read as themselves; array items are quoted, matching
         // displayScalar / displayArrayItem on the upstream-parsed path.
-        const display = depth === 0 ? (value ?? '') : JSON.stringify(value ?? '');
-        entry.preview.push(display);
-        return display;
+        record(entry, text, depth === 0 ? (value ?? '') : JSON.stringify(value ?? ''), depth);
+        return;
     }
     if (type !== GGUFValueType.ARRAY || depth >= 4) {
         throw new Error(`GGUF metadata contains an unsupported type or nesting depth (${type}).`);
@@ -1003,23 +1077,20 @@ async function readGgufValue(
         entry.subType = subtype;
         entry.arrayLength = length;
     }
-    budget.arrayElements += length;
-    if (budget.arrayElements > BigInt(GGUF_PARSE_ARRAY_ELEMENT_LIMIT)) {
-        throw new GgufBudgetExceeded(
-            `GGUF metadata arrays exceed the cumulative element limit (${GGUF_PARSE_ARRAY_ELEMENT_LIMIT}).`
-        );
-    }
     const subtypeSize = FIXED_VALUE_BYTES[subtype];
     if (subtypeSize === undefined && subtype !== GGUFValueType.STRING && subtype !== GGUFValueType.ARRAY) {
         throw new Error(`GGUF metadata array uses an unsupported element type (${subtype}).`);
     }
-    if (subtypeSize === undefined) {
-        budget.complexArrayElements += length;
-        if (budget.complexArrayElements > BigInt(GGUF_PARSE_COMPLEX_ARRAY_LIMIT)) {
-            throw new GgufBudgetExceeded(
-                `GGUF string or nested arrays exceed the complex element limit (${GGUF_PARSE_COMPLEX_ARRAY_LIMIT}).`
-            );
-        }
+    // An element cannot be smaller than its own fixed width, or than the length
+    // prefix that introduces it. A declared count the rest of the file cannot
+    // physically hold is a malformed file rather than a budget question -- and this
+    // is what stops a hostile length from driving an unbounded walk, so no tuned
+    // element ceiling has to stand in for it.
+    const minimumElementBytes = BigInt(subtypeSize ?? (version === 1 ? 4 : 8));
+    if (length * minimumElementBytes > reader.remainingBytes) {
+        throw new Error(
+            `GGUF metadata array declares ${length} elements, more than the remaining file bytes can hold.`
+        );
     }
 
     // Only the head of an array is materialized; nested arrays report their length
@@ -1032,47 +1103,56 @@ async function readGgufValue(
     }
     const remaining = length - BigInt(previewCount);
     if (subtypeSize !== undefined) {
-        await reader.skip(Number(remaining) * subtypeSize);
+        await reader.skip(Number(remaining * BigInt(subtypeSize)));
     } else {
         for (let index = 0n; index < remaining; index += 1n) {
             await readGgufValue(reader, subtype, version, littleEndian, budget, text, depth + 1);
         }
     }
-    if (!entry || depth === 0) return undefined;
-    const display = `[${length} items]`;
-    entry.preview.push(display);
-    return display;
+    if (!entry || depth === 0) return;
+    record(entry, text, `[${length} items]`, depth);
+}
+
+function record(entry: GgufPreflightEntry, text: CharacterBudget | undefined, value: string, depth: number): void {
+    if (depth === 0 && entry.raw === undefined) entry.raw = value;
+    entry.preview.push(text ? text.take(value, MAX_DISPLAY_STRING_CHARS) : value);
 }
 
 /**
  * Consumes a GGUF string. `maxChars` of 0 skips it entirely; otherwise only the
- * leading bytes that can cover the cap are read, and the tail is skipped.
+ * leading bytes that can cover the cap are read, and the tail is skipped. `budget`
+ * is omitted for strings outside the metadata block, such as tensor names.
  */
 async function readGgufString(
     reader: GgufPreflightReader,
     version: 1 | 2 | 3,
     littleEndian: boolean,
-    budget: GgufMetadataBudget,
-    text: CharacterBudget,
-    maxChars: number
+    maxChars: number,
+    budget?: GgufMetadataBudget
 ): Promise<string | undefined> {
     const length = await reader.readCount(version, littleEndian);
-    budget.stringBytes += length;
-    if (budget.stringBytes > BigInt(GGUF_PARSE_STRING_BYTE_LIMIT)) {
-        throw new GgufBudgetExceeded(
-            `GGUF metadata strings exceed the cumulative byte limit (${GGUF_PARSE_STRING_BYTE_LIMIT}).`
-        );
+    let allowed = maxChars;
+    if (budget) {
+        budget.stringBytes += length;
+        // Past the budget the walk continues but stops decoding: skipping costs
+        // nothing and keeps the tensor index reachable, so a file with unusually
+        // heavy metadata loses display text rather than its tensor table.
+        if (budget.stringBytes > BigInt(GGUF_PARSE_STRING_BYTE_LIMIT)) {
+            budget.exhausted = true;
+            allowed = 0;
+        }
     }
+    if (length > reader.remainingBytes) throw new Error(READER_EOF_MESSAGE);
     const byteLength = Number(length);
-    if (maxChars <= 0) {
+    if (allowed <= 0) {
         await reader.skip(byteLength);
         return undefined;
     }
-    // UTF-8 encodes a code point in at most 4 bytes, so this always covers maxChars.
-    const head = Math.min(byteLength, maxChars * 4);
+    // UTF-8 encodes a code point in at most 4 bytes, so this always covers allowed.
+    const head = Math.min(byteLength, allowed * 4);
     const bytes = await reader.read(head);
     await reader.skip(byteLength - head);
-    return text.take(new TextDecoder().decode(bytes), maxChars);
+    return truncate(new TextDecoder().decode(bytes), allowed);
 }
 
 function formatFixedValue(type: number, bytes: Uint8Array, littleEndian: boolean): string {
@@ -1093,49 +1173,61 @@ function formatFixedValue(type: number, bytes: Uint8Array, littleEndian: boolean
     }
 }
 
+const READER_EOF_MESSAGE = 'GGUF metadata or tensor index extends past the end of the file.';
+
+/**
+ * A forward-only cursor over a remote or local file, holding exactly one chunk at
+ * a time. Chunks are fetched lazily and replaced rather than accumulated, so peak
+ * memory is CHUNK_BYTES regardless of how far the cursor travels.
+ */
 class GgufPreflightReader {
-    private position = 0;
+    private cursor = 0;
     private chunkStart = -1;
     private chunk = new Uint8Array();
-    /**
-     * Must equal @huggingface/gguf's HTTP_CHUNK_SIZE (`2 * 10 ** 6`), and the chunk
-     * starts below must stay chunk-aligned the same way upstream's RangeView is
-     * (`[this.chunk * HTTP_CHUNK_SIZE, (this.chunk + 1) * HTTP_CHUNK_SIZE - 1]`).
-     * Otherwise every replayCache key misses and the preflight stops binding the
-     * bytes the parser actually reads. Verified against 0.4.6; recheck on upgrade.
-     * The "parses a remote GGUF through validated partial-content responses" test
-     * asserts a single fetch, which is what fails if these drift apart.
-     */
+    /** Learned from the first Content-Range; every range response carries it. */
+    private totalBytes: number | undefined;
     private static readonly CHUNK_BYTES = 2_000_000;
 
-    constructor(private readonly fetchRange: typeof fetch, private readonly signal?: AbortSignal) {}
+    constructor(
+        private readonly uri: string,
+        private readonly fetchRange: typeof fetch,
+        private readonly signal?: AbortSignal
+    ) {}
+
+    get position(): number {
+        return this.cursor;
+    }
+
+    /** Bytes between the cursor and EOF, for validating declared lengths up front. */
+    get remainingBytes(): bigint {
+        return BigInt(this.fileBytes - this.cursor);
+    }
 
     async read(length: number): Promise<Uint8Array> {
         const result = new Uint8Array(length);
         let written = 0;
         while (written < length) {
             await this.ensureChunk();
-            const offset = this.position - this.chunkStart;
+            const offset = this.cursor - this.chunkStart;
             const take = Math.min(length - written, this.chunk.byteLength - offset);
-            if (take <= 0) throw new Error('GGUF metadata extends past the end of the file.');
+            if (take <= 0) throw new Error(READER_EOF_MESSAGE);
             result.set(this.chunk.subarray(offset, offset + take), written);
-            this.position += take;
+            this.cursor += take;
             written += take;
         }
         return result;
     }
 
+    /**
+     * Advances without fetching. Skipped bytes are never transferred, so a
+     * multi-megabyte vocabulary between two read positions costs no requests at
+     * all -- which is why the file size, rather than a short chunk, is what proves
+     * the skipped region exists.
+     */
     async skip(length: number): Promise<void> {
         if (!Number.isSafeInteger(length) || length < 0) throw new Error('GGUF metadata length is invalid.');
-        let remaining = length;
-        while (remaining > 0) {
-            await this.ensureChunk();
-            const offset = this.position - this.chunkStart;
-            const take = Math.min(remaining, this.chunk.byteLength - offset);
-            if (take <= 0) throw new Error('GGUF metadata extends past the end of the file.');
-            this.position += take;
-            remaining -= take;
-        }
+        if (length > this.fileBytes - this.cursor) throw new Error(READER_EOF_MESSAGE);
+        this.cursor += length;
     }
 
     async readU32(littleEndian: boolean): Promise<number> {
@@ -1149,16 +1241,25 @@ class GgufPreflightReader {
         return new DataView(bytes.buffer, bytes.byteOffset, 8).getBigUint64(0, littleEndian);
     }
 
+    private get fileBytes(): number {
+        if (this.totalBytes === undefined) {
+            throw new Error('GGUF range responses did not report the total file size.');
+        }
+        return this.totalBytes;
+    }
+
     private async ensureChunk(): Promise<void> {
-        if (this.position >= this.chunkStart && this.position < this.chunkStart + this.chunk.byteLength) return;
+        if (this.cursor >= this.chunkStart && this.cursor < this.chunkStart + this.chunk.byteLength) return;
         throwIfAborted(this.signal);
-        const start = Math.floor(this.position / GgufPreflightReader.CHUNK_BYTES) * GgufPreflightReader.CHUNK_BYTES;
+        const start = Math.floor(this.cursor / GgufPreflightReader.CHUNK_BYTES) * GgufPreflightReader.CHUNK_BYTES;
         const end = start + GgufPreflightReader.CHUNK_BYTES - 1;
-        const response = await this.fetchRange('https://omni-viewer.invalid/gguf-preflight', {
+        const response = await this.fetchRange(this.uri, {
             headers: { Range: `bytes=${start}-${end}` },
             ...(this.signal ? { signal: this.signal } : {})
         });
-        if (response.status !== 206) throw new Error('GGUF metadata extends past the end of the file.');
+        if (response.status !== 206) throw new Error(READER_EOF_MESSAGE);
+        const total = Number(response.headers.get('content-range')?.match(/\/(\d+)\s*$/)?.[1]);
+        if (Number.isSafeInteger(total) && total >= 0) this.totalBytes = total;
         this.chunk = new Uint8Array(await response.arrayBuffer());
         this.chunkStart = start;
     }
@@ -1333,58 +1434,6 @@ function abortReason(signal: AbortSignal): Error {
 
 function errorMessage(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
-}
-
-/**
- * Builds a document from preflight data alone, for files whose metadata is too
- * large to hand to the upstream parser. The tensor index is not reached, so the
- * tensor table is absent; everything the walk did read is still shown.
- */
-function partialGguf(preflight: GgufPreflightResult, fileSize: string): GgufDocument {
-    const { header, entries } = preflight;
-    const metadata = entries.map(preflightMetadataEntry);
-    const scalar = (key: string): string | undefined => {
-        const entry = entries.find((candidate) => candidate.key === key);
-        return entry && entry.arrayLength === undefined ? entry.preview[0] : undefined;
-    };
-    const modelName = scalar('general.name');
-
-    const summary: GgufSummaryItem[] = [
-        { labelKey: 'gguf.summary.version', value: `GGUF v${header.version}` },
-        { labelKey: 'gguf.summary.architecture', value: scalar('general.architecture') ?? '—' },
-        { labelKey: 'gguf.summary.tensors', value: header.tensorCount.toString() },
-        { labelKey: 'gguf.summary.metadataKeys', value: header.metadataCount.toString() }
-    ];
-    const generalType = scalar('general.type');
-    if (generalType) summary.splice(2, 0, { labelKey: 'gguf.summary.type', value: generalType });
-
-    const warnings: GgufWarning[] = [{ key: 'gguf.warning.metadataTooLarge' }];
-    if (BigInt(metadata.length) < header.metadataCount) {
-        warnings.push({
-            key: 'gguf.warning.metadataLimited',
-            args: { shown: metadata.length, total: header.metadataCount.toString() }
-        });
-    }
-
-    return {
-        format: 'gguf',
-        title: modelName || 'GGUF model',
-        fileSize: truncate(fileSize, MAX_FILE_SIZE_LABEL_CHARS),
-        version: header.version,
-        byteOrder: header.littleEndian ? 'little-endian' : 'big-endian',
-        summary,
-        metadata,
-        tensors: [],
-        tables: [{
-            titleKey: 'gguf.table.metadata',
-            titleArgs: { count: header.metadataCount.toString() },
-            headerKeys: ['gguf.column.key', 'gguf.column.type', 'gguf.column.value'],
-            rows: metadata.map((entry) => [entry.key, entry.type, entry.value])
-        }],
-        rawPreview: undefined,
-        warnings,
-        errorDetail: truncate(preflight.overflow ?? '', MAX_ERROR_MESSAGE_CHARS)
-    };
 }
 
 function preflightMetadataEntry(entry: GgufPreflightEntry): GgufMetadataEntry {

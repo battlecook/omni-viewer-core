@@ -2,6 +2,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
     tfliteControlFlowFixture,
+    tfliteExternalBufferFixture,
+    tfliteOptionEdgeCasesFixture,
     tfliteFixture,
     tfliteWideGraphFixture
 } from '../../parsers/tflite/__tests__/fixture.js';
@@ -118,6 +120,89 @@ describe('mountTfliteViewer', () => {
         expect((container.querySelector('select') as HTMLSelectElement).hidden).toBe(true);
         expect(container.querySelectorAll('.omni-tflite__node').length).toBeLessThanOrEqual(400);
         expect(container.querySelector('.omni-tflite__graph-limit')?.textContent).toContain('limited');
+    });
+
+    it('counts every graph card in the limit banner, not just the drawn ones', () => {
+        const container = document.createElement('div');
+        // 600 operators + 1 graph input + 1 output; the operator list is capped
+        // at 240, but the total must still reflect the whole subgraph.
+        mountTfliteDocument(parseTflite(tfliteWideGraphFixture(600)), 'wide.tflite', container, ctx, { styleIsolation: 'scoped' });
+        expect(container.querySelector('.omni-tflite__graph-limit')?.textContent).toBe('limited 242/602');
+    });
+
+    it('draws one card per output tensor even when an index is repeated', () => {
+        const model = parseTflite(tfliteControlFlowFixture());
+        model.subgraphs[0]!.outputs = [1, 1, 1];
+        const container = document.createElement('div');
+        mountTfliteDocument(model, 'dup.tflite', container, ctx, { styleIsolation: 'scoped' });
+        const outputs = [...container.querySelectorAll<HTMLElement>('.omni-tflite__node--output')];
+        expect(outputs).toHaveLength(1);
+        expect(new Set(outputs.map(card => card.style.top)).size).toBe(1);
+    });
+
+    it('reports the true remaining count for a capped quantization list', () => {
+        const container = document.createElement('div');
+        mountTfliteDocument(parseTflite(tfliteOptionEdgeCasesFixture()), 'edges.tflite', container, ctx, { styleIsolation: 'scoped' });
+        container.querySelector<HTMLButtonElement>('.omni-tflite__node--constant')!.click();
+        const inspector = container.querySelector('.omni-tflite__inspector')!;
+        expect(inspector.textContent).toContain('per-axis[0] × 100');
+        // 16 shown of 100 declared, even though the parser kept only 64.
+        expect(inspector.textContent).toContain('… (+84)');
+    });
+
+    it('offers no subgraph link for a control-flow op that declared none', () => {
+        const container = document.createElement('div');
+        mountTfliteDocument(parseTflite(tfliteOptionEdgeCasesFixture()), 'edges.tflite', container, ctx, { styleIsolation: 'scoped' });
+        const ifCard = [...container.querySelectorAll<HTMLButtonElement>('.omni-tflite__node--node')]
+            .find(card => card.textContent?.includes('IF'))!;
+        ifCard.click();
+        const inspector = container.querySelector('.omni-tflite__inspector')!;
+        expect(inspector.textContent).toContain('then_subgraph_index');
+        expect(inspector.querySelectorAll('.omni-tflite__link')).toHaveLength(0);
+    });
+
+    it('shows every user of a shared buffer via search and an exact remainder', () => {
+        const container = document.createElement('div');
+        mountTfliteDocument(parseTflite(tfliteExternalBufferFixture(40)), 'shared.tflite', container, ctx, { styleIsolation: 'scoped' });
+        tab(container, 'tflite.buffers').click();
+        // 41 tensors reference buffer 0; 8 are shown, so the remainder is exact.
+        expect(container.querySelector('tbody tr')?.textContent).toContain('… (+33)');
+        const search = container.querySelector('input') as HTMLInputElement;
+        search.value = 'act_30';
+        search.dispatchEvent(new Event('input', { bubbles: true }));
+        expect(container.querySelectorAll('tbody tr')).toHaveLength(1);
+    });
+
+    it('labels a tensor backed by an external file rather than calling it runtime', () => {
+        const container = document.createElement('div');
+        mountTfliteDocument(parseTflite(tfliteExternalBufferFixture()), 'external.tflite', container, ctx, { styleIsolation: 'scoped' });
+        expect(container.querySelector('.omni-tflite__warnings')?.textContent).toContain('tflite.warning.externalBuffers');
+        tab(container, 'tflite.tensors').click();
+        const row = container.querySelector('tbody tr')!;
+        expect(row.textContent).toContain('tflite.storage.external');
+        expect(row.textContent).toContain('4.00 KB');
+    });
+
+    it('answers a tensor search the same way on the graph tab and the tensors table', () => {
+        const container = document.createElement('div');
+        mountTfliteDocument(parseTflite(tfliteFixture()), 'classifier.tflite', container, ctx, { styleIsolation: 'scoped' });
+        const search = container.querySelector('input') as HTMLInputElement;
+        search.value = 'per-axis';
+        search.dispatchEvent(new Event('input', { bubbles: true }));
+        const lit = [...container.querySelectorAll<HTMLElement>('.omni-tflite__node--constant')]
+            .filter(card => !card.classList.contains('omni-tflite__node--dim'));
+        expect(lit).toHaveLength(1);
+        expect(lit[0]!.textContent).toContain('conv_weights');
+    });
+
+    it('matches the shape label it displays, on both the graph and the table', () => {
+        const container = document.createElement('div');
+        mountTfliteDocument(parseTflite(tfliteControlFlowFixture()), 'loop.tflite', container, ctx, { styleIsolation: 'scoped' });
+        const search = container.querySelector('input') as HTMLInputElement;
+        search.value = 'tflite.unknownRank';
+        search.dispatchEvent(new Event('input', { bubbles: true }));
+        tab(container, 'tflite.tensors').click();
+        expect(container.querySelectorAll('tbody tr').length).toBeGreaterThan(0);
     });
 
     it('copies the normalized model as JSON and honours an aborted mount', async () => {

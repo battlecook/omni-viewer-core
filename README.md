@@ -15,7 +15,7 @@ models, viewers mount into a DOM element, and everything host-specific
 - **Documents** — PDF, Word (DOCX and legacy DOC), HWP, PowerPoint (PPTX and
   legacy PPT), Markdown, LaTeX (structure and math preview, not typesetting)
 - **Data & spreadsheets** — Excel, CSV/TSV, JSON, JSONL/NDJSON, YAML, TOML,
-  Parquet, Avro, HDF5, MATLAB MAT, Safetensors, GGUF, ONNX, TFLite/LiteRT,
+  Parquet, Avro, HDF5, MATLAB MAT, NumPy (NPY/NPZ), Safetensors, GGUF, ONNX, TFLite/LiteRT,
   Protocol Buffers, ReqIF, SQLite
 - **Media & graphics** — audio (waveform/spectrogram), video, images,
   Photoshop PSD
@@ -86,8 +86,13 @@ available, but it requires the host to load the complete file first.
 
 ### GGUF metadata and tensor index
 
-GGUF parsing delegates to `@huggingface/gguf`, then normalizes its bigint and
-large-array values into an Omni Viewer JSON-safe document. Node hosts can parse
+GGUF parsing reads the header, metadata block, and tensor index directly from
+ranged reads, and normalizes their bigint and large-array values into an Omni
+Viewer JSON-safe document. Tensor payload bytes are never read, metadata array
+bodies are skipped rather than decoded, and only a bounded number of metadata
+and tensor entries is retained, so a model's vocabulary size does not affect
+peak memory or what the document contains. `normalizeGguf` remains available for
+hosts that already hold a `@huggingface/gguf` parse result. Node hosts can parse
 a local model without loading tensor payloads and mount the result separately:
 
 ```ts

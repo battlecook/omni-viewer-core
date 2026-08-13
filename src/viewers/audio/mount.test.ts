@@ -423,7 +423,7 @@ describe('audio viewer with WASM decode engine', () => {
 
         it('tracks drags through the region update event', async () => {
             const listeners: Array<() => void> = [];
-            const { handle, region, start, end } = await selectRegion({
+            const { handle, root, region, start, end } = await selectRegion({
                 on(_event: string, callback: () => void) { listeners.push(callback); return () => undefined; }
             });
             region.start = 30;
@@ -431,6 +431,19 @@ describe('audio viewer with WASM decode engine', () => {
             listeners.forEach((notify) => notify());
             expect(start.value).toBe('30.000');
             expect(end.value).toBe('45.000');
+            // The summary has to move with the editors; showing the bounds the
+            // region had when it was selected contradicts the fields.
+            expect(root.querySelector('.omni-audio__status')!.textContent)
+                .toContain('0:30');
+            handle.dispose();
+        });
+
+        it('reserves space under the waveform only while the editor is shown', async () => {
+            const { handle, root } = await selectRegion();
+            const wrap = root.querySelector('.omni-audio__waveform-wrap') as HTMLElement;
+            expect(wrap.classList.contains('is-editing-region')).toBe(true);
+            [...root.querySelectorAll('button')].find((b) => b.textContent === 'Clear regions')!.click();
+            expect(wrap.classList.contains('is-editing-region')).toBe(false);
             handle.dispose();
         });
 
@@ -756,6 +769,126 @@ describe('audio viewer with WASM decode engine', () => {
     // WAV needs no decoder, so the streaming pyramid analyzer runs instead of
     // the engine: constant memory, real per-channel columns, and a duration
     // derived from the frames actually seen.
+    // WaveSurfer decodes at 8000 Hz unless told otherwise, which caps a
+    // spectrogram at 4 kHz and makes the reported rate wrong. The original
+    // viewer passed a rate; the port dropped it.
+    describe('decode sample rate', () => {
+        const captureOptions = async (file: { fileName: string; data: Uint8Array }) => {
+            const created: Array<Record<string, unknown>> = [];
+            const surfer = fakeSurfer();
+            const lib: AudioWaveformLibrary = {
+                createWaveSurfer: (o) => { created.push(o as unknown as Record<string, unknown>); return surfer; }
+            };
+            const container = document.createElement('div');
+            const handle = await mountAudioViewer(file, container, stubCtx(), {
+                ...urlOptions,
+                deps: { loadWaveform: async () => lib }
+            });
+            return { handle, container, surfer, options: created[0]! };
+        };
+
+        it('decodes a WAV at the rate in its header', async () => {
+            const data = encodeWavFromFloat32(new Float32Array(2000), 2, 48000);
+            const { handle, options } = await captureOptions({ fileName: 'take.wav', data });
+            expect(options.sampleRate).toBe(48000);
+            handle.dispose();
+        });
+
+        it('decodes an mp3 at the rate in its frame header', async () => {
+            // MPEG-1 Layer III, 128 kbps, 44.1 kHz stereo.
+            const one = (() => {
+                const header = [0xff, 0xfb, 0x90, 0x00];
+                const bytes = new Uint8Array(417);
+                bytes.set(header);
+                return bytes;
+            })();
+            const data = new Uint8Array(417 * 4);
+            for (let i = 0; i < 4; i++) data.set(one, i * 417);
+            const { handle, options } = await captureOptions({ fileName: 'song.mp3', data });
+            expect(options.sampleRate).toBe(44100);
+            handle.dispose();
+        });
+
+        it('never leaves the engine on its 8000 Hz default', async () => {
+            const { handle, options } = await captureOptions({
+                fileName: 'unknown.flac', data: Uint8Array.of(1, 2, 3, 4)
+            });
+            expect(options.sampleRate).toBe(44100);
+            handle.dispose();
+        });
+
+        it('reports the header rate rather than the rate it decoded at', async () => {
+            const data = encodeWavFromFloat32(new Float32Array(2000), 2, 48000);
+            const { handle, container, surfer } = await captureOptions({ fileName: 'take.wav', data });
+            surfer.emit('ready'); // fake decoded data claims 44100
+            expect(shadow(container).textContent).toContain('48,000 Hz');
+            expect(shadow(container).textContent).not.toContain('44,100 Hz');
+            handle.dispose();
+        });
+    });
+
+    // File size is a poor proxy for what a decode costs: a 122 MiB WAV decodes
+    // to 245 MiB while a same-sized FLAC decodes to five times that.
+    describe('peaks-mode threshold', () => {
+        const mountWav = async (frames: number, extra: Record<string, unknown> = {}) => {
+            const created: Array<Record<string, unknown>> = [];
+            const surfer = fakeSurfer();
+            const lib: AudioWaveformLibrary = {
+                createWaveSurfer: (o) => { created.push(o as unknown as Record<string, unknown>); return surfer; }
+            };
+            const handle = await mountAudioViewer(
+                { fileName: 'take.wav', data: encodeWavFromFloat32(new Float32Array(frames * 2), 2, 44100) },
+                document.createElement('div'), stubCtx(),
+                { ...urlOptions, ...extra, deps: { loadWaveform: async () => lib } }
+            );
+            return { handle, options: created[0]! };
+        };
+
+        it('keeps a WAV whose decode fits on the full-decode path', async () => {
+            // 1 MiB of decoded audio, far under the threshold.
+            const { handle, options } = await mountWav(131072, { analyzeDecodedBytes: 8 * 1024 * 1024 });
+            expect(options.peaks).toBeUndefined();
+            handle.dispose();
+        });
+
+        it('switches to peaks once the decode would exceed the budget', async () => {
+            const { handle, options } = await mountWav(131072, { analyzeDecodedBytes: 512 * 1024 });
+            expect(options.peaks).toBeDefined();
+            handle.dispose();
+        });
+
+        // The file is ~0.5 MiB but decodes to ~1 MiB: judging by file size
+        // would have kept it on the full-decode path.
+        it('judges by decoded size, not file size', async () => {
+            const { handle, options } = await mountWav(131072, {
+                analyzeDecodedBytes: 512 * 1024,
+                engineAnalyzeBytes: 100 * 1024 * 1024
+            });
+            expect(options.peaks).toBeDefined();
+            handle.dispose();
+        });
+
+        it('falls back to file size for formats it cannot measure', async () => {
+            const created: Array<Record<string, unknown>> = [];
+            const surfer = fakeSurfer();
+            const lib: AudioWaveformLibrary = {
+                createWaveSurfer: (o) => { created.push(o as unknown as Record<string, unknown>); return surfer; }
+            };
+            const engine = {
+                decode: vi.fn(),
+                analyze: vi.fn(async () => ({ sampleRate: 44100, channels: 2, duration: 60, peaks: [0.5] }))
+            };
+            const handle = await mountAudioViewer(engineInput(), document.createElement('div'), stubCtx(), {
+                ...urlOptions,
+                engineAnalyzeBytes: 2, // 4-byte flac fixture exceeds this
+                deps: { loadWaveform: async () => lib, engine }
+            });
+            expect(engine.analyze).toHaveBeenCalledOnce();
+            expect(created[0]!.peaks).toBeDefined();
+            handle.dispose();
+        });
+    });
+
     describe('streaming analysis for WAV', () => {
         const wavInput = (frames: number, left: number, right: number) => ({
             fileName: 'take.wav',
@@ -779,7 +912,7 @@ describe('audio viewer with WASM decode engine', () => {
             const container = document.createElement('div');
             const handle = await mountAudioViewer(wavInput(8000, 0.8, 0.2), container, stubCtx(), {
                 ...urlOptions,
-                engineAnalyzeBytes: 2,
+                analyzeDecodedBytes: 2, // WAV is judged by decoded size
                 deps: { loadWaveform: async () => lib, engine }
             });
             expect(engine.analyze).not.toHaveBeenCalled();
@@ -805,7 +938,7 @@ describe('audio viewer with WASM decode engine', () => {
             const container = document.createElement('div');
             const handle = await mountAudioViewer(wavInput(4000, 0.5, 0.5), container, stubCtx(), {
                 ...urlOptions,
-                engineAnalyzeBytes: 2,
+                analyzeDecodedBytes: 2, // WAV is judged by decoded size
                 deps: { loadWaveform: async () => lib }
             });
             expect((createOptions[0]?.peaks as number[][]).length).toBe(2);
@@ -855,7 +988,7 @@ describe('audio viewer with WASM decode engine', () => {
                 stubCtx(),
                 {
                     ...urlOptions,
-                    engineAnalyzeBytes: 2,
+                    analyzeDecodedBytes: 2, // WAV is judged by decoded size
                     signal,
                     deps: { loadWaveform: async () => lib, engine }
                 }
@@ -873,7 +1006,7 @@ describe('audio viewer with WASM decode engine', () => {
             const container = document.createElement('div');
             const handle = await mountAudioViewer(wavInput(8000, 0.5, 0.5), container, stubCtx(), {
                 ...urlOptions,
-                engineAnalyzeBytes: 2,
+                analyzeDecodedBytes: 2, // WAV is judged by decoded size
                 deps: { loadWaveform: async () => lib }
             });
             surfer.emit('ready');
