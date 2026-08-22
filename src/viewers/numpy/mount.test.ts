@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from 'vitest';
+import { createCatalogI18n } from '../../i18n/index.js';
 import type { NumpyDocument } from '../../parsers/numpy/index.js';
-import { mountNumpyDocument } from './index.js';
+import { mountNumpyDocument, numpyJsonReplacer } from './index.js';
 
 const model: NumpyDocument = {
     format: 'NumPy NPZ', title: 'NumPy array archive', fileSize: '1.2 KB',
@@ -64,5 +65,75 @@ describe('mountNumpyDocument', () => {
         const copy = [...container.querySelectorAll('button')].find(button => button.textContent === 'numpy.copyJson')! as HTMLButtonElement;
         copy.click();
         await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith(JSON.stringify(model, null, 2)));
+    });
+
+    it('localizes metadata, dtype kinds, axes, and structured diagnostics', () => {
+        const container = document.createElement('div');
+        const localized: NumpyDocument = {
+            ...model,
+            diagnostics: [{ code: 'previewLimit', args: { limit: 100000, name: 'cube' } }]
+        };
+        mountNumpyDocument(localized, 'model.npz', container, { ...ctx, i18n: createCatalogI18n('ko-KR') }, { styleIsolation: 'scoped' });
+        expect(container.textContent).toContain('NumPy 배열 아카이브');
+        expect(container.textContent).toContain('부호 있는 정수');
+        expect(container.textContent).toContain('축 0');
+        expect(container.textContent).toContain('문서 값 미리보기는 100000개 요소로 제한됩니다.');
+        expect(container.textContent).not.toContain('signed integer');
+    });
+
+    it('distinguishes an exhausted document preview budget from an unsupported dtype', () => {
+        const container = document.createElement('div');
+        const limited: NumpyDocument = {
+            ...model,
+            arrays: [{ ...model.arrays[0]!, values: [], previewTruncated: true, diagnostics: [{ code: 'previewLimit' }] }],
+            tables: []
+        };
+        mountNumpyDocument(limited, 'limited.npz', container, ctx, { styleIsolation: 'scoped' });
+        expect(container.textContent).toContain('numpy.previewLimited');
+        expect(container.textContent).not.toContain('numpy.previewUnavailable');
+    });
+
+    it('preserves non-finite floating values and negative zero in copied JSON', () => {
+        const encoded = JSON.stringify({ values: [Number.NaN, Infinity, -Infinity, -0, 1] }, numpyJsonReplacer);
+        expect(encoded).toBe('{"values":["NaN","Infinity","-Infinity","-0",1]}');
+    });
+
+    it('renders negative zero distinctly in the value grid', () => {
+        const container = document.createElement('div');
+        const negativeZero: NumpyDocument = {
+            ...model,
+            arrays: [{ ...model.arrays[0]!, shape: [1], elements: 1, values: [-0] }],
+            tables: []
+        };
+        mountNumpyDocument(negativeZero, 'zero.npy', container, ctx, { styleIsolation: 'scoped' });
+        expect(container.querySelector('tbody td')?.textContent).toBe('-0');
+    });
+
+    it('does not describe a decode failure as an exhausted preview budget', () => {
+        const container = document.createElement('div');
+        const failed: NumpyDocument = {
+            ...model,
+            arrays: [{
+                ...model.arrays[0]!, values: [], previewTruncated: true,
+                diagnostics: [{ code: 'previewDecode' }]
+            }],
+            tables: []
+        };
+        mountNumpyDocument(failed, 'failed.npz', container, ctx, { styleIsolation: 'scoped' });
+        expect(container.textContent).toContain('numpy.previewUnavailable');
+        expect(container.textContent).not.toContain('numpy.previewLimited');
+    });
+
+    it('renders an explicit empty state for an empty higher-rank array', () => {
+        const container = document.createElement('div');
+        const empty: NumpyDocument = {
+            ...model,
+            arrays: [{ ...model.arrays[0]!, shape: [0, 2, 3], elements: 0, values: [] }],
+            tables: []
+        };
+        mountNumpyDocument(empty, 'empty.npy', container, ctx, { styleIsolation: 'scoped' });
+        expect(container.textContent).toContain('numpy.emptyArray');
+        expect(container.querySelector('.omni-numpy__grid')).toBeNull();
+        expect(container.querySelector('input[type=number]')).toBeNull();
     });
 });

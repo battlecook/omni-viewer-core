@@ -79,6 +79,10 @@ export const audioViewerCss = mediaViewerCss + `
    positioning context; the editor row sits just below the waveform so it never
    covers the samples being trimmed. */
 .omni-audio__waveform-wrap { position: relative; }
+/* Spectrogram-only mode collapses the waveform instead of hiding it: the
+   spectrogram plugin measures this element's width, and display:none would
+   leave it at 0. Height goes to zero, width stays real. */
+.omni-audio__waveform-wrap.is-collapsed { height: 0; overflow: hidden; padding-bottom: 0; }
 /* The editor is absolutely positioned, so the wrapper has to reserve its band
    while it is shown. Without this it lands on the status line in waveform-only
    mode and covers the spectrogram in both mode. */

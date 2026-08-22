@@ -16,7 +16,7 @@ models, viewers mount into a DOM element, and everything host-specific
   legacy PPT), Markdown, LaTeX (structure and math preview, not typesetting)
 - **Data & spreadsheets** — Excel, CSV/TSV, JSON, JSONL/NDJSON, YAML, TOML,
   Parquet, Avro, HDF5, MATLAB MAT, NumPy (NPY/NPZ), Safetensors, GGUF, ONNX, TFLite/LiteRT,
-  Protocol Buffers, ReqIF, SQLite
+  Keras (.keras and legacy .h5), Protocol Buffers, ReqIF, SQLite
 - **Media & graphics** — audio (waveform/spectrogram), video, images,
   Photoshop PSD
 - **Engineering & automotive** — CAN DBC, AUTOSAR ARXML, ASAM A2L, Vector
@@ -144,6 +144,33 @@ inspection, navigation into the subgraphs a control-flow operator references,
 and searchable operator, tensor, input/output, buffer, and model-information
 panels. Custom operators, Select TensorFlow fallbacks, and buffers stored
 outside the FlatBuffer are surfaced as warnings.
+
+### Keras models
+
+Both Keras save formats open through one viewer. A `.keras` file is a ZIP whose
+members Keras stores uncompressed, so `config.json`, `metadata.json`, and the
+`model.weights.h5` store are read in place — JSZip is only consulted for an
+archive that was re-zipped with compression. A legacy `.h5` model is read as
+HDF5, taking `model_config` and `training_config` from the root attributes and
+the parameters from `/model_weights`:
+
+```ts
+import { mountKerasViewer } from 'omni-viewer-core/viewers/keras';
+
+await mountKerasViewer({ fileName: file.name, data: bytes }, container, ctx);
+```
+
+Weight payloads are never read: only dataset shapes and datatypes are walked, so
+parameter counts stay cheap on multi-gigabyte models. The viewer lists layers
+(nested sub-models flattened by depth) with per-layer configuration, inbound
+connections, and weights, plus searchable weight, configuration, training,
+archive, and model-information panels.
+
+`.keras` routes by extension, and an extensionless archive is resolved by
+`probeContainer`. A `.h5` file routes to the HDF5 viewer, since only its
+contents distinguish a Keras model from any other HDF5 file; hosts that read the
+whole file can refine that with `looksLikeKerasHdf5` from
+`omni-viewer-core/parsers/keras` and mount the Keras viewer instead.
 
 ### Archive host integration
 

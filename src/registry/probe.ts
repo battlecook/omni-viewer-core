@@ -38,6 +38,11 @@ function probeZip(input: Uint8Array, options: ParseOptions): string | null {
     const cdOffset = view.getUint32(eocd + 16, true);
     const cap = Math.min(entryCount, options.limits?.maxEntries ?? DEFAULT_PROBE_ENTRY_CAP);
 
+    // A Keras 3 model is a zip of config.json + model.weights.h5; neither member
+    // alone is distinctive, so the decision waits until the scan finishes.
+    let hasKerasConfig = false;
+    let hasKerasWeights = false;
+
     let pos = cdOffset;
     for (let i = 0; i < cap; i++) {
         if (options.signal?.aborted) return null;
@@ -55,6 +60,8 @@ function probeZip(input: Uint8Array, options: ParseOptions): string | null {
         if (name.startsWith('word/')) return 'word';
         if (name.startsWith('ppt/')) return 'ppt';
         if (name.startsWith('Contents/') || name === 'content.hpf') return 'hwp';
+        if (name === 'config.json') hasKerasConfig = true;
+        if (name === 'model.weights.h5') hasKerasWeights = true;
         // ODF (.ods/.odt/.odp) — the stored `mimetype` member carries the type.
         if (name === 'mimetype') {
             const localOffset = view.getUint32(pos + 42, true);
@@ -67,6 +74,8 @@ function probeZip(input: Uint8Array, options: ParseOptions): string | null {
 
         pos = nameStart + nameLen + extraLen + commentLen;
     }
+
+    if (hasKerasConfig && hasKerasWeights) return 'keras';
 
     // OOXML content-types with no recognized part prefix, or a plain zip/jar.
     return null;

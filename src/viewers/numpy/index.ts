@@ -24,7 +24,13 @@ export async function mountNumpyViewer(
     options: MountOptions = {}
 ): Promise<ViewerHandle> {
     if (options.signal?.aborted) throw new MountAbortedError();
-    const model = await parseNumpy(input.data, input.fileName);
+    let model: NumpyDocument;
+    try {
+        model = await parseNumpy(input.data, input.fileName, { ...(options.signal ? { signal: options.signal } : {}) });
+    } catch (error) {
+        if (options.signal?.aborted) throw new MountAbortedError();
+        throw error;
+    }
     if (options.signal?.aborted) throw new MountAbortedError();
     return mountNumpyDocument(model, input.fileName, container, ctx, options);
 }
@@ -53,13 +59,16 @@ export function mountNumpyDocument(
     const header = el('header', 'omni-numpy__header');
     const mark = el('div', 'omni-numpy__mark', model.format.endsWith('NPZ') ? 'NPZ' : 'NPY');
     const heading = el('div', 'omni-numpy__heading');
-    heading.append(el('h1', undefined, fileName), el('div', 'omni-numpy__subtitle', `${model.title} · ${model.fileSize}`));
+    const documentTitle = t(model.format === 'NumPy NPZ' ? 'numpy.document.npz' : 'numpy.document.npy');
+    heading.append(el('h1', undefined, fileName), el('div', 'omni-numpy__subtitle', `${documentTitle} · ${model.fileSize}`));
     header.append(mark, heading);
 
     const summary = el('section', 'omni-numpy__summary');
     for (const item of model.summary) {
         const card = el('div', 'omni-numpy__stat');
-        card.append(el('span', 'omni-numpy__stat-label', item.label), el('strong', 'omni-numpy__stat-value', String(item.value)));
+        const labelKeys: Record<string, string> = { Arrays: 'numpy.summary.arrays', Elements: 'numpy.summary.elements', 'Data types': 'numpy.summary.dtypes', Status: 'numpy.summary.status' };
+        const value = item.value === 'invalid' ? t('numpy.invalid') : String(item.value);
+        card.append(el('span', 'omni-numpy__stat-label', t(labelKeys[item.label] ?? item.label)), el('strong', 'omni-numpy__stat-value', value));
         summary.append(card);
     }
 
@@ -67,7 +76,7 @@ export function mountNumpyDocument(
     const arraySelect = el('select', 'omni-numpy__select') as HTMLSelectElement;
     arraySelect.setAttribute('aria-label', t('numpy.selectArray'));
     model.arrays.forEach((array, index) => {
-        const option = el('option', undefined, `${array.name} · ${formatShape(array.shape)} · ${array.dtype}`) as HTMLOptionElement;
+        const option = el('option', undefined, `${array.name} · ${formatShape(array.shape, t('numpy.scalar'))} · ${array.dtype}`) as HTMLOptionElement;
         option.value = String(index); arraySelect.append(option);
     });
     const dataButton = el('button', undefined, t('numpy.data')) as HTMLButtonElement;
@@ -80,7 +89,13 @@ export function mountNumpyDocument(
 
     const warnings = el('section', 'omni-numpy__warnings');
     warnings.setAttribute('role', 'status');
-    model.warnings.forEach(warning => warnings.append(el('div', undefined, warning)));
+    if (model.diagnostics?.length) {
+        model.diagnostics.forEach(diagnostic => {
+            const message = t(`numpy.warning.${diagnostic.code}`, diagnostic.args);
+            const prefix = diagnostic.args?.name ? `${diagnostic.args.name}: ` : '';
+            warnings.append(el('div', undefined, prefix + message));
+        });
+    } else model.warnings.forEach(warning => warnings.append(el('div', undefined, warning)));
     warnings.hidden = model.warnings.length === 0;
     const content = el('main', 'omni-numpy__content');
     frame.append(header, summary, toolbar, warnings, content); root.append(frame);
@@ -90,19 +105,19 @@ export function mountNumpyDocument(
     const slices: number[] = [];
 
     const renderArrays = (): void => {
-        const table = model.tables[0];
-        if (!table) { content.append(el('div', 'omni-numpy__empty', t('numpy.noData'))); return; }
+        if (!model.arrays.length) { content.append(el('div', 'omni-numpy__empty', t('numpy.noData'))); return; }
         const wrap = el('div', 'omni-numpy__table-wrap');
         const tableNode = el('table');
         const head = el('thead'); const headRow = el('tr');
-        table.headers.forEach(headerText => headRow.append(el('th', undefined, headerText))); head.append(headRow);
+        ['name', 'dtype', 'shape', 'order', 'elements', 'dataSize'].forEach(key => headRow.append(el('th', undefined, t(`numpy.column.${key}`)))); head.append(headRow);
         const body = el('tbody');
-        table.rows.forEach((row, index) => {
+        model.arrays.forEach((array, index) => {
             const tr = el('tr'); tr.tabIndex = 0;
-            row.forEach(value => tr.append(el('td', undefined, String(value))));
+            [array.name, array.dtype, formatShape(array.shape, t('numpy.scalar')), array.fortranOrder ? 'Fortran' : 'C', array.elements, formatBytes(array.byteLength)]
+                .forEach(value => tr.append(el('td', undefined, String(value))));
             const activate = (): void => { activeArray = index; arraySelect.value = String(index); view = 'data'; resetSlices(); render(); };
-            on(tr, 'click', activate);
-            on(tr, 'keydown', event => { if ((event as KeyboardEvent).key === 'Enter') activate(); });
+            tr.onclick = activate;
+            tr.onkeydown = event => { if (event.key === 'Enter') activate(); };
             body.append(tr);
         });
         tableNode.append(head, body); wrap.append(tableNode); content.append(wrap);
@@ -119,14 +134,19 @@ export function mountNumpyDocument(
         if (!array) { content.append(el('div', 'omni-numpy__empty', t('numpy.noData'))); return; }
         const details = el('section', 'omni-numpy__details');
         for (const [label, value] of [
-            ['dtype', array.dtype], ['shape', formatShape(array.shape)], ['order', array.fortranOrder ? 'Fortran' : 'C'],
-            ['elements', String(array.elements)], ['bytes', String(array.byteLength)], ['kind', array.kind]
+            [t('numpy.detail.dtype'), array.dtype], [t('numpy.detail.shape'), formatShape(array.shape, t('numpy.scalar'))],
+            [t('numpy.detail.order'), array.fortranOrder ? 'Fortran' : 'C'], [t('numpy.detail.elements'), String(array.elements)],
+            [t('numpy.detail.bytes'), String(array.byteLength)], [t('numpy.detail.kind'), localizeKind(array.kind, t)]
         ]) {
             const item = el('div'); item.append(el('span', undefined, label), el('strong', undefined, value)); details.append(item);
         }
         content.append(details);
+        if (array.elements === 0) {
+            content.append(el('div', 'omni-numpy__empty', t('numpy.emptyArray'))); return;
+        }
         if (!array.values.length && array.elements > 0) {
-            content.append(el('div', 'omni-numpy__empty', t('numpy.previewUnavailable'))); return;
+            const budgetLimited = array.diagnostics?.some(diagnostic => diagnostic.code === 'previewLimit' || diagnostic.code === 'textPreviewLimit') ?? false;
+            content.append(el('div', 'omni-numpy__empty', t(budgetLimited ? 'numpy.previewLimited' : 'numpy.previewUnavailable'))); return;
         }
         if (array.shape.length > 2) content.append(renderSliceControls(array));
         content.append(renderGrid(array));
@@ -136,13 +156,13 @@ export function mountNumpyDocument(
         const panel = el('section', 'omni-numpy__slices');
         panel.append(el('span', 'omni-numpy__slices-label', t('numpy.slice')));
         for (let axis = 0; axis < array.shape.length - 2; axis++) {
-            const label = el('label'); label.append(el('span', undefined, `axis ${axis}`));
+            const label = el('label'); label.append(el('span', undefined, t('numpy.axis', { axis })));
             const input = el('input') as HTMLInputElement;
             input.type = 'number'; input.min = '0'; input.max = String(Math.max(0, array.shape[axis]! - 1)); input.value = String(slices[axis] ?? 0);
-            on(input, 'change', () => {
+            input.onchange = () => {
                 slices[axis] = Math.max(0, Math.min(array.shape[axis]! - 1, Number.parseInt(input.value, 10) || 0));
                 render();
-            });
+            };
             label.append(input); panel.append(label);
         }
         return panel;
@@ -161,7 +181,7 @@ export function mountNumpyDocument(
         const wrap = el('div', 'omni-numpy__table-wrap');
         const table = el('table', 'omni-numpy__grid');
         const head = el('thead'); const headRow = el('tr'); headRow.append(el('th', undefined, '#'));
-        if (rank === 1) headRow.append(el('th', undefined, 'value'));
+        if (rank === 1) headRow.append(el('th', undefined, t('numpy.value')));
         else for (let column = 0; column < shownColumns; column++) headRow.append(el('th', undefined, String(column)));
         head.append(headRow); table.append(head);
         const body = el('tbody');
@@ -181,7 +201,8 @@ export function mountNumpyDocument(
 
     const valueCell = (array: NumpyArray, coordinates: number[]): HTMLTableCellElement => {
         const index = storageIndex(array.shape, coordinates, array.fortranOrder);
-        const value = index < array.values.length ? String(array.values[index]) : '…';
+        const raw = array.values[index];
+        const value = index < array.values.length ? typeof raw === 'number' && Object.is(raw, -0) ? '-0' : String(raw) : '…';
         const td = el('td', undefined, value); td.title = `[${coordinates.join(', ')}] = ${value}`; return td;
     };
 
@@ -198,7 +219,7 @@ export function mountNumpyDocument(
     on(arraysButton, 'click', () => { view = 'arrays'; render(); });
     on(copyButton, 'click', () => {
         if (!ctx.clipboard) return;
-        void ctx.clipboard.writeText(JSON.stringify(model, null, 2)).catch(error => ctx.logger.log('error', `NumPy JSON copy failed: ${String(error)}`));
+        void ctx.clipboard.writeText(JSON.stringify(model, numpyJsonReplacer, 2)).catch(error => ctx.logger.log('error', `NumPy JSON copy failed: ${String(error)}`));
     });
     resetSlices(); render();
 
@@ -222,7 +243,33 @@ function storageIndex(shape: readonly number[], coordinates: readonly number[], 
     return index;
 }
 
-function formatShape(shape: readonly number[]): string { return shape.length ? shape.join(' × ') : 'scalar'; }
+function formatShape(shape: readonly number[], scalar = 'scalar'): string { return shape.length ? shape.join(' × ') : scalar; }
+
+function formatBytes(bytes: number): string {
+    if (bytes < 1024) return `${bytes} bytes`;
+    const units = ['KB', 'MB', 'GB', 'TB']; let value = bytes / 1024; let unit = units[0]!;
+    for (let index = 1; index < units.length && value >= 1024; index++) { value /= 1024; unit = units[index]!; }
+    return `${value.toFixed(value >= 10 ? 1 : 2)} ${unit}`;
+}
+
+function localizeKind(kind: string, t: (key: string, args?: Record<string, string | number>) => string): string {
+    const keys: Record<string, string> = {
+        boolean: 'boolean', 'signed integer': 'signedInteger', 'unsigned integer': 'unsignedInteger',
+        'floating point': 'floatingPoint', complex: 'complex', 'byte string': 'byteString',
+        'Unicode string': 'unicodeString', timedelta: 'timedelta', datetime: 'datetime', void: 'void', object: 'object', unknown: 'unknown'
+    };
+    return t(`numpy.kind.${keys[kind] ?? 'unknown'}`);
+}
+
+/** Preserves NumPy floating-point values that JSON would otherwise coerce. */
+export function numpyJsonReplacer(_key: string, value: unknown): unknown {
+    if (typeof value !== 'number') return value;
+    if (Number.isNaN(value)) return 'NaN';
+    if (value === Number.POSITIVE_INFINITY) return 'Infinity';
+    if (value === Number.NEGATIVE_INFINITY) return '-Infinity';
+    if (Object.is(value, -0)) return '-0';
+    return value;
+}
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] {
     const node = document.createElement(tag); if (className) node.className = className; if (text !== undefined) node.textContent = text; return node;

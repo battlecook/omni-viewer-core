@@ -161,6 +161,13 @@ export const GGUF_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'gguf',displayNameKe
 // its required IR version and graph fields after extension-based routing.
 export const ONNX_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'onnx',displayNameKey:'onnx.title',extensions:['onnx'],priority:20,requiredServices:[],optionalServices:['clipboard']};
 export const TFLITE_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'tflite',displayNameKey:'tflite.title',extensions:['tflite','lite'],priority:20,magicSignatures:TFLITE_MAGIC_SIGNATURES,requiredServices:[],optionalServices:['clipboard']};
+// A `.keras` model is a ZIP, so it carries no distinguishing leading magic and
+// is claimed by extension; extensionless archives reach it through
+// probeContainer, which recognizes the config.json + model.weights.h5 layout.
+// Keras also saves to plain `.h5`, which stays with the HDF5 viewer in stage 1
+// because only the model's *contents* tell the two apart — hosts that can read
+// the whole file refine that with looksLikeKerasHdf5 (parsers/keras).
+export const KERAS_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'keras',displayNameKey:'keras.title',extensions:['keras'],priority:20,requiredServices:[],optionalServices:['clipboard']};
 export const AUDIO_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'audio',displayNameKey:'audio.title',extensions:['mp3','wav','pcm','aiff','aif','aifc','amr','awb','ogg','flac','ac3','aac','m4a'],priority:20,requiredServices:[],optionalServices:['save']};
 export const VIDEO_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'video',displayNameKey:'video.title',extensions:['mp4','mts','m2ts','avi','mov','wmv','flv','webm','mkv'],priority:20,requiredServices:[],optionalServices:[]};
 export const DBC_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'dbc',displayNameKey:'dbc.title',extensions:['dbc'],priority:20,requiredServices:[],optionalServices:['clipboard']};
@@ -294,6 +301,7 @@ export const CORE_VIEWER_DESCRIPTORS: readonly ViewerDescriptor[] = [
     GGUF_VIEWER_DESCRIPTOR,
     ONNX_VIEWER_DESCRIPTOR,
     TFLITE_VIEWER_DESCRIPTOR,
+    KERAS_VIEWER_DESCRIPTOR,
     PPT_VIEWER_DESCRIPTOR,
     WORD_VIEWER_DESCRIPTOR,
     HWP_VIEWER_DESCRIPTOR,

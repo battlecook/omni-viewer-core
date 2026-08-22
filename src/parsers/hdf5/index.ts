@@ -20,6 +20,44 @@ export interface Hdf5Document {
 }
 
 /**
+ * One decoded attribute of a group or dataset.
+ *
+ * Attributes are where format-specific metadata lives (Keras keeps its model
+ * config and layer names there), so string and fixed-width numeric values are
+ * decoded; anything else is reported by datatype only, with `values` empty.
+ */
+export interface Hdf5Attribute {
+    name: string;
+    /** Datatype class name — 'String', 'Integer', 'Float', … */
+    type: string;
+    /** Dataspace dimensions; empty for a scalar attribute. */
+    shape: number[];
+    values: Array<string | number>;
+    /** true when the datatype is not decoded, or a budget stopped decoding. */
+    truncated: boolean;
+}
+
+/** A group or dataset with its attributes, for format-specific readers. */
+export interface Hdf5Object {
+    path: string;
+    kind: EntryKind;
+    /** Human-readable dimensions ('3 × 4', 'scalar'). */
+    shape: string;
+    /** Numeric dimensions when the dataspace was decoded. */
+    dimensions: number[];
+    type: string;
+    elementSize: number;
+    attributes: Hdf5Attribute[];
+}
+
+export interface Hdf5ObjectTree {
+    objects: Hdf5Object[];
+    warnings: string[];
+    /** true when an inspection limit stopped the traversal early. */
+    truncated: boolean;
+}
+
+/**
  * Minimal HDF5 (.h5/.hdf5) structure reader.
  *
  * It validates the file signature, decodes the superblock and walks the object
@@ -42,12 +80,40 @@ const UNDEFINED_ADDRESS = -1;
 const EMPTY = new Uint8Array(0);
 
 const MAX_ENTRIES = 5000;
+// Object-tree reads (readObjects) enumerate metadata only, and formats layered
+// on HDF5 legitimately reach far more objects than a document view ever shows:
+// a Keras model spends four objects per layer, so a deep one needs tens of
+// thousands before its parameter counts stop being complete.
+// 100k objects is ~25k layers of headroom while capping the retained tree at
+// tens of megabytes.
+const MAX_OBJECT_ENTRIES = 100_000;
+const MAX_OBJECT_NODES = 200_000;
 const MAX_DEPTH = 64;
 const MAX_NODES = 20000;
 // Object header message blocks are tiny; cap reads to guard against corrupt sizes.
 const MAX_BLOCK_BYTES = 32 * 1024 * 1024;
+// Link names are almost always short; the heap is read in windows of this size
+// and a name is abandoned past the cap so a heap without a terminator cannot
+// walk the whole file.
+const HEAP_STRING_WINDOW = 1024;
+const MAX_LINK_NAME_BYTES = 64 * 1024;
 
-type EntryKind = 'Group' | 'Dataset' | 'Unknown';
+export type EntryKind = 'Group' | 'Dataset' | 'Unknown';
+
+// Attribute decoding budgets. Keras stores a whole model config as one string
+// attribute, so single values are allowed to be large while the per-file total
+// stays bounded.
+const MAX_ATTRIBUTES_PER_OBJECT = 256;
+// Ceiling on attributes retained for one file. Distinct objects each holding
+// the per-object maximum would otherwise scale with the raised object cap.
+const MAX_TOTAL_ATTRIBUTES = 250_000;
+const MAX_ATTRIBUTE_ELEMENTS = 8192;
+const MAX_ATTRIBUTE_VALUE_BYTES = 8 * 1024 * 1024;
+const MAX_ATTRIBUTE_TOTAL_BYTES = 32 * 1024 * 1024;
+// Global heap collections are indexed on first use; both caps bound what a
+// crafted file can make the index hold.
+const MAX_CACHED_GLOBAL_HEAPS = 8;
+const MAX_GLOBAL_HEAP_OBJECTS = 65_536;
 
 /** Random-access view over the bytes of an HDF5 file. */
 export interface Hdf5Reader {
@@ -80,8 +146,10 @@ interface Hdf5Entry {
     path: string;
     kind: EntryKind;
     shape: string;
+    dimensions: number[];
     type: string;
     elementSize: number;
+    attributes: Hdf5Attribute[];
 }
 
 interface Hdf5Message {
@@ -117,6 +185,8 @@ const MSG_DATASPACE = 0x0001;
 const MSG_DATATYPE = 0x0003;
 const MSG_LINK = 0x0006;
 const MSG_DATA_LAYOUT = 0x0008;
+const MSG_ATTRIBUTE = 0x000c;
+const MSG_ATTRIBUTE_INFO = 0x0015;
 const MSG_CONTINUATION = 0x0010;
 const MSG_SYMBOL_TABLE = 0x0011;
 
@@ -126,7 +196,16 @@ export class Hdf5Parser {
     private readonly warnings: string[] = [];
     private superblock: Superblock | null = null;
     private nodeBudget = MAX_NODES;
+    private entryLimit = MAX_ENTRIES;
     private truncated = false;
+    /** Attribute decoding is opt-in: the document view never shows attributes,
+     *  and skipping them keeps the common traversal free of global-heap reads. */
+    private readAttributes = false;
+    private attributeByteBudget = MAX_ATTRIBUTE_TOTAL_BYTES;
+    private readonly globalHeaps = new Map<number, Map<number, { offset: number; size: number }> | null>();
+    private denseAttributesReported = false;
+    private readonly attributesByHeader = new Map<number, Hdf5Attribute[]>();
+    private attributeCount = 0;
 
     private constructor(reader: Hdf5Reader) {
         this.reader = reader;
@@ -142,6 +221,32 @@ export class Hdf5Parser {
         return new Hdf5Parser(new Hdf5Uint8ArrayReader(buffer)).build(fileSize);
     }
 
+    /**
+     * Walks the object hierarchy and returns every group and dataset together
+     * with its decoded attributes, for readers of formats that store their
+     * metadata in HDF5 attributes (Keras). Dataset payloads are still not read.
+     */
+    public static readObjects(reader: Hdf5Reader): Hdf5ObjectTree {
+        const parser = new Hdf5Parser(reader);
+        parser.readAttributes = true;
+        parser.entryLimit = MAX_OBJECT_ENTRIES;
+        parser.nodeBudget = MAX_OBJECT_NODES;
+        parser.walk();
+        return {
+            objects: parser.entries.map(entry => ({
+                path: entry.path,
+                kind: entry.kind,
+                shape: entry.shape,
+                dimensions: entry.dimensions,
+                type: entry.type,
+                elementSize: entry.elementSize,
+                attributes: entry.attributes
+            })),
+            warnings: [...parser.warnings],
+            truncated: parser.truncated || parser.nodeBudget <= 0
+        };
+    }
+
     private build(fileSize: string): Hdf5Document {
         const signatureOffset = this.findSignature();
         if (signatureOffset < 0) {
@@ -155,6 +260,17 @@ export class Hdf5Parser {
             };
         }
 
+        this.walk();
+        return this.toModel(fileSize);
+    }
+
+    /** Locates the superblock and traverses the object hierarchy from the root. */
+    private walk(): void {
+        const signatureOffset = this.findSignature();
+        if (signatureOffset < 0) {
+            this.warnings.push('The file does not start with the expected HDF5 signature (\\x89HDF\\r\\n\\x1a\\n).');
+            return;
+        }
         try {
             this.superblock = this.parseSuperblock(signatureOffset);
             if (this.superblock.rootHeaderAddress !== UNDEFINED_ADDRESS) {
@@ -163,8 +279,6 @@ export class Hdf5Parser {
         } catch (error) {
             this.warnings.push(`Structure parsing stopped: ${error instanceof Error ? error.message : 'unknown error'}.`);
         }
-
-        return this.toModel(fileSize);
     }
 
     private toModel(fileSize: string): Hdf5Document {
@@ -319,8 +433,8 @@ export class Hdf5Parser {
     }
 
     private visitObject(headerAddress: number, path: string, depth: number, ancestors: Set<number>): void {
-        if (headerAddress === UNDEFINED_ADDRESS || depth > MAX_DEPTH || this.entries.length >= MAX_ENTRIES) {
-            if (this.entries.length >= MAX_ENTRIES) {
+        if (headerAddress === UNDEFINED_ADDRESS || depth > MAX_DEPTH || this.entries.length >= this.entryLimit) {
+            if (this.entries.length >= this.entryLimit) {
                 this.truncated = true;
             }
             return;
@@ -341,20 +455,26 @@ export class Hdf5Parser {
         const linkMessages = messages.filter(message => message.type === MSG_LINK);
 
         const isDataset = Boolean(datatype && (dataspace || hasLayout));
+        // HDF5 hard links let many paths share one object header. Decoding its
+        // attributes once and sharing the result keeps a file with thousands of
+        // links to an attribute-rich object from multiplying the retained set.
+        const attributes = this.readAttributes ? this.attributesFor(headerAddress, messages) : [];
 
         if (isDataset) {
             this.entries.push({
                 path,
                 kind: 'Dataset',
                 shape: dataspace ? this.describeDataspace(dataspace.data) : 'scalar',
+                dimensions: dataspace ? this.dataspaceDimensions(dataspace.data) : [],
                 type: datatype ? this.describeDatatype(datatype.data) : 'unknown',
-                elementSize: datatype ? this.datatypeSize(datatype.data) : 0
+                elementSize: datatype ? this.datatypeSize(datatype.data) : 0,
+                attributes
             });
             return;
         }
 
         // Anything that is not a dataset is treated as a group node.
-        this.entries.push({ path, kind: 'Group', shape: '-', type: '-', elementSize: 0 });
+        this.entries.push({ path, kind: 'Group', shape: '-', dimensions: [], type: '-', elementSize: 0, attributes });
 
         const nextAncestors = new Set(ancestors).add(headerAddress);
         const children: Array<{ name: string; address: number }> = [];
@@ -491,7 +611,7 @@ export class Hdf5Parser {
 
     private collectSymbolTableNodes(address: number, output: number[], visited: Set<number>): void {
         const start = this.resolve(address);
-        if (address === UNDEFINED_ADDRESS || start < 0 || visited.has(start) || output.length > MAX_ENTRIES) {
+        if (address === UNDEFINED_ADDRESS || start < 0 || visited.has(start) || output.length > this.entryLimit) {
             return;
         }
         visited.add(start);
@@ -620,6 +740,237 @@ export class Hdf5Parser {
         return dims.length > 0 ? dims.join(' × ') : `rank ${rank}`;
     }
 
+    /** Numeric dimensions of a dataspace message; empty for a scalar. */
+    private dataspaceDimensions(data: Uint8Array): number[] {
+        if (data.length < 2) return [];
+        const version = byteAt(data, 0);
+        const rank = byteAt(data, 1);
+        if (rank === 0) return [];
+        const sizeOfLengths = this.sizeOfLengths();
+        let p = version >= 2 ? 4 : 8;
+        const dims: number[] = [];
+        for (let i = 0; i < rank && p + sizeOfLengths <= data.length; i++) {
+            dims.push(readLittleBuf(data, p, sizeOfLengths));
+            p += sizeOfLengths;
+        }
+        return dims;
+    }
+
+    /** Decoded attributes of an object header, shared across links to it. */
+    private attributesFor(headerAddress: number, messages: Hdf5Message[]): Hdf5Attribute[] {
+        const cached = this.attributesByHeader.get(headerAddress);
+        if (cached) return cached;
+        const decoded = this.decodeAttributes(messages);
+        // The cache is what makes hard links cheap, so it is only bounded by
+        // the number of distinct headers the traversal already admits.
+        this.attributesByHeader.set(headerAddress, decoded);
+        this.attributeCount += decoded.length;
+        return decoded;
+    }
+
+    private decodeAttributes(messages: Hdf5Message[]): Hdf5Attribute[] {
+        if (this.attributeCount >= MAX_TOTAL_ATTRIBUTES) {
+            this.truncated = true;
+            return [];
+        }
+        const attributes: Hdf5Attribute[] = [];
+        for (const message of messages) {
+            // Above a threshold HDF5 moves an object's attributes into a
+            // fractal heap, which this reader does not walk. Reporting the
+            // traversal as truncated keeps that from looking like an object
+            // that simply has no attributes.
+            if (message.type === MSG_ATTRIBUTE_INFO && this.hasDenseAttributes(message.data)) {
+                this.truncated = true;
+                if (!this.denseAttributesReported) {
+                    this.denseAttributesReported = true;
+                    this.warnings.push('Attributes stored in a dense (fractal heap) index were not read.');
+                }
+            }
+            if (message.type !== MSG_ATTRIBUTE) continue;
+            if (attributes.length >= MAX_ATTRIBUTES_PER_OBJECT) {
+                this.truncated = true;
+                break;
+            }
+            const attribute = this.decodeAttribute(message.data);
+            if (attribute) attributes.push(attribute);
+        }
+        return attributes;
+    }
+
+    /**
+     * An Attribute Info message points at the fractal heap holding an object's
+     * attributes once they no longer fit in the object header: version(1),
+     * flags(1), [maximum creation index(2) when flags bit 0 is set], then the
+     * heap address. An undefined heap address means the attributes are still
+     * stored compactly in the header.
+     */
+    private hasDenseAttributes(data: Uint8Array): boolean {
+        if (data.length < 2) return false;
+        const flags = byteAt(data, 1);
+        const offset = 2 + ((flags & 0x01) !== 0 ? 2 : 0);
+        return readOffsetBuf(data, offset, this.sizeOfOffsets()) !== UNDEFINED_ADDRESS;
+    }
+
+    /**
+     * Attribute message layout (versions 1-3). Version 1 pads the name,
+     * datatype, and dataspace sections to 8-byte boundaries; versions 2 and 3
+     * store them back to back, and version 3 adds a name character set byte.
+     * Shared datatype/dataspace messages (version 2+ flags) are not followed.
+     */
+    private decodeAttribute(data: Uint8Array): Hdf5Attribute | null {
+        if (data.length < 8) return null;
+        const version = byteAt(data, 0);
+        if (version < 1 || version > 3) return null;
+        const flags = version === 1 ? 0 : byteAt(data, 1);
+        const nameSize = readU16(data, 2);
+        const datatypeSize = readU16(data, 4);
+        const dataspaceSize = readU16(data, 6);
+        let p = version === 3 ? 9 : 8;
+        const pad = (size: number): number => version === 1 ? Math.ceil(size / 8) * 8 : size;
+
+        if (p + nameSize > data.length) return null;
+        const rawName = data.subarray(p, p + nameSize);
+        const nameEnd = rawName.indexOf(0);
+        const name = decodeUtf8(nameEnd < 0 ? rawName : rawName.subarray(0, nameEnd));
+        p += pad(nameSize);
+
+        if (p + datatypeSize > data.length) return null;
+        const datatype = data.subarray(p, p + datatypeSize);
+        p += pad(datatypeSize);
+        if (p + dataspaceSize > data.length) return null;
+        const dataspace = data.subarray(p, p + dataspaceSize);
+        p += pad(dataspaceSize);
+
+        const shape = this.dataspaceDimensions(dataspace);
+        const type = this.describeDatatype(datatype);
+        // Bits 0/1 mark a shared datatype/dataspace, which points at a message
+        // elsewhere in the file instead of carrying it inline.
+        if (flags & 0x03) return { name, type, shape, values: [], truncated: true };
+        const decoded = this.decodeAttributeValues(datatype, shape, data.subarray(p));
+        return { name, type, shape, values: decoded.values, truncated: decoded.truncated };
+    }
+
+    private decodeAttributeValues(
+        datatype: Uint8Array,
+        shape: readonly number[],
+        payload: Uint8Array
+    ): { values: Array<string | number>; truncated: boolean } {
+        const classId = datatype.length > 0 ? byteAt(datatype, 0) & 0x0f : -1;
+        const itemSize = this.datatypeSize(datatype);
+        const declared = shape.reduce((product, dimension) => product * dimension, 1);
+        const count = Math.min(declared, MAX_ATTRIBUTE_ELEMENTS);
+        let truncated = count < declared;
+        const values: Array<string | number> = [];
+
+        const spend = (bytes: number): boolean => {
+            if (bytes > MAX_ATTRIBUTE_VALUE_BYTES || bytes > this.attributeByteBudget) return false;
+            this.attributeByteBudget -= bytes;
+            return true;
+        };
+
+        if (classId === 3) {
+            // Fixed-length string: `itemSize` bytes per element, null padded.
+            if (itemSize <= 0) return { values, truncated: true };
+            for (let index = 0; index < count; index++) {
+                const start = index * itemSize;
+                if (start + itemSize > payload.length || !spend(itemSize)) { truncated = true; break; }
+                values.push(trimNulls(payload.subarray(start, start + itemSize)));
+            }
+            return { values, truncated };
+        }
+
+        // Class bit field bits 0-3 select the variable-length flavour: 1 = string.
+        if (classId === 9 && (byteAt(datatype, 1) & 0x0f) === 1) {
+            // Variable-length string: each element is a descriptor of
+            // length + global heap collection address + object index.
+            const sizeOfOffsets = this.sizeOfOffsets();
+            const descriptorSize = 4 + sizeOfOffsets + 4;
+            for (let index = 0; index < count; index++) {
+                const start = index * descriptorSize;
+                if (start + descriptorSize > payload.length) { truncated = true; break; }
+                const length = readU32(payload, start);
+                const heapAddress = readOffsetBuf(payload, start + 4, sizeOfOffsets);
+                const objectIndex = readU32(payload, start + 4 + sizeOfOffsets);
+                if (!spend(Math.min(length, MAX_ATTRIBUTE_VALUE_BYTES + 1))) { truncated = true; break; }
+                const bytes = this.readGlobalHeapObject(heapAddress, objectIndex);
+                if (!bytes) { truncated = true; break; }
+                values.push(decodeUtf8(bytes.subarray(0, Math.min(length, bytes.length))));
+            }
+            return { values, truncated };
+        }
+
+        const numeric = classId === 0 ? [1, 2, 4, 8].includes(itemSize) : classId === 1 && [4, 8].includes(itemSize);
+        if (numeric) {
+            const bigEndian = (byteAt(datatype, 1) & 0x01) === 1;
+            const signed = classId === 0 && (byteAt(datatype, 1) & 0x08) !== 0;
+            for (let index = 0; index < count; index++) {
+                const start = index * itemSize;
+                if (start + itemSize > payload.length || !spend(itemSize)) { truncated = true; break; }
+                values.push(readNumber(payload, start, itemSize, bigEndian, signed, classId === 1));
+            }
+            return { values, truncated };
+        }
+
+        return { values, truncated: true };
+    }
+
+    /**
+     * Reads one object out of a global heap collection ('GCOL'), where
+     * variable-length values keep their payload.
+     *
+     * A collection packs thousands of objects, and every value of an attribute
+     * usually lands in the same one, so the object offsets are indexed on first
+     * use. Rescanning per lookup would make reading n values cost O(n²) — a few
+     * hundred thousand strings took tens of seconds before this cache.
+     */
+    private readGlobalHeapObject(address: number, index: number): Uint8Array | null {
+        const start = this.resolve(address);
+        if (index === 0 || start < 0) return null;
+        const collection = this.globalHeapIndex(start);
+        const object = collection?.get(index);
+        if (!object) return null;
+        const bytes = this.reader.read(object.offset, Math.min(object.size, MAX_ATTRIBUTE_VALUE_BYTES));
+        return bytes.length > 0 || object.size === 0 ? bytes : null;
+    }
+
+    /** Object offsets of one global heap collection, built once per address. */
+    private globalHeapIndex(start: number): Map<number, { offset: number; size: number }> | null {
+        const cached = this.globalHeaps.get(start);
+        if (cached !== undefined) return cached;
+        const index = this.readGlobalHeapIndex(start);
+        // Bounded so a file full of collections cannot pin unbounded memory;
+        // insertion order makes the first entry the oldest.
+        if (this.globalHeaps.size >= MAX_CACHED_GLOBAL_HEAPS) {
+            const oldest = this.globalHeaps.keys().next();
+            if (!oldest.done) this.globalHeaps.delete(oldest.value);
+        }
+        this.globalHeaps.set(start, index);
+        return index;
+    }
+
+    private readGlobalHeapIndex(start: number): Map<number, { offset: number; size: number }> | null {
+        if (!this.matchesAscii(start, 'GCOL')) return null;
+        const sizeOfLengths = this.sizeOfLengths();
+        const header = this.reader.read(start + 8, sizeOfLengths);
+        const collectionSize = Math.min(readLittleBuf(header, 0, sizeOfLengths), MAX_BLOCK_BYTES);
+        const objectHeaderSize = 8 + sizeOfLengths;
+        const objects = new Map<number, { offset: number; size: number }>();
+        let p = 8 + sizeOfLengths;
+        while (p + objectHeaderSize <= collectionSize && objects.size < MAX_GLOBAL_HEAP_OBJECTS) {
+            const objectHeader = this.reader.read(start + p, objectHeaderSize);
+            if (objectHeader.length < objectHeaderSize) break;
+            const objectIndex = readU16(objectHeader, 0);
+            const size = readLittleBuf(objectHeader, 8, sizeOfLengths);
+            // Index 0 is the collection's free space, which ends the object list.
+            if (objectIndex === 0) break;
+            if (!objects.has(objectIndex)) objects.set(objectIndex, { offset: start + p + objectHeaderSize, size });
+            const next = p + objectHeaderSize + Math.ceil(size / 8) * 8;
+            if (next <= p) break;
+            p = next;
+        }
+        return objects;
+    }
+
     private describeDatatype(data: Uint8Array): string {
         if (data.length < 1) {
             return 'unknown';
@@ -637,16 +988,33 @@ export class Hdf5Parser {
         return data.length >= 8 ? readU32(data, 4) : 0;
     }
 
+    /**
+     * Reads a null-terminated name out of a local heap. Names are usually short,
+     * so the heap is read a window at a time and only grows for the rare long
+     * one — a fixed window would silently truncate the name, and a truncated
+     * name becomes a wrong object path rather than a visible failure.
+     */
     private readHeapString(offset: number): string {
         if (offset < 0 || offset >= this.reader.size) {
             return '';
         }
-        const buf = this.reader.read(offset, 1024);
-        let end = 0;
-        while (end < buf.length && buf[end] !== 0) {
-            end++;
+        const chunks: Uint8Array[] = [];
+        for (let read = 0; read < MAX_LINK_NAME_BYTES; read += HEAP_STRING_WINDOW) {
+            const buf = this.reader.read(offset + read, Math.min(HEAP_STRING_WINDOW, MAX_LINK_NAME_BYTES - read));
+            if (buf.length === 0) break;
+            const end = buf.indexOf(0);
+            chunks.push(end < 0 ? buf : buf.subarray(0, end));
+            if (end >= 0 || buf.length < HEAP_STRING_WINDOW) break;
         }
-        return decodeUtf8(buf.subarray(0, end));
+        if (chunks.length === 1) return decodeUtf8(chunks[0]!);
+        const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+        const name = new Uint8Array(total);
+        let position = 0;
+        for (const chunk of chunks) {
+            name.set(chunk, position);
+            position += chunk.length;
+        }
+        return decodeUtf8(name);
     }
 
     private matchesAscii(offset: number, signature: string): boolean {
@@ -719,6 +1087,35 @@ function byteAt(buffer: Uint8Array, offset: number): number {
     return buffer[offset] ?? 0;
 }
 
+/** Decodes a null-padded fixed-length string element. */
+function trimNulls(buffer: Uint8Array): string {
+    let end = buffer.length;
+    while (end > 0 && buffer[end - 1] === 0) end--;
+    return decodeUtf8(buffer.subarray(0, end));
+}
+
+function readNumber(
+    buffer: Uint8Array,
+    offset: number,
+    size: number,
+    bigEndian: boolean,
+    signed: boolean,
+    float: boolean
+): number {
+    const view = new DataView(buffer.buffer, buffer.byteOffset + offset, size);
+    const little = !bigEndian;
+    if (float) return size === 4 ? view.getFloat32(0, little) : view.getFloat64(0, little);
+    if (size === 1) return signed ? view.getInt8(0) : view.getUint8(0);
+    if (size === 2) return signed ? view.getInt16(0, little) : view.getUint16(0, little);
+    if (size === 4) return signed ? view.getInt32(0, little) : view.getUint32(0, little);
+    const wide = signed ? view.getBigInt64(0, little) : view.getBigUint64(0, little);
+    // Attributes carry counters and flags, never values needing 64-bit range;
+    // clamping keeps the decoded type a plain number.
+    return wide > BigInt(Number.MAX_SAFE_INTEGER) || wide < BigInt(Number.MIN_SAFE_INTEGER)
+        ? Number.NaN
+        : Number(wide);
+}
+
 function readU16(buffer: Uint8Array, offset: number): number {
     if (offset < 0 || offset + 2 > buffer.length) return 0;
     return (buffer[offset] ?? 0) | ((buffer[offset + 1] ?? 0) << 8);
@@ -766,4 +1163,12 @@ function hexRows(buffer: Uint8Array, start: number, end: number): Array<Array<st
 /** Convenience function for adapters and the built-in viewer. */
 export function parseHdf5(input: Uint8Array, fileSize = formatFileSize(input.byteLength)): Hdf5Document {
     return Hdf5Parser.parse(input, fileSize);
+}
+
+/**
+ * Groups, datasets, and attributes of an in-memory HDF5 file — the entry point
+ * for parsers of formats layered on HDF5 (Keras `.h5`, `.keras` weights).
+ */
+export function readHdf5Objects(input: Uint8Array | Hdf5Reader): Hdf5ObjectTree {
+    return Hdf5Parser.readObjects(input instanceof Uint8Array ? new Hdf5Uint8ArrayReader(input) : input);
 }

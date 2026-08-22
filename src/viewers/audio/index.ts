@@ -321,8 +321,14 @@ export function estimateDecodedSize(fileName: string, data: Uint8Array): Decoded
 const sized = (sampleRate: number, channels: number, frames: number): DecodedSizeEstimate =>
     ({ sampleRate, channels, frames, bytes: frames * channels * 4 });
 
+// A 4096-sample analysis window: fine enough to separate the mel bands, and
+// large enough that a long track is not chopped into a punishing number of
+// columns — the plugin's 512 default would produce eight times as many.
+//
+// `noverlap` is deliberately left unset. The plugin derives the hop from the
+// canvas width; pinning it to 2048 produced twice the necessary columns, each
+// one a synchronous FFT on the main thread.
 const SPECTROGRAM_FFT_SIZE = 4096;
-const SPECTROGRAM_OVERLAP = 2048;
 const SPECTROGRAM_HEIGHT = 250;
 
 export async function mountAudioViewer(
@@ -731,13 +737,17 @@ async function mountWaveformViewer(
                 height: SPECTROGRAM_HEIGHT,
                 splitChannels: (decoded?.numberOfChannels ?? 1) > 1,
                 scale,
-                fftSamples: SPECTROGRAM_FFT_SIZE,
-                noverlap: SPECTROGRAM_OVERLAP
+                fftSamples: SPECTROGRAM_FFT_SIZE
             }));
         }
         if (!wantsSpectrogram && spectrogramPlugin) destroySpectrogram();
 
-        waveformWrap.hidden = !showsWaveform(mode);
+        // Collapsed, not hidden. `display: none` takes the waveform out of
+        // layout, and the spectrogram plugin derives its hop from that
+        // element's width — a width of 0 makes the hop degenerate and the
+        // render never finishes. Measured: visible renders a 12-minute track
+        // in ~6 s, hidden does not complete in 200 s.
+        waveformWrap.classList.toggle('is-collapsed', !showsWaveform(mode));
         spectrogram.classList.toggle('omni-audio__spectrogram--active', wantsSpectrogram);
         scaleGroup.hidden = !wantsSpectrogram;
     };

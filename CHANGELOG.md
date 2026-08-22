@@ -5,6 +5,108 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.0] - 2026-08-23
+
+### Added
+
+- Keras model parsing and an interactive viewer covering both save formats,
+  exposed through `parsers/keras` and `viewers/keras`. A `.keras` file is a ZIP
+  whose members Keras stores uncompressed, so `config.json`, `metadata.json`,
+  and the `model.weights.h5` store are read in place from the central directory;
+  JSZip is only imported for an archive that was re-zipped with compression. A
+  legacy `.h5` model is read as HDF5, taking `model_config` and
+  `training_config` from the root attributes and the parameters from
+  `/model_weights`. Weight payloads are never read — only dataset shapes and
+  datatypes are walked — so parameter counts stay cheap on multi-gigabyte
+  models. The viewer lists layers with nested sub-models flattened by depth,
+  per-layer configuration, inbound connections, and weights, plus searchable
+  weight, configuration, training, archive, and model-information panels and
+  JSON copy. `.keras` routes by extension and an extensionless archive is
+  resolved by `probeContainer`, which now recognizes the
+  `config.json` + `model.weights.h5` layout; `.h5` stays with the HDF5 viewer,
+  since only a file's contents distinguish a Keras model from any other HDF5
+  file, and hosts that read the whole file can refine that with
+  `looksLikeKerasHdf5`. Parsing is bounded by archive entry count, per-member
+  size, layer and weight ceilings, and a configuration preview budget, each
+  reported as a warning; labels, columns, and warnings are localized in English,
+  Korean, Japanese, and Simplified Chinese.
+- `readHdf5Objects` (`parsers/hdf5`), which walks the object hierarchy and
+  returns every group and dataset together with its decoded attributes, for
+  readers of formats layered on HDF5. Attribute decoding covers fixed-length and
+  variable-length (global-heap) strings and fixed-width integers and floats of
+  either byte order; anything else is reported by datatype with an empty value
+  list. Dataset payloads are still never read, and the traversal keeps its own
+  budgets — raised object and node ceilings, per-object and per-file attribute
+  counts, and per-value and cumulative attribute byte limits — with anything cut
+  short surfaced through `truncated`. Attributes moved into a dense (fractal
+  heap) index are not walked and are reported rather than looking like an object
+  with no attributes. The document view is unchanged: it never showed
+  attributes, and attribute decoding stays opt-in so the ordinary traversal
+  performs no global-heap reads.
+
+### Changed
+
+- NumPy parsing now accepts a `NumpyParseOptions` with an `AbortSignal`, checked
+  across archive expansion, header parsing, and value decoding, and the viewer
+  forwards its mount signal so a cancelled mount stops the parser instead of
+  running it to completion. Both `parseNumpy` and `parseNpy` take the options
+  argument optionally, so existing calls are unaffected.
+- NPZ members are no longer inflated by JSZip's global CRC check before the
+  per-array limits can run. The archive's declared entry count and cumulative
+  uncompressed size are read from the central directory up front, and each
+  selected `.npy` member is then expanded through a bounded stream that stops at
+  the per-array and total ceilings; CRC is verified per member, and a member
+  that fails validation is skipped with a warning instead of failing the file.
+- NumPy warnings carry a stable diagnostic code and arguments alongside their
+  English text (`NumpyDocument.diagnostics`, `NumpyArray.diagnostics`), which is
+  what lets the viewer render them in the host's language.
+- The NPY header is now parsed as the pickle-free simple grammar NumPy actually
+  writes, instead of by regular expressions over the raw text: duplicate keys,
+  missing or extra fields, escaped strings, and trailing syntax are rejected
+  rather than partially matched. New parse ceilings bound header size, array
+  rank, per-value and per-document string preview length, and string item width.
+
+### Fixed
+
+- Spectrogram-only mode no longer freezes on long audio. Hiding the waveform
+  with `display: none` took it out of layout, and the spectrogram plugin derives
+  its FFT hop from that element's width — a width of 0 made the hop degenerate
+  and the render never finished. The waveform is now collapsed to zero height
+  with its width intact. Measured on a 12-minute track: ~6 s visible, versus no
+  completion after 200 s hidden. The explicit `noverlap` of 2048 is also gone;
+  it forced twice the necessary columns, each a synchronous main-thread FFT,
+  where the plugin's width-derived hop is enough.
+- NumPy viewer text that came from the parser was displayed in English
+  regardless of locale, despite 0.15.0 shipping the viewer as localized. Summary
+  labels, array-table columns, detail labels, dtype kind names, axis labels, the
+  document title, and every parser warning are now message keys resolved through
+  the host catalog in English, Korean, Japanese, and Simplified Chinese.
+- Copying a NumPy array as JSON silently corrupted the values `JSON.stringify`
+  cannot represent: `NaN` and both infinities became `null`, and `-0` became
+  `0`. They are now emitted as the strings NumPy prints. `-0` also renders as
+  `-0` in the value grid, and a complex value with a negative-zero imaginary
+  part no longer prints as `+0j`.
+- An NPY shape of `(3)` — a parenthesized integer, which is not a Python tuple —
+  was read as a one-dimensional array of 3 elements instead of being rejected,
+  and a shape containing a non-numeric dimension could pass through the same
+  filter. Shapes are now validated as tuples, requiring the trailing comma on
+  the rank-1 form.
+- An NPY file declaring a version such as `1.7` was parsed as 1.0 rather than
+  reported as unsupported, and a `datetime64`/`timedelta64` unit suffix was
+  accepted on dtypes that cannot carry one.
+- Object arrays and unrecognized dtypes no longer draw a spurious payload
+  length-mismatch or trailing-bytes warning; those have no fixed item width, so
+  the expected byte count they were compared against was meaningless. A
+  zero-width string dtype (`S0`, `U0`) now reports its elements as empty strings
+  instead of showing no values at all.
+- An HDF5 link name longer than 1024 bytes was silently truncated at the local
+  heap read, which turned into a wrong object path rather than a visible
+  failure. Names are now read in windows up to a 64 KiB cap.
+- Reading many variable-length HDF5 strings was quadratic: each value rescanned
+  the global heap collection from its start, so a few hundred thousand strings
+  took tens of seconds. Collection object offsets are indexed once per address,
+  behind a bounded cache.
+
 ## [0.15.0] - 2026-08-13
 
 ### Added

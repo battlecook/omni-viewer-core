@@ -2,8 +2,9 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { Buffer } from 'node:buffer';
+import { gunzipSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
-import { Hdf5Parser } from './index.js';
+import { Hdf5Parser, readHdf5Objects } from './index.js';
 import { parseHdf5File } from './node.js';
 
 // Real HDF5 files produced by the HDF5 C library (h5cc).
@@ -107,6 +108,18 @@ const LATEST_H5_BASE64 =
     'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPg/AAAAAAAACEAAAAAAAAASQAAAAAAAABhAAAAAAAAAHkAAAAAA' +
     'AAAiQAAAAAAAACVAAAAAAAAAKEAAAAAAAAArQAAAAAAAAC5AAAAAAACAMEABAAAAAgAAAAMAAAAEAAAABQAAAA==';
 
+// Written by h5py 3.16 (gzipped: HDF5 files are mostly zero padding). Root
+// attributes cover every decoded datatype — a variable-length UTF-8 string
+// stored in the global heap, a fixed-length string array, signed and unsigned
+// integers of both byte orders, and a float — plus a dataset attribute.
+const ATTRIBUTES_H5_GZIP =
+    'H4sIAA75fmoC/+2UMU/CQBTH7wrICRghkoAudjRODAxuYARlMGLUwU0LVGjStIZeZx1190M4OvoR/AiOxslvgb3ea+lVTUicjO+3PK5373/v' +
+    'Pd69+15nf6WwUSACxkiWlEmSGdCoq+to/xIsBXsH9lGLvrNwD9wDdamvZ+T6GRzPTrpdcXqWIrrnIyctI8h/pNfdPRb2PO4jyYumnhsZ3Ej2' +
+    'Y++X91bgpnRfl0gb+jtHqkFXOi43xXqd0tCjHMfAlPdRTTQxTemw4JVwY+yJ9VqwKVqeUukZpRlZw76eGANTJhvqNEBnKfjNyND1HS7iYNF1' +
+    'bSWO7dhvJ/YTeUwNbrkib70V+zWLpDnLqO9c8tYqQYUpKQZadTKwxhemM7IMB/6nZRLMlPDFy3M/5APS2rweS6HelS0L8qWeoANhxZbCKeFP' +
+    'EwFTsiWtpvplU/7zdT10reibcfw1Rmo3sJ+DuaZpUpDBhMvQaNQ1lEol8xJ19h2Lewv0Sz7RL9o3uotyetTv0HAaS16zOFMQQg72+oc0MVCV' +
+    'ORUwMW3b1d9vH3SD86k18LnpJd9tHuzQtD3L92Ldp1WsLYIgCIIgCIIgCIL8VT4Bsj5NoTAYAAA=';
+
 function tableRows(model: ReturnType<typeof Hdf5Parser.parse>, prefix: string): Array<Array<string | number>> {
     const table = model.tables.find(entry => entry.title.startsWith(prefix));
     if (!table) {
@@ -169,5 +182,35 @@ describe('Hdf5Parser', () => {
         } finally {
             fs.rmSync(tempDir, { recursive: true, force: true });
         }
+    });
+
+    it('decodes group and dataset attributes, including global-heap strings', () => {
+        const objects = readHdf5Objects(new Uint8Array(gunzipSync(Buffer.from(ATTRIBUTES_H5_GZIP, 'base64'))));
+
+        expect(objects.warnings).toEqual([]);
+        expect(objects.truncated).toBe(false);
+        const root = objects.objects.find(object => object.path === '/');
+        const attribute = (name: string): unknown => root?.attributes.find(entry => entry.name === name);
+
+        expect(attribute('note')).toMatchObject({ shape: [], values: ['hello — attributes'], truncated: false });
+        expect(attribute('tags')).toMatchObject({ type: 'String', shape: [2], values: ['alpha', 'beta'] });
+        expect(attribute('count')).toMatchObject({ type: 'Integer64', values: [42] });
+        expect(attribute('ratio')).toMatchObject({ type: 'Float64', values: [0.5] });
+        expect(attribute('big_endian')).toMatchObject({ type: 'Integer32', values: [1, 2] });
+        expect(attribute('flags')).toMatchObject({ type: 'Integer8', values: [1, 0, 1] });
+
+        const dataset = objects.objects.find(object => object.path === '/data');
+        expect(dataset).toMatchObject({ kind: 'Dataset', dimensions: [3, 4], type: 'Float32', elementSize: 4 });
+        expect(dataset?.attributes).toEqual([
+            { name: 'units', type: 'Variable-length', shape: [], values: ['celsius'], truncated: false }
+        ]);
+    });
+
+    it('returns an empty attribute list for objects that carry none', () => {
+        const buffer = Buffer.from(DEFAULT_H5_BASE64, 'base64');
+        const objects = readHdf5Objects(new Uint8Array(buffer));
+
+        expect(objects.objects.map(object => object.path)).toContain('/measurements/temperature');
+        expect(objects.objects.every(object => object.attributes.length === 0)).toBe(true);
     });
 });

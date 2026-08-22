@@ -77,6 +77,12 @@ describe('probeContainer — zip', () => {
         expect(await probeContainer(makeZip(['Contents/section0.xml', 'content.hpf']), 'zip')).toBe('hwp');
     });
 
+    it('routes a Keras 3 archive by its config + weight-store members', async () => {
+        expect(await probeContainer(makeZip(['metadata.json', 'config.json', 'model.weights.h5']), 'zip')).toBe('keras');
+        // config.json alone is an ordinary zip member, not a Keras model.
+        expect(await probeContainer(makeZip(['config.json', 'src/main.js']), 'zip')).toBeNull();
+    });
+
     it('returns null for a plain zip (no office parts)', async () => {
         expect(await probeContainer(makeZip(['hello.txt', 'readme.md']), 'zip')).toBeNull();
         // Content-types map alone (odd OOXML with no recognized part) → null.

@@ -66,6 +66,7 @@ describe('detectViewer (stage 1)', () => {
             ['a.onnx', 'onnx'],
             ['a.tflite', 'tflite'],
             ['a.lite', 'tflite'],
+            ['a.keras', 'keras'],
             ['a.json', 'json'],
             ['a.toml', 'toml'],
             ['a.jsonl', 'jsonl'],
@@ -116,6 +117,26 @@ describe('detectViewer (TFLite)', () => {
         expect(detectViewer('model.lite', undefined, undefined, TFLITE)).toEqual({ viewerId: 'tflite', matchedBy: 'extension' });
         expect(detectViewer('model.bin', undefined, undefined, TFLITE)).toEqual({ viewerId: 'tflite', matchedBy: 'content' });
         expect(detectViewer('broken.tflite', undefined, undefined, new Uint8Array(8))).toEqual({ viewerId: 'fallback', matchedBy: 'fallback' });
+    });
+});
+
+describe('detectViewer (Keras)', () => {
+    const ZIP = new Uint8Array([0x50, 0x4b, 0x03, 0x04]);
+    const HDF5 = new Uint8Array([0x89, 0x48, 0x44, 0x46, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+    it('claims .keras by extension and leaves .h5 with the HDF5 viewer', () => {
+        expect(detectViewer('model.keras')).toEqual({ viewerId: 'keras', matchedBy: 'extension' });
+        expect(detectViewer('MODEL.KERAS')).toEqual({ viewerId: 'keras', matchedBy: 'extension' });
+        expect(detectViewer('model.keras', undefined, undefined, ZIP)).toEqual({ viewerId: 'keras', matchedBy: 'extension' });
+        // Only the contents distinguish a Keras .h5 from any other HDF5 file,
+        // which stage-1 detection cannot read (README: looksLikeKerasHdf5).
+        expect(detectViewer('model.h5', undefined, undefined, HDF5)).toEqual({ viewerId: 'hdf5', matchedBy: 'extension' });
+    });
+
+    it('sends an extensionless .keras archive to the container probe', () => {
+        expect(detectViewer('model', undefined, undefined, ZIP)).toEqual({
+            viewerId: 'fallback', matchedBy: 'ambiguous-container', container: 'zip'
+        });
     });
 });
 

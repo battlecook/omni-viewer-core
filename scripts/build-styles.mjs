@@ -33,6 +33,7 @@ const entries = [
     ,['viewers/gguf/styles.js', 'ggufViewerCss', 'gguf.css']
     ,['viewers/onnx/styles.js', 'onnxViewerCss', 'onnx.css']
     ,['viewers/tflite/styles.js', 'tfliteViewerCss', 'tflite.css']
+    ,['viewers/keras/styles.js', 'kerasViewerCss', 'keras.css']
     ,['viewers/automotive/styles.js', 'automotiveViewerCss', 'automotive.css']
     ,['viewers/audio/index.js', 'audioViewerCss', 'audio.css']
     ,['viewers/video/index.js', 'videoViewerCss', 'video.css']

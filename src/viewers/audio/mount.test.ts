@@ -602,17 +602,32 @@ describe('audio viewer with WASM decode engine', () => {
             const { handle, vis, wave, spectrogram, created } = await mountWithSpectrogram();
             vis.value = 'both';
             vis.dispatchEvent(new Event('change'));
-            expect(wave.hidden).toBe(false);
+            expect(wave.classList.contains('is-collapsed')).toBe(false);
             expect(spectrogram.classList.contains('omni-audio__spectrogram--active')).toBe(true);
             expect(created).toHaveLength(1);
             handle.dispose();
         });
 
-        it('hides the waveform in spectrogram-only mode', async () => {
+        // Collapsed, never `hidden`: display:none drops the waveform from
+        // layout, and the spectrogram plugin reads its width to pick the hop.
+        // Measured on a 12-minute track — width 0 never finishes rendering,
+        // a real width renders in ~6 s.
+        it('collapses rather than hides the waveform in spectrogram-only mode', async () => {
             const { handle, vis, wave } = await mountWithSpectrogram();
             vis.value = 'spectrogram';
             vis.dispatchEvent(new Event('change'));
-            expect(wave.hidden).toBe(true);
+            expect(wave.classList.contains('is-collapsed')).toBe(true);
+            expect(wave.hidden).toBe(false);
+            handle.dispose();
+        });
+
+        it('restores the waveform when switching back', async () => {
+            const { handle, vis, wave } = await mountWithSpectrogram();
+            vis.value = 'spectrogram';
+            vis.dispatchEvent(new Event('change'));
+            vis.value = 'waveform';
+            vis.dispatchEvent(new Event('change'));
+            expect(wave.classList.contains('is-collapsed')).toBe(false);
             handle.dispose();
         });
 
@@ -629,13 +644,17 @@ describe('audio viewer with WASM decode engine', () => {
             handle.dispose();
         });
 
-        it('builds the spectrogram with mel and the original FFT settings', async () => {
+        // noverlap must stay unset: the plugin derives the hop from the canvas
+        // width, and pinning it doubled the column count — each column a
+        // synchronous FFT, which froze the tab on a 12-minute track.
+        it('builds the spectrogram with mel and lets the plugin choose the hop', async () => {
             const { handle, vis, created } = await mountWithSpectrogram();
             vis.value = 'spectrogram';
             vis.dispatchEvent(new Event('change'));
             expect(created[0]).toMatchObject({
-                scale: 'mel', fftSamples: 4096, noverlap: 2048, height: 250, labels: true
+                scale: 'mel', fftSamples: 4096, height: 250, labels: true
             });
+            expect(created[0]).not.toHaveProperty('noverlap');
             handle.dispose();
         });
 
