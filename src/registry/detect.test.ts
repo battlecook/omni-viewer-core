@@ -67,6 +67,8 @@ describe('detectViewer (stage 1)', () => {
             ['a.tflite', 'tflite'],
             ['a.lite', 'tflite'],
             ['a.keras', 'keras'],
+            ['a.mlmodel', 'coreml'],
+            ['a.mlpackage', 'coreml'],
             ['a.json', 'json'],
             ['a.toml', 'toml'],
             ['a.jsonl', 'jsonl'],
@@ -135,6 +137,27 @@ describe('detectViewer (Keras)', () => {
 
     it('sends an extensionless .keras archive to the container probe', () => {
         expect(detectViewer('model', undefined, undefined, ZIP)).toEqual({
+            viewerId: 'fallback', matchedBy: 'ambiguous-container', container: 'zip'
+        });
+    });
+});
+
+describe('detectViewer (Core ML)', () => {
+    const ZIP = new Uint8Array([0x50, 0x4b, 0x03, 0x04]);
+
+    it('claims both Core ML extensions, including a zipped .mlpackage bundle', () => {
+        expect(detectViewer('model.mlmodel')).toEqual({ viewerId: 'coreml', matchedBy: 'extension' });
+        expect(detectViewer('MODEL.MLMODEL')).toEqual({ viewerId: 'coreml', matchedBy: 'extension' });
+        expect(detectViewer('Model.mlpackage', undefined, undefined, ZIP))
+            .toEqual({ viewerId: 'coreml', matchedBy: 'extension' });
+        // A `.mlmodel` is a protobuf with no leading magic, so its bytes never
+        // contradict the extension the way an office container can.
+        expect(detectViewer('model.mlmodel', undefined, undefined, new Uint8Array([8, 8, 18, 0])))
+            .toEqual({ viewerId: 'coreml', matchedBy: 'extension' });
+    });
+
+    it('sends an extensionless zipped bundle to the container probe', () => {
+        expect(detectViewer('Model', undefined, undefined, ZIP)).toEqual({
             viewerId: 'fallback', matchedBy: 'ambiguous-container', container: 'zip'
         });
     });

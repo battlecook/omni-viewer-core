@@ -160,6 +160,13 @@ export const GGUF_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'gguf',displayNameKe
 // ONNX is a protobuf ModelProto with no fixed leading magic. The parser checks
 // its required IR version and graph fields after extension-based routing.
 export const ONNX_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'onnx',displayNameKey:'onnx.title',extensions:['onnx'],priority:20,requiredServices:[],optionalServices:['clipboard']};
+// A `.mlmodel` is a protobuf Model with no leading magic, and a `.mlpackage` is
+// a bundle whose zipped form carries only the generic ZIP signature — so both
+// are claimed by extension. An extensionless zipped package is resolved by
+// probeContainer, which recognizes the Manifest.json + Data/com.apple.CoreML
+// layout; hosts that can read a whole extensionless `.mlmodel` refine that with
+// looksLikeCoremlSpec (parsers/coreml), which the sniff prefix cannot answer.
+export const COREML_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'coreml',displayNameKey:'coreml.title',extensions:['mlmodel','mlpackage'],priority:20,requiredServices:[],optionalServices:['clipboard']};
 export const TFLITE_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'tflite',displayNameKey:'tflite.title',extensions:['tflite','lite'],priority:20,magicSignatures:TFLITE_MAGIC_SIGNATURES,requiredServices:[],optionalServices:['clipboard']};
 // A `.keras` model is a ZIP, so it carries no distinguishing leading magic and
 // is claimed by extension; extensionless archives reach it through
@@ -302,6 +309,7 @@ export const CORE_VIEWER_DESCRIPTORS: readonly ViewerDescriptor[] = [
     ONNX_VIEWER_DESCRIPTOR,
     TFLITE_VIEWER_DESCRIPTOR,
     KERAS_VIEWER_DESCRIPTOR,
+    COREML_VIEWER_DESCRIPTOR,
     PPT_VIEWER_DESCRIPTOR,
     WORD_VIEWER_DESCRIPTOR,
     HWP_VIEWER_DESCRIPTOR,

@@ -42,6 +42,10 @@ function probeZip(input: Uint8Array, options: ParseOptions): string | null {
     // alone is distinctive, so the decision waits until the scan finishes.
     let hasKerasConfig = false;
     let hasKerasWeights = false;
+    // A zipped .mlpackage bundle keeps its Manifest.json beside a Data tree
+    // reserved to com.apple.CoreML, optionally under the bundle's own folder.
+    let hasCoremlManifest = false;
+    let hasCoremlData = false;
 
     let pos = cdOffset;
     for (let i = 0; i < cap; i++) {
@@ -62,6 +66,8 @@ function probeZip(input: Uint8Array, options: ParseOptions): string | null {
         if (name.startsWith('Contents/') || name === 'content.hpf') return 'hwp';
         if (name === 'config.json') hasKerasConfig = true;
         if (name === 'model.weights.h5') hasKerasWeights = true;
+        if (name === 'Manifest.json' || name.endsWith('/Manifest.json')) hasCoremlManifest = true;
+        if (name.includes('Data/com.apple.CoreML/')) hasCoremlData = true;
         // ODF (.ods/.odt/.odp) — the stored `mimetype` member carries the type.
         if (name === 'mimetype') {
             const localOffset = view.getUint32(pos + 42, true);
@@ -75,6 +81,7 @@ function probeZip(input: Uint8Array, options: ParseOptions): string | null {
         pos = nameStart + nameLen + extraLen + commentLen;
     }
 
+    if (hasCoremlManifest && hasCoremlData) return 'coreml';
     if (hasKerasConfig && hasKerasWeights) return 'keras';
 
     // OOXML content-types with no recognized part prefix, or a plain zip/jar.

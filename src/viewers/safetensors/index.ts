@@ -1,5 +1,6 @@
 import type { ClipboardService, HostContext } from '../../host/index.js';
 import { parseSafetensors, parseSafetensorsSource, type SafetensorsDocument, type SafetensorsSource, type SafetensorsTable } from '../../parsers/safetensors/index.js';
+import { utf8ByteLength } from '../../parsers/types.js';
 import { MountAbortedError, VIEWER_ROOT_CLASS, type MountOptions, type ViewerHandle, type ViewerInput } from '../types.js';
 import { safetensorsViewerCss } from './styles.js';
 
@@ -16,6 +17,14 @@ export const SAFETENSORS_VIEWER_META = {
 };
 
 export type SafetensorsViewerContext = HostContext & { clipboard?: ClipboardService };
+
+/**
+ * Clipboard copy guard, matching the csv/excel viewers. The system clipboard
+ * is shared with every other application on the machine, so a model with a
+ * huge tensor list is refused with an explanation rather than silently
+ * truncated — a truncated paste that looks complete is worse than no paste.
+ */
+export const SAFETENSORS_COPY_PAYLOAD_LIMIT_BYTES = 1024 * 1024;
 
 /** Lazy input used by large-file hosts to avoid materializing tensor payloads. */
 export interface SafetensorsViewerSource extends SafetensorsSource {
@@ -127,6 +136,9 @@ export function mountSafetensorsDocument(
     const warnings = element('section', 'omni-safetensors__warnings');
     warnings.setAttribute('role', 'status');
     for (const warning of document.warnings) warnings.append(element('div', undefined, warning));
+    const copyStatus = element('div');
+    copyStatus.hidden = true;
+    warnings.append(copyStatus);
     if (document.warnings.length === 0) warnings.hidden = true;
     const content = element('main', 'omni-safetensors__content');
     frame.append(header, summary, toolbar, warnings, content);
@@ -211,7 +223,18 @@ export function mountSafetensorsDocument(
     on(search, 'input', () => renderContent());
     on(copy, 'click', () => {
         if (!ctx.clipboard) return;
-        void ctx.clipboard.writeText(JSON.stringify(document, null, 2));
+        const payload = JSON.stringify(document, null, 2);
+        const payloadBytes = utf8ByteLength(payload);
+        if (payloadBytes > SAFETENSORS_COPY_PAYLOAD_LIMIT_BYTES) {
+            // Not `common.copyTooLarge` — that one sends the user to a file
+            // export, and this viewer has no export control to send them to.
+            copyStatus.textContent = ctx.i18n.t('common.copyTooLargeNoExport', { size: payloadBytes });
+            copyStatus.hidden = false;
+            warnings.hidden = false;
+            return;
+        }
+        copyStatus.hidden = true;
+        void ctx.clipboard.writeText(payload);
         copy.textContent = ctx.i18n.t('common.copied');
         if (copyResetTimer !== undefined) clearTimeout(copyResetTimer);
         copyResetTimer = setTimeout(() => { copy.textContent = ctx.i18n.t('safetensors.copyJson'); }, 1200);

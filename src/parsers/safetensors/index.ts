@@ -34,7 +34,13 @@ export interface SafetensorsSourceParseOptions {
 
 /** One tensor as declared in the safetensors header. */
 export interface SafetensorsTensor {
+    /**
+     * Display form of the declared name: a name longer than the viewer's budget
+     * is elided in the middle, so this is not guaranteed to round-trip back to
+     * the header. Real tensor names are far below the budget and pass through.
+     */
     name: string;
+    /** Display form of the declared dtype, elided on the same budget as `name`. */
     dtype: string;
     shape: number[];
     /** [begin, end) byte range inside the tensor data buffer. */
@@ -61,19 +67,57 @@ export interface SafetensorsTensor {
 const HEADER_LENGTH_BYTES = 8;
 // A safetensors header is JSON metadata only; real files stay well under this.
 // The cap guards against a corrupt length field claiming gigabytes of "header".
+// It matches MAX_HEADER_SIZE in the reference implementation.
 const MAX_HEADER_BYTES = 100_000_000;
+// What this viewer will actually parse. The spec bound above is far past
+// anything a real model produces (a 50,000-tensor model's header is a few MB),
+// and `JSON.parse` on a header near it costs seconds on the host's UI thread —
+// measured at 16 s for a 95 MB header — with no way to stream or interrupt it.
+// Such a file is refused with an explanation instead of freezing the tab.
+const MAX_PARSED_HEADER_BYTES = 16_000_000;
 const METADATA_KEY = '__metadata__';
+// The largest real models declare a few thousand tensors. The cap is two
+// orders of magnitude above that, and exists because everything past this
+// point — a row per tensor, the sort, the preview text — is synchronous work
+// on the host's UI thread. A header claiming millions of entries is hostile,
+// not a model, and must not be able to freeze the tab that opened it.
+const MAX_TENSOR_ENTRIES = 50_000;
+// The entry cap alone bounds row count, not size: one entry may carry a
+// megabytes-long name, and every name is held three times over (the tensor
+// record, the table cell, the structure preview). Real names run tens of
+// characters, so these budgets are invisible to any genuine model.
+const MAX_TENSOR_NAME_CHARS = 512;
+const MAX_PREVIEW_CHARS = 1_000_000;
+// `shape` is only validated element-wise, so its length is attacker-chosen too,
+// and the rendered text expands roughly 2x over its JSON source.
+const MAX_SHAPE_DIMS = 32;
+// The "Data types" card is one line of text; a hostile header can declare a
+// distinct dtype per tensor.
+const MAX_SUMMARY_DTYPES = 32;
+// `__metadata__` is a free-form string map, and a row per entry is the same
+// UI-thread hazard as a row per tensor. Real models carry a handful of keys.
+const MAX_METADATA_ENTRIES = 10_000;
 
-/** Bits per element for the dtypes supported by safetensors 0.8. */
-const DTYPE_BITS: Record<string, number> = {
-    F64: 64, C64: 64, I64: 64, U64: 64,
-    F32: 32, I32: 32, U32: 32,
-    F16: 16, BF16: 16, I16: 16, U16: 16,
-    I8: 8, U8: 8, BOOL: 8,
-    F8_E4M3: 8, F8_E5M2: 8, F8_E8M0: 8,
-    F8_E4M3FNUZ: 8, F8_E5M2FNUZ: 8,
-    F6_E2M3: 6, F6_E3M2: 6, F4: 4
-};
+/**
+ * Bits per element for the dtypes supported by safetensors 0.8.
+ *
+ * Null-prototype on purpose: `dtype` is attacker-controlled text out of the
+ * file, and a plain object literal would resolve `"constructor"` or
+ * `"toString"` to an inherited function instead of `undefined`, which then
+ * blew up in `BigInt()` and made the whole file unviewable.
+ */
+const DTYPE_BITS: Record<string, number> = Object.assign(
+    Object.create(null) as Record<string, number>,
+    {
+        F64: 64, C64: 64, I64: 64, U64: 64,
+        F32: 32, I32: 32, U32: 32,
+        F16: 16, BF16: 16, I16: 16, U16: 16,
+        I8: 8, U8: 8, BOOL: 8,
+        F8_E4M3: 8, F8_E5M2: 8, F8_E8M0: 8,
+        F8_E4M3FNUZ: 8, F8_E5M2FNUZ: 8,
+        F6_E2M3: 6, F6_E3M2: 6, F4: 4
+    }
+);
 
 interface RawTensorEntry {
     dtype?: unknown;
@@ -177,23 +221,90 @@ export function parseSafetensorsHeader(
         return invalid(fileSize, 'The safetensors header is not valid JSON.');
     }
 
-    const metadata: Record<string, string> = {};
+    let textTruncated = false;
+    let shapeTruncated = false;
+
+    /**
+     * Elided in the middle, not the tail: long tensor names differ by their
+     * suffix (`...layers.31.mlp.down_proj.weight`), so cutting the end would
+     * render distinct tensors as identical rows. Both cuts back off a lone
+     * surrogate — tensor names carry CJK and emoji often enough that a blind
+     * code-unit slice would leave a replacement glyph in the table.
+     */
+    const clamp = (value: string): string => {
+        if (value.length <= MAX_TENSOR_NAME_CHARS) return value;
+        textTruncated = true;
+        let head = value.slice(0, Math.ceil((MAX_TENSOR_NAME_CHARS - 1) / 2));
+        let tail = value.slice(value.length - (MAX_TENSOR_NAME_CHARS - 1 - head.length));
+        if (/[\uD800-\uDBFF]$/.test(head)) head = head.slice(0, -1);
+        if (/^[\uDC00-\uDFFF]/.test(tail)) tail = tail.slice(1);
+        return `${head}…${tail}`;
+    };
+
+    /**
+     * Shortened by whole dimensions only. Running the character clamp over a
+     * `' × '`-joined list would splice one dimension into another and print a
+     * number the shape never declared.
+     */
+    const shapeLabel = (shape: readonly number[]): string => {
+        if (!shape.length) return 'scalar';
+        let shown = Math.min(shape.length, MAX_SHAPE_DIMS);
+        let text = shape.slice(0, shown).join(' × ');
+        while (shown > 1 && text.length > MAX_TENSOR_NAME_CHARS) {
+            shown -= 1;
+            text = shape.slice(0, shown).join(' × ');
+        }
+        if (shown === shape.length) return text;
+        shapeTruncated = true;
+        return `${text} × …`;
+    };
+
+    // Null-prototype: a `__proto__` key out of the file would otherwise hit
+    // Object.prototype's setter and be silently dropped instead of listed.
+    const metadata = Object.create(null) as Record<string, string>;
     const rawMeta = header[METADATA_KEY];
     let metadataIssue = false;
+    // Counted separately from the entries the header declares: non-string
+    // values are reported by `metadataIssue` and never occupy a slot, so
+    // counting them here would claim truncation on a map that fit in full.
+    let metadataKept = 0;
+    let metadataDropped = 0;
     if (rawMeta !== undefined) {
         if (rawMeta !== null && typeof rawMeta === 'object' && !Array.isArray(rawMeta)) {
-            for (const [key, value] of Object.entries(rawMeta as Record<string, unknown>)) {
-                if (typeof value === 'string') metadata[key] = value;
-                else metadataIssue = true;
+            const rawMetaMap = rawMeta as Record<string, unknown>;
+            for (const key in rawMetaMap) {
+                if (typeof rawMetaMap[key] !== 'string') {
+                    metadataIssue = true;
+                } else if (metadataKept < MAX_METADATA_ENTRIES) {
+                    metadata[clamp(key)] = clamp(rawMetaMap[key] as string);
+                    metadataKept += 1;
+                } else {
+                    metadataDropped += 1;
+                }
             }
         } else {
             metadataIssue = true;
         }
     }
+    // Counted after clamping, not from `metadataKept`: two keys longer than the
+    // clamp that differ only in their middle collapse onto one row, and a title
+    // disagreeing with the rows under it is the divergence the display strings
+    // exist to prevent. Bounded by the cap, so the key walk is free.
+    const metadataCount = Object.keys(metadata).length;
+    if (metadataDropped) {
+        warnings.push(
+            `This header declares ${metadataKept + metadataDropped} "__metadata__" entries; only the first ${MAX_METADATA_ENTRIES} are listed.`
+        );
+    }
     if (metadataIssue) warnings.push('Some "__metadata__" values are not strings and were ignored.');
 
     const dataBufferSize = totalFileBytes - headerEnd;
-    const tensors: SafetensorsTensor[] = [];
+    // `shapeText` lives on the record so the table and the preview cannot
+    // diverge, and so clamping happens before the warnings are assembled.
+    // `name` and `dtype` are already their display form by the time they land
+    // here, so they need no second copy.
+    interface TensorRow extends SafetensorsTensor { shapeText: string }
+    const tensors: TensorRow[] = [];
     const dtypeCounts = new Map<string, number>();
     let totalElements = 0;
     let unknownDtype = false;
@@ -201,9 +312,23 @@ export function parseSafetensorsHeader(
     let rangeIssue = false;
     const validRanges: Array<[number, number]> = [];
 
-    for (const [name, rawValue] of Object.entries(header)) {
+    // Counted with `for...in` rather than `Object.entries().filter().slice()`:
+    // a hostile header can declare a million entries, and materializing a pair
+    // array per entry (twice) costs more than everything the cap was added to
+    // avoid. `__metadata__` is not a tensor, so it must not consume a slot —
+    // counting it would drop one real tensor and claim truncation on a file
+    // that fit.
+    let declaredEntries = 0;
+    const entryNames: string[] = [];
+    for (const name in header) {
         if (name === METADATA_KEY) continue;
-        const entry = rawValue as RawTensorEntry | null;
+        declaredEntries += 1;
+        if (entryNames.length < MAX_TENSOR_ENTRIES) entryNames.push(name);
+    }
+    const overflowed = declaredEntries > MAX_TENSOR_ENTRIES;
+
+    for (const name of entryNames) {
+        const entry = header[name] as RawTensorEntry | null;
         const dtypeValid = typeof entry?.dtype === 'string';
         const dtype = dtypeValid ? entry.dtype as string : 'unknown';
         const shapeValid = Array.isArray(entry?.shape)
@@ -221,9 +346,14 @@ export function parseSafetensorsHeader(
         const elementCount = elements ?? 0;
         const byteLength = Math.max(0, end - begin);
 
-        tensors.push({ name, dtype, shape, dataOffsets: [begin, end], elements: elementCount, byteLength });
+        const dtypeLabel = clamp(dtype);
+        tensors.push({
+            name: clamp(name), dtype: dtypeLabel, shape, dataOffsets: [begin, end],
+            elements: elementCount, byteLength,
+            shapeText: shapeLabel(shape)
+        });
         totalElements += elementCount;
-        dtypeCounts.set(dtype, (dtypeCounts.get(dtype) ?? 0) + 1);
+        dtypeCounts.set(dtypeLabel, (dtypeCounts.get(dtypeLabel) ?? 0) + 1);
 
         const bits = DTYPE_BITS[dtype];
         if (bits === undefined) {
@@ -248,23 +378,38 @@ export function parseSafetensorsHeader(
     validRanges.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
     let coveredUntil = 0;
     for (const [begin, end] of validRanges) {
-        if (begin !== coveredUntil) rangeIssue = true;
+        // Two tensors claiming the same bytes is a contradiction in any subset
+        // of the list, so overlap is caught even when the list was truncated.
+        // Holes and the EOF total only mean something once every entry has
+        // been read — a truncated list is guaranteed to leave both.
+        if (begin < coveredUntil || (!overflowed && begin !== coveredUntil)) rangeIssue = true;
         coveredUntil = Math.max(coveredUntil, end);
     }
-    if (coveredUntil !== dataBufferSize) rangeIssue = true;
+    if (!overflowed && coveredUntil !== dataBufferSize) rangeIssue = true;
 
+    if (overflowed) {
+        warnings.push(
+            `This header declares ${declaredEntries} entries; only the first ${MAX_TENSOR_ENTRIES} are listed.`
+        );
+    }
+    if (textTruncated) warnings.push('Some names or metadata values were too long to show in full and were shortened.');
+    if (shapeTruncated) warnings.push('Some tensor shapes have too many dimensions to show in full.');
     if (entryIssue) warnings.push('Some tensor entries have an invalid dtype, shape, or data offset declaration.');
     if (unknownDtype) warnings.push('Some tensors use a dtype this viewer does not recognize.');
     if (rangeIssue) warnings.push('Some tensor byte ranges are inconsistent with their dtype and shape.');
 
     const dtypeList = [...dtypeCounts.keys()].sort();
+    const dtypeSummary = dtypeList.length
+        ? dtypeList.slice(0, MAX_SUMMARY_DTYPES).join(', ')
+            + (dtypeList.length > MAX_SUMMARY_DTYPES ? `, +${dtypeList.length - MAX_SUMMARY_DTYPES} more` : '')
+        : '—';
     const summary: SafetensorsSummaryItem[] = [
         { label: 'Tensors', value: tensors.length },
         { label: 'Parameters', value: formatCount(totalElements) },
-        { label: 'Data types', value: dtypeList.length ? dtypeList.join(', ') : '—' }
+        { label: 'Data types', value: dtypeSummary }
     ];
-    if (Object.keys(metadata).length) {
-        summary.push({ label: 'Metadata keys', value: Object.keys(metadata).length });
+    if (metadataCount) {
+        summary.push({ label: 'Metadata keys', value: metadataCount });
     }
 
     const tables: SafetensorsTable[] = [
@@ -274,25 +419,34 @@ export function parseSafetensorsHeader(
             rows: tensors.map(tensor => [
                 tensor.name,
                 tensor.dtype,
-                tensor.shape.length ? tensor.shape.join(' × ') : 'scalar',
+                tensor.shapeText,
                 tensor.elements,
                 formatFileSize(tensor.byteLength)
             ])
         }
     ];
-    if (Object.keys(metadata).length) {
+    if (metadataCount) {
         tables.push({
-            title: `Metadata (${Object.keys(metadata).length})`,
+            title: `Metadata (${metadataCount})`,
             headers: ['Key', 'Value'],
             rows: Object.entries(metadata).map(([key, value]) => [key, value])
         });
     }
 
-    const rawPreview = tensors.length
-        ? tensors
-            .map(tensor => `${tensor.name}  [${tensor.shape.length ? tensor.shape.join(' × ') : 'scalar'}]  ${tensor.dtype}`)
-            .join('\n')
-        : undefined;
+    // Built under a budget rather than mapped-and-joined: the preview is a
+    // second full copy of every name, and it is the largest single string the
+    // host is handed.
+    let preview = '';
+    let previewTruncated = false;
+    for (const tensor of tensors) {
+        if (preview.length >= MAX_PREVIEW_CHARS) {
+            previewTruncated = true;
+            break;
+        }
+        preview += `${preview ? '\n' : ''}${tensor.name}  [${tensor.shapeText}]  ${tensor.dtype}`;
+    }
+    if (previewTruncated) preview += '\n…';
+    const rawPreview = tensors.length ? preview : undefined;
 
     return {
         format: 'safetensors',
@@ -311,9 +465,15 @@ function readHeaderLength(input: Uint8Array): number {
 }
 
 function validateHeaderLength(headerLength: number): string | undefined {
-    return !Number.isSafeInteger(headerLength) || headerLength <= 0 || headerLength > MAX_HEADER_BYTES
-        ? 'Header length is out of range; the file is not a valid safetensors file.'
-        : undefined;
+    if (!Number.isSafeInteger(headerLength) || headerLength <= 0 || headerLength > MAX_HEADER_BYTES) {
+        return 'Header length is out of range; the file is not a valid safetensors file.';
+    }
+    // Reported separately from the range error: such a file is well-formed,
+    // it is only too large for this viewer to open.
+    if (headerLength > MAX_PARSED_HEADER_BYTES) {
+        return `This header is ${formatFileSize(headerLength)}, which is too large to display.`;
+    }
+    return undefined;
 }
 
 function throwIfAborted(signal?: AbortSignal): void {

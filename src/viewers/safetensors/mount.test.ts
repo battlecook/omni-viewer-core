@@ -60,6 +60,38 @@ describe('mountSafetensorsDocument', () => {
         await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith(JSON.stringify(model, null, 2)));
     });
 
+    it('refuses a clipboard copy above the 1 MiB guard and says why', async () => {
+        // The system clipboard is shared with every other application, and a
+        // silently truncated paste that looks complete is worse than none.
+        // No parser warnings, so the status region starts hidden — this is the
+        // realistic case, and the refusal has to unhide it to be seen at all.
+        const huge: SafetensorsDocument = {
+            ...model,
+            warnings: [],
+            tables: [{
+                title: 'Tensors (40000)',
+                headers: ['Name', 'Dtype', 'Shape'],
+                rows: Array.from({ length: 40_000 }, (_unused, index) => [`tensor.block.${index}.weight`, 'F32', '1'])
+            }]
+        };
+        const writeText = vi.fn().mockResolvedValue(undefined);
+        const container = document.createElement('div');
+        mountSafetensorsDocument(huge, 'huge.safetensors', container, { ...ctx, clipboard: { writeText } }, { styleIsolation: 'scoped' });
+        const copy = [...container.querySelectorAll('button')].find(button => button.textContent === 'safetensors.copyJson') as HTMLButtonElement;
+
+        copy.click();
+
+        expect(writeText).not.toHaveBeenCalled();
+        const status = container.querySelector('.omni-safetensors__warnings') as HTMLElement;
+        expect(status.hidden).toBe(false);
+        const message = [...status.children].find(child => !(child as HTMLElement).hidden) as HTMLElement;
+        // Exact: 'common.copyTooLarge' is a prefix of this key, and that one
+        // sends the user to an export this viewer does not have.
+        expect(message.textContent).toBe('common.copyTooLargeNoExport');
+        // The button keeps its own label — the refusal is not a success.
+        expect(copy.textContent).toBe('safetensors.copyJson');
+    });
+
     it('mounts from Blob range reads without loading the tensor payload', async () => {
         const headerJson = new TextEncoder().encode(JSON.stringify({
             weight: { dtype: 'U8', shape: [1024], data_offsets: [0, 1024] }

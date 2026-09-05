@@ -16,7 +16,8 @@ models, viewers mount into a DOM element, and everything host-specific
   legacy PPT), Markdown, LaTeX (structure and math preview, not typesetting)
 - **Data & spreadsheets** — Excel, CSV/TSV, JSON, JSONL/NDJSON, YAML, TOML,
   Parquet, Avro, HDF5, MATLAB MAT, NumPy (NPY/NPZ), Safetensors, GGUF, ONNX, TFLite/LiteRT,
-  Keras (.keras and legacy .h5), Protocol Buffers, ReqIF, SQLite
+  Keras (.keras and legacy .h5), Core ML (.mlmodel and .mlpackage),
+  Protocol Buffers, ReqIF, SQLite
 - **Media & graphics** — audio (waveform/spectrogram), video, images,
   Photoshop PSD
 - **Engineering & automotive** — CAN DBC, AUTOSAR ARXML, ASAM A2L, Vector
@@ -171,6 +172,46 @@ archive, and model-information panels.
 contents distinguish a Keras model from any other HDF5 file; hosts that read the
 whole file can refine that with `looksLikeKerasHdf5` from
 `omni-viewer-core/parsers/keras` and mount the Keras viewer instead.
+
+### Core ML models
+
+A `.mlmodel` is a serialized `CoreML.Specification.Model` protobuf, and an
+`.mlpackage` is a bundle whose `Manifest.json` points at one such spec plus the
+weight blobs its ML Program references. One entry point reads both — bytes that
+open with a ZIP header are treated as a packaged bundle:
+
+```ts
+import { mountCoremlViewer } from 'omni-viewer-core/viewers/coreml';
+
+await mountCoremlViewer({ fileName: file.name, data: bytes }, container, ctx);
+```
+
+Weight payloads are never decoded: blob references resolve to a file, an offset,
+and a byte count, and inline weight tensors to their size and quantization, so a
+multi-gigabyte model costs nothing to open. Package members are read in place,
+and JSZip is only consulted for a bundle that was re-zipped with compression.
+
+Two model families carry a graph, and the viewer reads them to different depths:
+
+- An **ML Program** (Core ML 5 and newer) is self-describing — every operation
+  names its own inputs, so attributes are shown exactly as the producer wrote
+  them, with no schema knowledge involved.
+- A **neural network** (the older encoding) stores each layer's parameters in a
+  distinct message per layer type. Layer types resolve for all of them, and
+  attributes are decoded for the common types; weights need no such table, since
+  `WeightParams` has one shape everywhere it appears and is found structurally.
+
+The viewer provides a per-graph computation graph with operation, value, and
+weight inspection, navigation into the blocks a control-flow operation
+references, and searchable operation, input/output, weight, package, and
+model-information panels. Custom layers, pipeline stages, unmapped layer types,
+and weight files that are not present are surfaced as warnings.
+
+Both extensions route by extension, and an extensionless zipped bundle is
+resolved by `probeContainer` from its `Manifest.json` + `Data/com.apple.CoreML`
+layout. A `.mlmodel` carries no leading magic, so hosts that can read a whole
+extensionless file can refine routing with `looksLikeCoremlSpec` from
+`omni-viewer-core/parsers/coreml`.
 
 ### Archive host integration
 

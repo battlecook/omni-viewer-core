@@ -5,6 +5,91 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.0] - 2026-09-05
+
+### Added
+
+- Core ML model parsing and an interactive viewer covering both encodings,
+  exposed through `parsers/coreml` and `viewers/coreml`. A `.mlmodel` is a
+  serialized `CoreML.Specification.Model` protobuf and an `.mlpackage` is a
+  bundle whose `Manifest.json` points at one such spec plus the weight blobs its
+  ML Program references; `parseCoreml` reads both, treating bytes that open with
+  a ZIP header as a packaged bundle. The protobuf reader is dependency-free and
+  schema-compiler-free. Weight payloads are never decoded — blob references
+  resolve to a file, an offset, and a byte count, and inline weight tensors to
+  their size and quantization — so a multi-gigabyte model costs nothing to open,
+  and package members are read in place with JSZip consulted only for a bundle
+  that was re-zipped with compression. Both model families that carry a graph
+  are read: an ML Program is self-describing, so its attributes are shown
+  exactly as the producer wrote them, while a neural network's per-layer-type
+  messages resolve layer types for all of them and attributes for the common
+  ones, with `WeightParams` found structurally rather than from a table. The
+  viewer adds a per-graph computation graph with operation, value, and weight
+  inspection, navigation into the blocks a control-flow operation references,
+  and searchable operation, input/output, weight, package, and
+  model-information panels. Custom layers, pipeline stages, unmapped layer
+  types, private serialized and linked models, and referenced weight files that
+  are not present are surfaced as warnings. Both extensions route by extension;
+  an extensionless zipped bundle is resolved by `probeContainer` from its
+  `Manifest.json` + `Data/com.apple.CoreML` layout, and a bare extensionless
+  `.mlmodel` — a protobuf with no leading magic — can be refined by hosts with
+  `looksLikeCoremlSpec`, which requires a published `specificationVersion` plus
+  a `oneof Type` arm so it does not claim an ONNX `ModelProto`. Parsing is
+  bounded by per-field and cumulative text budgets, archive entry count, and
+  pipeline nesting depth, each reported as a warning; labels, panels, columns,
+  and warnings are localized in English, Korean, Japanese, and Simplified
+  Chinese.
+
+### Changed
+
+- Safetensors header parsing is now bounded against headers no real model
+  produces. Everything past the parse is synchronous work on the host's UI
+  thread — a row per tensor, the sort, the preview text — so a header claiming
+  millions of entries could freeze the tab that opened it. A header larger than
+  16 MB is refused with its size and an explanation rather than parsed
+  (`JSON.parse` alone measured 16 s on a 95 MB header, with no way to stream or
+  interrupt it); the 100 MB spec ceiling is unchanged and still separates a
+  valid file from a corrupt length field. Beyond that: 50,000 tensor entries,
+  10,000 `__metadata__` entries, 512 characters per name, dtype, and metadata
+  value, 32 shape dimensions, 32 dtypes in the summary card, and a 1,000,000
+  character structure preview. Each limit reports what it omitted, and every one
+  sits orders of magnitude above the largest real models.
+- `SafetensorsTensor.name` and `.dtype` are consequently display forms and are
+  documented as such: a value past the budget is elided in the middle — not the
+  tail, since long tensor names differ by their suffix — so it no longer
+  round-trips back to the header. Shapes are shortened by whole dimensions
+  instead, because running a character clamp over a joined list would splice one
+  dimension into another and print a number the shape never declared, and both
+  cuts back off a lone surrogate so a name carrying CJK or emoji cannot leave a
+  replacement glyph in the table.
+- A truncated safetensors tensor list no longer produces byte-range warnings
+  that follow from the truncation itself. Overlapping ranges are a contradiction
+  in any subset of the list and are still reported; gaps and a coverage total
+  short of the data buffer only mean something once every entry has been read.
+- Copying a safetensors document as JSON is refused above 1 MiB
+  (`SAFETENSORS_COPY_PAYLOAD_LIMIT_BYTES`) with an on-screen explanation, as in
+  the CSV and Excel viewers. The system clipboard is shared with every other
+  application on the machine, and a truncated paste that looks complete is worse
+  than no paste. The new `common.copyTooLargeNoExport` message is used instead
+  of `common.copyTooLarge` because that one directs the user to a file export
+  this viewer does not offer.
+
+### Fixed
+
+- A safetensors tensor declaring a dtype named after an `Object.prototype`
+  member — `"constructor"`, `"toString"` — made the entire file unviewable. The
+  dtype-to-bit-width lookup was a plain object literal, so the name resolved to
+  an inherited function instead of `undefined`, which then threw inside
+  `BigInt()`. The table is null-prototype now, and an unrecognized dtype is
+  reported as such.
+- A `__metadata__` key named `__proto__` was silently dropped from the metadata
+  map instead of being listed, because assigning it reached `Object.prototype`'s
+  setter. The map is null-prototype now.
+- The safetensors metadata table title could disagree with the rows beneath it:
+  the count came from the entries accepted, while two keys longer than the
+  display budget that differ only in their middle collapse onto one row. The
+  count is taken after shortening.
+
 ## [0.16.0] - 2026-08-23
 
 ### Added

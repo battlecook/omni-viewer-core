@@ -1,6 +1,6 @@
 {
   "name": "omni-viewer-core",
-  "version": "0.16.0",
+  "version": "0.17.0",
   "description": "Shared parsing + rendering core for Omni Viewer (vscode / chrome / obsidian / web)",
   "type": "module",
   "license": "MIT",
@@ -31,6 +31,9 @@
     "tflite",
     "litert",
     "keras",
+    "coreml",
+    "mlmodel",
+    "mlpackage",
     "hdf5"
   ],
   "sideEffects": false,
@@ -225,6 +228,10 @@
     "./parsers/keras": {
       "types": "./dist/parsers/keras/index.d.ts",
       "default": "./dist/parsers/keras/index.js"
+    },
+    "./parsers/coreml": {
+      "types": "./dist/parsers/coreml/index.d.ts",
+      "default": "./dist/parsers/coreml/index.js"
     },
     "./viewers/types": {
       "types": "./dist/viewers/types.d.ts",
@@ -449,6 +456,10 @@
     "./viewers/keras": {
       "types": "./dist/viewers/keras/index.d.ts",
       "default": "./dist/viewers/keras/index.js"
+    },
+    "./viewers/coreml": {
+      "types": "./dist/viewers/coreml/index.d.ts",
+      "default": "./dist/viewers/coreml/index.js"
     },
     "./styles/*": "./dist/styles/*",
     "./assets/*": "./dist/assets/*"

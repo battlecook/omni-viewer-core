@@ -83,6 +83,18 @@ describe('probeContainer — zip', () => {
         expect(await probeContainer(makeZip(['config.json', 'src/main.js']), 'zip')).toBeNull();
     });
 
+    it('routes a zipped .mlpackage bundle by its manifest + Data tree', async () => {
+        expect(await probeContainer(makeZip([
+            'Manifest.json', 'Data/com.apple.CoreML/model.mlmodel', 'Data/com.apple.CoreML/weights/weight.bin'
+        ]), 'zip')).toBe('coreml');
+        // A Finder-made archive keeps the bundle folder above every member.
+        expect(await probeContainer(makeZip([
+            'Classifier.mlpackage/Manifest.json', 'Classifier.mlpackage/Data/com.apple.CoreML/model.mlmodel'
+        ]), 'zip')).toBe('coreml');
+        // A manifest alone is an ordinary zip member, not a Core ML package.
+        expect(await probeContainer(makeZip(['Manifest.json', 'src/main.js']), 'zip')).toBeNull();
+    });
+
     it('returns null for a plain zip (no office parts)', async () => {
         expect(await probeContainer(makeZip(['hello.txt', 'readme.md']), 'zip')).toBeNull();
         // Content-types map alone (odd OOXML with no recognized part) → null.
