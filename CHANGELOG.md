@@ -5,6 +5,156 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.0] - 2026-09-16
+
+### Added
+
+- PyTorch Export (`.pt2`) parsing and an interactive viewer, exposed through
+  `parsers/pt2` and `viewers/pt2`. A `.pt2` is the ZIP `torch.export.save`
+  writes: the serialized Export IR program (`models/<name>.json`, schema 8.x),
+  parameters and buffers as raw storage bytes indexed by a weights config,
+  tensor constants and script objects, pickled sample inputs, optional
+  AOTInductor artifacts, and user extra files. `parsePt2` reads only the
+  central directory and the JSON members, views stored weight payloads in
+  place for a short value preview (every fixed-width torch dtype, including
+  bf16 and the float8 variants), and pretty-prints the sympy `srepr` of
+  symbolic shapes. The viewer draws the ATen graph with placeholders coloured
+  by signature kind, higher-order control-flow nodes with their sub-graphs,
+  and a node inspector (arguments, producers and consumers, module stack,
+  metadata, stack trace), plus searchable node, weight, signature, module,
+  model-information, and archive panels; multi-program packages get a model
+  selector, AOTInductor-only packages open on the archive tab, and the pre-PT2
+  `torch.export.save` layout is read on a best-effort basis. Detection claims
+  `.pt2` by extension and `probeContainer` recognizes an extensionless package
+  by its `archive_format` marker. Parsing is bounded by JSON size, node,
+  value, payload, argument, and sub-graph-depth limits, and reports what it
+  omitted.
+- OpenVINO IR parsing and an interactive viewer, exposed through
+  `parsers/openvino` and `viewers/openvino`. An IR is a `.xml` topology whose
+  root is `<net name version>` plus a headerless `.bin` that `Const` layers
+  address by `offset` and `size`; `parseOpenVino` reads the XML with a small
+  bounded scanner (no DOM, no dependency) and takes the `.bin` as an optional
+  sidecar, range-checking every constant against it and decoding the leading
+  values of each for a preview without reading the rest. Layers, ports with
+  their dimensions and tensor names, `<data>` attributes, layer- and
+  port-level `rt_info` (runtime attributes and custom `user_data`), edges, control-flow bodies (`Loop` / `TensorIterator`
+  / `If` sub-graphs, whose constants take part in the `.bin` check), and the
+  flattened top-level `rt_info` / `meta_data` are retained; the legacy v7-and-earlier `<blobs>` layout is read
+  on a best-effort basis and flagged. The viewer adds a computation graph with
+  layer inspection and searchable layer, constant, input/output, and
+  model-information panels. Because `.xml` is shared with every other XML
+  dialect, the descriptor claims no extension: `sniffTextViewer` recognizes the
+  `<net version><layers>` root and routes by content. Parsing is bounded by XML
+  size, element count and depth, layer/edge/metadata counts, and per-value text
+  length; the viewer caps graph cards and edges plus table rows and reports
+  what it omitted.
+- A spectrogram the audio viewer computes itself, replacing the engine plugin
+  for any source whose samples can be read a range at a time. Three new modules
+  carry it: `spectrogram.ts` is the DOM-free, decoder-free transform (Hann
+  window → FFT → frequency-scale filter bank → dB → colour index, the same
+  pipeline the plugin ran, so the picture is unchanged); `audio-window.ts`
+  decodes *a range* of frames rather than a file, from a WAV's own bytes, from
+  an mp3 through WebCodecs, or straight out of an already-decoded buffer; and
+  `spectrogram-view.ts` drives a canvas from the engine's reported viewport.
+  Cost follows the canvas instead of the file, so a two-hour track costs what a
+  ten-second one does, and the spectrogram now works in peaks mode, where
+  nothing is decoded and the plugin could not run at all. The plugin is still
+  used for formats that cannot be windowed.
+- A frequency-range control on the spectrogram (`AUDIO_SPECTROGRAM_FREQUENCY_MAXIMA`
+  — full, 2, 4, 8, 16 kHz), with `spectrogramFrequencyMax` in the controller
+  state and a `set-spectrogram-frequency-max` action. A full 22 kHz axis leaves
+  speech and most music crushed into the bottom rows, and capping the drawn
+  range is the direct remedy. A `logarithmic` option joins the existing linear,
+  mel, bark, and ERB scales.
+- `AudioSpectrogramOptions` on `mountAudioViewer`, mirroring the options the
+  WaveSurfer plugin took — FFT size, height, window function and its `alpha`,
+  `gainDb` / `rangeDb`, `frequencyMin`, axis labels and their colours, channel
+  splitting, and the colour ramp — so an adapter can carry its configuration
+  over. Every field has a working default.
+- `analyzeMp3Source` and `Mp3AnalyzeOptions` (`viewers/audio`), which produce
+  waveform peaks for an mp3 without the WASM engine: `mp3-demux` separates the
+  frames, the browser's own decoder handles them packet by packet, and each is
+  folded straight into the peak pyramid. Nothing holds more than one packet, so
+  memory is independent of track length.
+
+### Changed
+
+- A large mp3 is no longer decoded in full. The engine mishandles mp3 and the
+  WAV reader cannot touch it, so every mp3 went to the browser whole however
+  long it was — roughly 400 MiB of PCM for 20 minutes. The viewer now runs the
+  streaming analyzer above when WebCodecs is available. The streaming mp3 path
+  existed before this release but was reachable only by adapters and not wired
+  into the viewer; adopting it means mp3 peaks come from the host codec, which
+  does not carry the WASM engine's cross-platform bit-equality (DESIGN.md §3-①).
+- When no streaming analyzer produced peaks and the browser is about to decode
+  a whole file anyway, the decode now runs at a reduced sample rate chosen to
+  fit `analyzeDecodedBytes`, floored at 16 kHz. Decoding a 20-minute mp3 at its
+  source rate costs 404 MiB, which is what takes a tab down. The waveform keeps
+  its shape and the reported sample rate still comes from the header; only the
+  spectrogram's top octaves are lost, which the new
+  `audio.warning.reducedFidelity` says plainly.
+- The audio transport and toolbar were reworked. Play/pause is a single icon
+  button whose glyph, title, and accessible name move together; loop is a
+  checkbox that names what will repeat, since a region loops on its own and the
+  whole track loops when there is none; the visualization dropdown became three
+  segmented icon buttons, because there are only three modes and the current one
+  should be readable without opening anything; and the zoom and loop groups stay
+  out of the toolbar until the duration is known. The separate stop and "clear
+  regions" buttons are gone — pressing the waveform away from a selection now
+  drops it, which is what the button was for. `audio.loop` and
+  `audio.clearRegions` are replaced by `audio.loop.region` and
+  `audio.loop.track`, and `audio.spectrogramScale` reads "Spectrogram scale"
+  rather than "Scale".
+- `AudioRegionsHandle` no longer requires a `clearRegions()` method. Nothing
+  calls it now that regions are dropped by pressing away from them, so an
+  adapter supplying the handle has one less member to provide; existing
+  implementations keep working unchanged.
+- The waveform holds one region at a time. A new drag replaces the previous
+  selection instead of stacking on it: the editors and the status line both
+  describe a single region, so older ones left on the waveform were selections
+  nothing could act on. Pressing play with a region selected starts at its head
+  rather than wherever the cursor sits.
+- The registry gains `OPENVINO_VIEWER_DESCRIPTOR`, which deliberately claims no
+  extension — `.xml` is shared with every other XML dialect — so the viewer is
+  reached only through `sniffTextViewer`, which now returns `'openvino'` for a
+  `<net version><layers>` root. `looksLikeOpenVinoIr` is re-exported from
+  `registry`.
+- Audio messages are updated in all eight locale catalogs. OpenVINO's are in
+  English, Korean, Japanese, and Simplified Chinese, matching the other model
+  viewers; the German, French, Italian, and Thai catalogs carry the shared
+  subset and fall back for the rest.
+
+### Fixed
+
+- A track set to loop stopped at its end instead of restarting. On wavesurfer
+  7.12.1 the engine has not settled its playing flag when `finish` fires, so the
+  `playPause()` toggle read it as "playing" and stopped the track. Playback now
+  goes through the engine's own `play()` where one exists. (7.12.12 happens to
+  work either way, which is why this only reproduced on the pinned version.)
+- Committing a region's start or end collapsed the region to its minimum
+  length. Each field read the *other* input's displayed value, which a commit
+  had already re-rendered, so the edit was applied against a stale number. Each
+  field now commits against the region's own opposite edge, and a
+  non-numeric entry restores the field instead of applying `NaN`.
+- The region editors sat well to the right of the edges they edit: all three
+  were anchored to the region box's left corner. Start and end are now centred
+  on their own edge below the region, with length centred above it, each
+  clamped to the waveform so a region at either extreme cannot push a field out
+  of view.
+- Pressing a region dropped the selection instead of starting a drag. The engine
+  renders regions inside its own shadow root, so by the time the event reached
+  the listener `target` had been retargeted to the shadow host and the
+  containment test failed for every press. The press is located through
+  `composedPath()` now, and the listener is on `pointerdown` rather than `click`
+  so that finishing a drag does not delete the region it just created.
+- A committed region value was displayed as typed rather than as normalized,
+  because the editor skipped whichever field had focus. A commit now forces the
+  field to show the applied result.
+- Spectrogram-only mode hides the waveform's *drawing* through the engine's
+  `::part` hooks instead of collapsing the element's height. The 0.16.0 fix kept
+  the element's width real so the hop could not degenerate, but a zero-height
+  box still disturbed the layout around it.
+
 ## [0.17.0] - 2026-09-05
 
 ### Added

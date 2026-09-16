@@ -6,6 +6,9 @@
 // would regress them for extensionless files.
 
 import { parseJson } from '../parsers/json/index.js';
+import { looksLikeOpenVinoIr } from '../parsers/openvino/index.js';
+
+export { looksLikeOpenVinoIr } from '../parsers/openvino/index.js';
 
 /** True if `text` parses cleanly as a single JSON object or array. */
 export function looksLikeJsonDocument(text: string): boolean {
@@ -57,9 +60,12 @@ export function looksLikeLatex(text: string): boolean {
  * multi-line object streams so a `{…}\n{…}` file is never mis-claimed as JSON;
  * if no jsonl viewer is registered the caller falls through to fallback.
  */
-export function sniffTextViewer(text: string): 'jsonl' | 'json' | 'proto' | 'latex' | null {
+export function sniffTextViewer(text: string): 'jsonl' | 'json' | 'openvino' | 'proto' | 'latex' | null {
     if (looksLikeJsonl(text)) return 'jsonl';
     if (looksLikeJsonDocument(text)) return 'json';
+    // An OpenVINO IR is `.xml`, an extension no viewer claims, so its `<net
+    // version><layers>` root is the only route to the viewer.
+    if (looksLikeOpenVinoIr(text)) return 'openvino';
     if (looksLikeProto(text)) return 'proto';
     if (looksLikeLatex(text)) return 'latex';
     return null;

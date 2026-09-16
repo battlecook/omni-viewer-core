@@ -142,6 +142,40 @@ describe('detectViewer (Keras)', () => {
     });
 });
 
+describe('detectViewer (OpenVINO IR)', () => {
+    const IR = '<?xml version="1.0"?>\n<net name="m" version="11">\n\t<layers>\n\t\t<layer id="0" name="x" type="Parameter" version="opset1"/>\n\t</layers>\n\t<edges/>\n</net>\n';
+    const sniff = (name: string, text: string) => detectViewer(name, undefined, undefined, undefined, text);
+
+    it('routes a .xml whose root is <net version> with <layers> by content, not by extension', () => {
+        expect(sniff('model.xml', IR)).toEqual({ viewerId: 'openvino', matchedBy: 'content' });
+        expect(sniff('model', IR)).toEqual({ viewerId: 'openvino', matchedBy: 'content' });
+        // No extension claim: without a text sample, an .xml stays on the fallback path.
+        expect(detectViewer('model.xml').viewerId).toBe('fallback');
+    });
+
+    it('leaves other XML dialects and near-misses alone', () => {
+        expect(sniff('a.xml', '<?xml version="1.0"?><AUTOSAR xmlns="http://autosar.org/schema/r4.0"><AR-PACKAGES/></AUTOSAR>').viewerId).toBe('fallback');
+        expect(sniff('a.xml', '<network version="11"><layers/></network>').viewerId).toBe('fallback');
+        expect(sniff('a.xml', '<net name="no-version"><layers/></net>').viewerId).toBe('fallback');
+        // A trusted extension still wins over content (§7 point 3).
+        expect(sniff('model.arxml', IR).viewerId).toBe('arxml');
+    });
+});
+
+describe('detectViewer (PT2)', () => {
+    const ZIP = new Uint8Array([0x50, 0x4b, 0x03, 0x04]);
+
+    it('claims .pt2 by extension and sends an extensionless package to the container probe', () => {
+        expect(detectViewer('model.pt2')).toEqual({ viewerId: 'pt2', matchedBy: 'extension' });
+        expect(detectViewer('MODEL.PT2', undefined, undefined, ZIP)).toEqual({ viewerId: 'pt2', matchedBy: 'extension' });
+        expect(detectViewer('model', undefined, undefined, ZIP)).toEqual({
+            viewerId: 'fallback', matchedBy: 'ambiguous-container', container: 'zip'
+        });
+        // A plain torch.save checkpoint is not an Export package.
+        expect(detectViewer('model.pt', undefined, undefined, ZIP).viewerId).not.toBe('pt2');
+    });
+});
+
 describe('detectViewer (Core ML)', () => {
     const ZIP = new Uint8Array([0x50, 0x4b, 0x03, 0x04]);
 

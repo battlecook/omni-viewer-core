@@ -167,6 +167,16 @@ export const ONNX_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'onnx',displayNameKe
 // layout; hosts that can read a whole extensionless `.mlmodel` refine that with
 // looksLikeCoremlSpec (parsers/coreml), which the sniff prefix cannot answer.
 export const COREML_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'coreml',displayNameKey:'coreml.title',extensions:['mlmodel','mlpackage'],priority:20,requiredServices:[],optionalServices:['clipboard']};
+// An OpenVINO IR is an ordinary `.xml` (plus a headerless `.bin` the adapter
+// passes as a sidecar). Claiming `.xml` would capture every other XML dialect,
+// so the descriptor lists no extension and the viewer is reached only through
+// sniffTextViewer, which recognizes the `<net version><layers>` root.
+export const OPENVINO_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'openvino',displayNameKey:'openvino.title',extensions:[],priority:20,requiredServices:[],optionalServices:['clipboard']};
+// A `.pt2` package (torch.export.save / AOTInductor) is a ZIP, so it carries no
+// distinguishing leading magic and is claimed by extension; an extensionless
+// package reaches the viewer through probeContainer, which recognizes the
+// `archive_format` marker (or the legacy serialized_exported_program.json).
+export const PT2_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'pt2',displayNameKey:'pt2.title',extensions:['pt2'],priority:20,requiredServices:[],optionalServices:['clipboard']};
 export const TFLITE_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'tflite',displayNameKey:'tflite.title',extensions:['tflite','lite'],priority:20,magicSignatures:TFLITE_MAGIC_SIGNATURES,requiredServices:[],optionalServices:['clipboard']};
 // A `.keras` model is a ZIP, so it carries no distinguishing leading magic and
 // is claimed by extension; extensionless archives reach it through
@@ -310,6 +320,8 @@ export const CORE_VIEWER_DESCRIPTORS: readonly ViewerDescriptor[] = [
     TFLITE_VIEWER_DESCRIPTOR,
     KERAS_VIEWER_DESCRIPTOR,
     COREML_VIEWER_DESCRIPTOR,
+    OPENVINO_VIEWER_DESCRIPTOR,
+    PT2_VIEWER_DESCRIPTOR,
     PPT_VIEWER_DESCRIPTOR,
     WORD_VIEWER_DESCRIPTOR,
     HWP_VIEWER_DESCRIPTOR,
@@ -327,7 +339,7 @@ export const CORE_VIEWER_DESCRIPTORS: readonly ViewerDescriptor[] = [
     FALLBACK_VIEWER_DESCRIPTOR
 ];
 
-export { looksLikeJsonDocument, looksLikeJsonl, looksLikeLatex, looksLikeProto, sniffTextViewer } from './sniff.js';
+export { looksLikeJsonDocument, looksLikeJsonl, looksLikeLatex, looksLikeOpenVinoIr, looksLikeProto, sniffTextViewer } from './sniff.js';
 export {
     CONTAINER_SNIFF_BYTES,
     OFFICE_CONTAINER_BY_EXT,

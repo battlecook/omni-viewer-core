@@ -95,6 +95,13 @@ describe('probeContainer — zip', () => {
         expect(await probeContainer(makeZip(['Manifest.json', 'src/main.js']), 'zip')).toBeNull();
     });
 
+    it('routes a PT2 package by its archive_format marker or the legacy program file', async () => {
+        expect(await probeContainer(makeZip(['model/data/weights/weight_0', 'model/models/model.json', 'model/archive_format']), 'zip')).toBe('pt2');
+        expect(await probeContainer(makeZip(['serialized_exported_program.json', 'serialized_state_dict.pt']), 'zip')).toBe('pt2');
+        // models/ alone is an ordinary folder name, not a package.
+        expect(await probeContainer(makeZip(['models/model.json', 'src/main.js']), 'zip')).toBeNull();
+    });
+
     it('returns null for a plain zip (no office parts)', async () => {
         expect(await probeContainer(makeZip(['hello.txt', 'readme.md']), 'zip')).toBeNull();
         // Content-types map alone (odd OOXML with no recognized part) → null.

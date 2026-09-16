@@ -17,7 +17,7 @@ models, viewers mount into a DOM element, and everything host-specific
 - **Data & spreadsheets** — Excel, CSV/TSV, JSON, JSONL/NDJSON, YAML, TOML,
   Parquet, Avro, HDF5, MATLAB MAT, NumPy (NPY/NPZ), Safetensors, GGUF, ONNX, TFLite/LiteRT,
   Keras (.keras and legacy .h5), Core ML (.mlmodel and .mlpackage),
-  Protocol Buffers, ReqIF, SQLite
+  OpenVINO IR (.xml + .bin), PyTorch Export (.pt2), Protocol Buffers, ReqIF, SQLite
 - **Media & graphics** — audio (waveform/spectrogram), video, images,
   Photoshop PSD
 - **Engineering & automotive** — CAN DBC, AUTOSAR ARXML, ASAM A2L, Vector
@@ -212,6 +212,92 @@ resolved by `probeContainer` from its `Manifest.json` + `Data/com.apple.CoreML`
 layout. A `.mlmodel` carries no leading magic, so hosts that can read a whole
 extensionless file can refine routing with `looksLikeCoremlSpec` from
 `omni-viewer-core/parsers/coreml`.
+
+### OpenVINO IR models
+
+An OpenVINO IR is two files that share a base name. The `.xml` is ordinary XML
+whose root is `<net name version>` holding `<layers>` and `<edges>`; the `.bin`
+has no header, magic, or index of its own — it is a raw concatenation of
+constant payloads that `Const` layers address by `offset` and `size`. The core
+receives the `.xml` as its input and the `.bin` as a sidecar the adapter reads
+from the same directory:
+
+```ts
+import { mountOpenVinoViewer } from 'omni-viewer-core/viewers/openvino';
+
+await mountOpenVinoViewer({ fileName: file.name, data: xmlBytes }, container, ctx, {
+  sidecars: { bin: binBytes } // optional
+});
+```
+
+The topology renders in full without the `.bin`. When it is supplied, every
+constant's byte range is checked against it and its leading values are decoded
+for a preview (all fixed-width IR element types, including f16, bf16, and the
+f8 variants); the rest of the weights are never read, so a multi-gigabyte model
+costs nothing beyond its XML. A `.bin` that is too short for the constants, or
+that has bytes no constant references, is surfaced as a warning — the usual
+signs of a mismatched pair (the unreferenced-bytes signal is only trusted when
+every constant was read).
+
+The viewer provides a computation graph with layer inspection (ports with
+their producers and consumers, `<data>` attributes, `rt_info`, weight ranges,
+and the sub-graphs a `Loop`, `TensorIterator`, or `If` layer carries in its
+body), plus searchable layer, constant, input/output, and model-information
+panels. IR v10 and v11 are the target; the legacy v7-and-earlier layout
+(`<layer precision>` with `<blobs>`) is read on a best-effort basis and
+flagged.
+
+Routing is by content only: `.xml` is shared with every other XML dialect, so
+the descriptor claims no extension and `detectViewer` reaches the viewer
+through its text sample (`looksLikeOpenVinoIr`, also exported from
+`omni-viewer-core/parsers/openvino`). A `.bin` opened on its own has nothing to
+identify it; an adapter that wants to open one should look for the same-named
+`.xml` beside it.
+
+### PyTorch Export packages (.pt2)
+
+A `.pt2` is what `torch.export.save` writes: a ZIP whose members sit under a
+folder named after the file, with the serialized Export IR program in
+`models/<name>.json`, parameters and buffers as raw storage bytes under
+`data/weights/` (indexed by `<name>_weights_config.json`), tensor constants and
+script objects under `data/constants/`, pickled sample inputs, optional
+AOTInductor artifacts under `data/aotinductor/`, and user files under `extra/`.
+
+```ts
+import { mountPt2Viewer } from 'omni-viewer-core/viewers/pt2';
+
+await mountPt2Viewer({ fileName: file.name, data: bytes }, container, ctx);
+```
+
+`parsePt2` reads the archive's central directory and only the JSON members it
+needs; stored weight payloads are viewed in place and sampled for a short value
+preview (every fixed-width torch dtype, including bf16 and the float8
+variants), so a multi-gigabyte package costs nothing beyond its program JSON.
+The viewer shows the ATen graph — placeholders coloured by signature kind
+(user input, parameter, buffer, constant), operator nodes, higher-order
+control-flow nodes with their `cond` / `while_loop` sub-graphs, and outputs —
+with a node inspector (arguments, producers and consumers, module stack,
+metadata, stack trace), plus searchable tables of nodes (sub-graph nodes
+included), weights and constants with their archive status, the graph
+signature (inputs and outputs by kind, buffer mutations, constant inputs), the
+nn.Module hierarchy with preserved call signatures, model information (schema
+and torch versions, opsets, range constraints, guards, operator counts), and
+the archive listing. Symbolic shapes are printed as expressions (`2*s0`)
+rather than the sympy `srepr` the file stores.
+
+A package holding several programs (`package_pt2`) gets a model selector; an
+AOTInductor-only package (`aoti_compile_and_package`) opens on the archive
+tab with its compile metadata. The pre-PT2 `torch.export.save` layout
+(`serialized_exported_program.json` beside torch.save pickles) is read on a
+best-effort basis: the graph is complete, but weights are listed from the
+signature without a preview. Schema 8.x is the target; enums
+written as member names by older versions are accepted.
+
+Routing is by the `.pt2` extension; an extensionless package reaches the viewer
+through `probeContainer`, which recognizes the `archive_format` marker
+(`looksLikePt2Archive` is also exported from `omni-viewer-core/parsers/pt2`).
+A plain `torch.save` checkpoint (`.pt` / `.pth`) is not an Export package and
+is not claimed.
 
 ### Archive host integration
 

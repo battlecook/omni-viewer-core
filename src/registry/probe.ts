@@ -64,6 +64,11 @@ function probeZip(input: Uint8Array, options: ParseOptions): string | null {
         if (name.startsWith('word/')) return 'word';
         if (name.startsWith('ppt/')) return 'ppt';
         if (name.startsWith('Contents/') || name === 'content.hpf') return 'hwp';
+        // A PT2 package keeps its `archive_format` marker under the package
+        // folder PyTorchFileWriter prefixes; the legacy torch.export.save
+        // layout is flat and named by its program file.
+        if (name === 'archive_format' || name.endsWith('/archive_format') ||
+            name === 'serialized_exported_program.json' || name.endsWith('/serialized_exported_program.json')) return 'pt2';
         if (name === 'config.json') hasKerasConfig = true;
         if (name === 'model.weights.h5') hasKerasWeights = true;
         if (name === 'Manifest.json' || name.endsWith('/Manifest.json')) hasCoremlManifest = true;

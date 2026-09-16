@@ -35,6 +35,8 @@ const entries = [
     ,['viewers/tflite/styles.js', 'tfliteViewerCss', 'tflite.css']
     ,['viewers/keras/styles.js', 'kerasViewerCss', 'keras.css']
     ,['viewers/coreml/styles.js', 'coremlViewerCss', 'coreml.css']
+    ,['viewers/openvino/styles.js', 'openvinoViewerCss', 'openvino.css']
+    ,['viewers/pt2/styles.js', 'pt2ViewerCss', 'pt2.css']
     ,['viewers/automotive/styles.js', 'automotiveViewerCss', 'automotive.css']
     ,['viewers/audio/index.js', 'audioViewerCss', 'audio.css']
     ,['viewers/video/index.js', 'videoViewerCss', 'video.css']

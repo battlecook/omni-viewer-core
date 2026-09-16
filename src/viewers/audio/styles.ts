@@ -50,6 +50,19 @@ export const audioViewerCss = mediaViewerCss + `
     border: none; padding: 5px 11px; border-radius: 4px; cursor: pointer; font-size: 12px; font-family: inherit;
 }
 .omni-audio__btn:hover { background: var(--omni-accent-hover, #1177bb); }
+/* Transport buttons carry meaning in the glyph; the accessible name is on
+   aria-label, so the box only needs to be square and centred. */
+.omni-audio__btn--icon {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 30px; height: 26px; padding: 0;
+}
+
+.omni-audio__toggle {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 12px; color: var(--omni-muted, #9d9d9d); cursor: pointer;
+}
+.omni-audio__checkbox { accent-color: var(--omni-accent, #0e639c); cursor: pointer; margin: 0; }
+.omni-audio__checkbox:disabled { cursor: not-allowed; }
 .omni-audio__btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .omni-audio__btn.is-active { outline: 2px solid var(--omni-focus, #007fd4); }
 
@@ -57,6 +70,25 @@ export const audioViewerCss = mediaViewerCss + `
     background: var(--omni-input-bg, #3c3c3c); color: var(--omni-fg, #d4d4d4);
     border: 1px solid var(--omni-border, #444); padding: 4px 8px; border-radius: 4px; font-size: 12px; font-family: inherit;
 }
+/* Segmented view-mode control: three modes, current one readable at a glance
+   without opening a menu. */
+.omni-audio__modes {
+    display: inline-flex; border: 1px solid var(--omni-border, #444);
+    border-radius: 5px; overflow: hidden;
+}
+.omni-audio__mode {
+    display: flex; align-items: center; justify-content: center;
+    width: 30px; height: 26px; padding: 0; border: none; cursor: pointer;
+    background: var(--omni-input-bg, #3c3c3c); color: var(--omni-fg, #d4d4d4);
+}
+.omni-audio__mode + .omni-audio__mode { border-left: 1px solid var(--omni-border, #444); }
+.omni-audio__mode:hover:not(:disabled) { background: var(--omni-accent-hover, #1177bb); }
+.omni-audio__mode:disabled { opacity: 0.5; cursor: not-allowed; }
+.omni-audio__mode.is-active {
+    background: var(--omni-accent, #0e639c); color: var(--omni-accent-fg, #fff);
+}
+.omni-audio__mode:focus-visible { outline: 2px solid var(--omni-focus, #007fd4); outline-offset: -2px; }
+
 .omni-audio__slider { width: 90px; }
 .omni-audio__zoom-label { font-family: var(--omni-mono, ui-monospace, Menlo, monospace); font-size: 12px; min-width: 34px; text-align: center; color: var(--omni-muted, #9d9d9d); }
 .omni-audio__time { font-family: var(--omni-mono, ui-monospace, Menlo, monospace); font-size: 12px; min-width: 100px; }
@@ -66,43 +98,75 @@ export const audioViewerCss = mediaViewerCss + `
 .omni-audio__waveform { min-height: 128px; }
 .omni-audio__spectrogram { min-height: 0; }
 .omni-audio__spectrogram--active { min-height: 200px; }
+/* Viewport-driven spectrogram: the canvas is sized to the analysis (one pixel
+   column per window) and stretched by CSS, so the work stays proportional to
+   the transform rather than the display. */
+.omni-audio__spectrogram-canvas { display: block; width: 100%; image-rendering: pixelated; }
+
+/* The frequency axis is drawn at its own 1:1 scale and laid over the picture:
+   the spectrogram canvas is sized to the analysis and stretched by CSS, which
+   would smear any text drawn into it. */
+.omni-audio__spectrogram-stack { position: relative; }
+.omni-audio__spectrogram-axis {
+    position: absolute; top: 0; left: 0; pointer-events: none;
+}
 
 /* Keep the WaveSurfer playhead (cursor + played-region overlay) pinned to the
    waveform strip. Some wavesurfer spectrogram builds render the spectrogram
    inside the main wrapper instead of our dedicated container; without this the
    full-height playhead sweeps down across the spectrogram ("progress bar"
-   running along the bottom) rather than staying with the waveform at the top. */
-.omni-audio__waveform ::part(cursor),
-.omni-audio__waveform ::part(progress) { height: 128px !important; }
+   running along the bottom) rather than staying with the waveform at the top.
+
+   Only while such a plugin is mounted, and only up to the waveform's real
+   height: a stereo split makes the wrapper one strip per channel, and clamping
+   to a single strip cut the second channel's played overlay away entirely. */
+.omni-audio__waveform-wrap.has-inline-spectrogram .omni-audio__waveform ::part(cursor),
+.omni-audio__waveform-wrap.has-inline-spectrogram .omni-audio__waveform ::part(progress) {
+    height: var(--omni-audio-wave-height, 128px) !important;
+}
 
 /* Region time editors, anchored over the selected region. The wrapper is the
    positioning context; the editor row sits just below the waveform so it never
    covers the samples being trimmed. */
 .omni-audio__waveform-wrap { position: relative; }
-/* Spectrogram-only mode collapses the waveform instead of hiding it: the
-   spectrogram plugin measures this element's width, and display:none would
-   leave it at 0. Height goes to zero, width stays real. */
-.omni-audio__waveform-wrap.is-collapsed { height: 0; overflow: hidden; padding-bottom: 0; }
+/* Spectrogram-only mode hides the waveform *drawing*, not the element.
+   Two reasons the wrapper has to stay laid out:
+   - the spectrogram plugin derives its hop from this element's width, and a
+     width of 0 makes the render never finish;
+   - older plugin builds ignore our container option and append the spectrogram
+     into the waveform's own shadow wrapper (wavesurfer 7.12.1 does), so
+     collapsing the wrapper takes the spectrogram with it.
+   Hiding the exposed canvas parts leaves both the width and any spectrogram
+   sharing that wrapper intact. */
+.omni-audio__waveform-wrap.is-collapsed { padding-bottom: 0; }
+.omni-audio__waveform-wrap.is-collapsed .omni-audio__waveform ::part(canvases),
+.omni-audio__waveform-wrap.is-collapsed .omni-audio__waveform ::part(cursor),
+.omni-audio__waveform-wrap.is-collapsed .omni-audio__waveform ::part(progress) { display: none; }
+.omni-audio__waveform-wrap.is-collapsed .omni-audio__waveform { min-height: 0; }
 /* The editor is absolutely positioned, so the wrapper has to reserve its band
    while it is shown. Without this it lands on the status line in waveform-only
    mode and covers the spectrogram in both mode. */
 .omni-audio__waveform-wrap.is-editing-region { padding-bottom: 28px; }
 
+/* Overlay spanning the waveform; each field is placed individually so the
+   layout matches the original viewer — length above the region, start and end
+   below it. Transparent to pointer events except on the fields themselves. */
 .omni-audio__region-editor {
-    /* bottom, not top:100% — absolute offsets resolve against the containing
-       block's padding box, so top:100% lands *below* the band the wrapper
-       reserves and the stage clips it. bottom:0 seats it inside that band. */
-    position: absolute; bottom: 0; left: 0; z-index: 3;
-    display: flex; align-items: center; gap: 4px;
-    /* No min-width: a narrow region would otherwise force the row past the
-       right edge. The left offset is clamped to the wrapper when positioning. */
-    max-width: 100%; pointer-events: none;
+    position: absolute; inset: 0; z-index: 3; pointer-events: none;
 }
 .omni-audio__region-editor[hidden] { display: none; }
-.omni-audio__region-editor--unanchored { position: static; margin-top: 4px; }
 
-.omni-audio__region-field { display: flex; pointer-events: auto; }
-.omni-audio__region-field--duration { margin: 0 4px; }
+.omni-audio__region-field { position: absolute; display: flex; pointer-events: auto; }
+/* Positioned by its centre, so the left offset set in script is the midpoint. */
+.omni-audio__region-field--duration { transform: translateX(-50%); }
+
+/* Without a region element to anchor to, fall back to a plain row under the
+   waveform rather than stacking the fields at the origin. */
+.omni-audio__region-editor--unanchored {
+    position: static; display: flex; align-items: center; gap: 4px; margin-top: 4px;
+}
+.omni-audio__region-editor--unanchored .omni-audio__region-field { position: static; }
+.omni-audio__region-editor--unanchored .omni-audio__region-field--duration { transform: none; }
 
 .omni-audio__region-input {
     width: 72px; padding: 2px 4px;

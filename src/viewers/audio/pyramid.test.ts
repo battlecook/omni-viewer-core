@@ -178,7 +178,9 @@ describe('pyramid size', () => {
     // they summarize, which is what removes the file-length ceiling.
     it('is dramatically smaller than the PCM it summarizes', () => {
         const channels = 2;
-        const frames = 44100 * 600; // 10 minutes
+        // The ratio does not depend on length, so a short clip proves it as
+        // well as a long one and keeps the suite fast under parallel load.
+        const frames = 44100 * 20;
         const pyramid = build(frames, channels, (frame) => Math.sin(frame / 50) * 0.5,
             { baseFramesPerBucket: 256 });
         const pcmBytes = frames * channels * 4;

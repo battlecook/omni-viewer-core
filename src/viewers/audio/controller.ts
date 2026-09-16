@@ -16,10 +16,16 @@ export const AUDIO_MIN_VISIBLE_SECONDS = 2;
 export type AudioVisualization = 'waveform' | 'spectrogram' | 'both';
 
 /** Frequency scales the spectrogram can be drawn on. */
-export type AudioSpectrogramScale = 'linear' | 'mel' | 'bark' | 'erb';
+export type AudioSpectrogramScale = 'linear' | 'logarithmic' | 'mel' | 'bark' | 'erb';
 export const AUDIO_SPECTROGRAM_SCALES: readonly AudioSpectrogramScale[] =
-    ['linear', 'mel', 'bark', 'erb'];
+    ['linear', 'logarithmic', 'mel', 'bark', 'erb'];
 export const AUDIO_SPECTROGRAM_DEFAULT_SCALE: AudioSpectrogramScale = 'mel';
+
+/** Ceilings offered for the drawn frequency range; 0 is the full spectrum.
+ *  On a full-range axis speech and most music sit squashed at the bottom, and
+ *  capping the range is the direct remedy. */
+export const AUDIO_SPECTROGRAM_FREQUENCY_MAXIMA: readonly number[] =
+    [0, 2000, 4000, 8000, 16000];
 
 export const showsWaveform = (mode: AudioVisualization): boolean =>
     mode === 'waveform' || mode === 'both';
@@ -36,6 +42,8 @@ export interface AudioViewState {
     loop: boolean;
     visualization: AudioVisualization;
     spectrogramScale: AudioSpectrogramScale;
+    /** Highest frequency drawn, in Hz; 0 means up to Nyquist. */
+    spectrogramFrequencyMax: number;
 }
 
 export type AudioAction =
@@ -46,7 +54,8 @@ export type AudioAction =
     | { type: 'set-volume'; volume: number }
     | { type: 'toggle-loop' }
     | { type: 'set-visualization'; visualization: AudioVisualization }
-    | { type: 'set-spectrogram-scale'; scale: AudioSpectrogramScale };
+    | { type: 'set-spectrogram-scale'; scale: AudioSpectrogramScale }
+    | { type: 'set-spectrogram-frequency-max'; hz: number };
 
 /**
  * Zoom ceiling that lets the most-zoomed-in view show
@@ -178,10 +187,11 @@ export function createAudioController(): AudioController {
     let loop = false;
     let visualization: AudioVisualization = 'waveform';
     let spectrogramScale: AudioSpectrogramScale = AUDIO_SPECTROGRAM_DEFAULT_SCALE;
+    let spectrogramFrequencyMax = 0;
     const clampZoom = (value: number): number => Math.min(maxZoom, Math.max(AUDIO_MIN_ZOOM, value));
     const listeners = new Set<(state: AudioViewState) => void>();
     const snapshot = (): AudioViewState =>
-        ({ zoom, maxZoom, volume, loop, visualization, spectrogramScale });
+        ({ zoom, maxZoom, volume, loop, visualization, spectrogramScale, spectrogramFrequencyMax });
     const emit = (): void => listeners.forEach((listener) => listener(snapshot()));
     return {
         get state() { return snapshot(); },
@@ -200,6 +210,9 @@ export function createAudioController(): AudioController {
                 case 'set-visualization': visualization = action.visualization; break;
                 case 'set-spectrogram-scale':
                     if (AUDIO_SPECTROGRAM_SCALES.includes(action.scale)) spectrogramScale = action.scale;
+                    break;
+                case 'set-spectrogram-frequency-max':
+                    if (Number.isFinite(action.hz) && action.hz >= 0) spectrogramFrequencyMax = action.hz;
                     break;
             }
             const after = snapshot();

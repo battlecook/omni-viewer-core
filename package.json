@@ -1,6 +1,6 @@
 {
   "name": "omni-viewer-core",
-  "version": "0.17.0",
+  "version": "0.18.0",
   "description": "Shared parsing + rendering core for Omni Viewer (vscode / chrome / obsidian / web)",
   "type": "module",
   "license": "MIT",
@@ -32,6 +32,9 @@
     "litert",
     "keras",
     "coreml",
+    "openvino",
+    "pt2",
+    "torch-export",
     "mlmodel",
     "mlpackage",
     "hdf5"
@@ -232,6 +235,14 @@
     "./parsers/coreml": {
       "types": "./dist/parsers/coreml/index.d.ts",
       "default": "./dist/parsers/coreml/index.js"
+    },
+    "./parsers/openvino": {
+      "types": "./dist/parsers/openvino/index.d.ts",
+      "default": "./dist/parsers/openvino/index.js"
+    },
+    "./parsers/pt2": {
+      "types": "./dist/parsers/pt2/index.d.ts",
+      "default": "./dist/parsers/pt2/index.js"
     },
     "./viewers/types": {
       "types": "./dist/viewers/types.d.ts",
@@ -460,6 +471,14 @@
     "./viewers/coreml": {
       "types": "./dist/viewers/coreml/index.d.ts",
       "default": "./dist/viewers/coreml/index.js"
+    },
+    "./viewers/openvino": {
+      "types": "./dist/viewers/openvino/index.d.ts",
+      "default": "./dist/viewers/openvino/index.js"
+    },
+    "./viewers/pt2": {
+      "types": "./dist/viewers/pt2/index.d.ts",
+      "default": "./dist/viewers/pt2/index.js"
     },
     "./styles/*": "./dist/styles/*",
     "./assets/*": "./dist/assets/*"

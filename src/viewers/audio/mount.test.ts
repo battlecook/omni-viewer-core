@@ -58,6 +58,7 @@ function fakeSurfer(): FakeSurfer {
         },
         registerPlugin: (plugin) => plugin,
         playPause() { surfer.calls.push('playPause'); },
+        play() { surfer.calls.push('play'); },
         stop() { surfer.calls.push('stop'); },
         setTime(seconds) { surfer.calls.push(`setTime:${seconds}`); },
         setVolume(volume) { surfer.calls.push(`setVolume:${volume}`); },
@@ -70,11 +71,10 @@ function fakeSurfer(): FakeSurfer {
     return surfer;
 }
 
-function fakeRegions(): AudioRegionsHandle & { handlers: Map<string, Array<(region: AudioRegionHandle) => void>>; cleared: number; emit(event: string, region: AudioRegionHandle): void } {
+function fakeRegions(): AudioRegionsHandle & { handlers: Map<string, Array<(region: AudioRegionHandle) => void>>; emit(event: string, region: AudioRegionHandle): void } {
     const handlers = new Map<string, Array<(region: AudioRegionHandle) => void>>();
     return {
         handlers,
-        cleared: 0,
         emit(event, region) { (handlers.get(event) ?? []).forEach((handler) => handler(region)); },
         on(event, callback) {
             const list = handlers.get(event) ?? [];
@@ -82,7 +82,6 @@ function fakeRegions(): AudioRegionsHandle & { handlers: Map<string, Array<(regi
             handlers.set(event, list);
             return () => undefined;
         },
-        clearRegions() { this.cleared++; },
         getRegions: () => [],
         enableDragSelection: () => () => undefined
     };
@@ -139,7 +138,7 @@ describe('audio viewer with waveform engine', () => {
             deps: { loadWaveform: async () => library(surfer) }
         });
         const root = shadow(container);
-        const playButton = [...root.querySelectorAll('button')].find((b) => b.textContent === 'Play')!;
+        const playButton = root.querySelector('.omni-audio__btn--play') as HTMLButtonElement;
         expect(playButton.disabled).toBe(true);
         surfer.emit('ready');
         expect(playButton.disabled).toBe(false);
@@ -151,6 +150,112 @@ describe('audio viewer with waveform engine', () => {
         handle.dispose();
         expect(surfer.destroyed).toBe(true);
         expect(root.querySelector('.omni-audio')).toBeNull();
+    });
+
+    describe('transport', () => {
+        const mountWithRegion = async () => {
+            const surfer = fakeSurfer();
+            const regions = fakeRegions();
+            const played: string[] = [];
+            const container = document.createElement('div');
+            const handle = await mountAudioViewer(input(), container, stubCtx(), {
+                ...urlOptions,
+                deps: { loadWaveform: async () => library(surfer, regions) }
+            });
+            surfer.emit('ready');
+            const root = shadow(container);
+            return {
+                handle, root, surfer, regions, played,
+                play: root.querySelector('.omni-audio__btn--play') as HTMLButtonElement,
+                select: () => regions.emit('region-created', {
+                    id: 'r1', start: 3, end: 8,
+                    play: () => played.push('r1'),
+                    remove: () => undefined
+                })
+            };
+        };
+
+        // A selected region is what the user is working on, so playback should
+        // start at its head rather than wherever the cursor happens to sit.
+        it('starts at the region head when one is selected', async () => {
+            const { handle, play, select, played, surfer } = await mountWithRegion();
+            select();
+            play.click();
+            expect(played).toEqual(['r1']);
+            expect(surfer.calls).not.toContain('playPause');
+            handle.dispose();
+        });
+
+        it('plays from the cursor when no region is selected', async () => {
+            const { handle, play, played, surfer } = await mountWithRegion();
+            play.click();
+            expect(played).toEqual([]);
+            expect(surfer.calls).toContain('playPause');
+            handle.dispose();
+        });
+
+        // One button, two states: pressing it while playing must pause rather
+        // than restart the region.
+        it('pauses instead of restarting once playback is under way', async () => {
+            const { handle, play, select, played, surfer } = await mountWithRegion();
+            select();
+            play.click();
+            surfer.emit('play');
+            expect(play.getAttribute('aria-label')).toBe('Pause');
+
+            surfer.calls.length = 0;
+            play.click();
+            expect(played).toEqual(['r1']); // not played a second time
+            expect(surfer.calls).toEqual(['playPause']);
+
+            surfer.emit('pause');
+            expect(play.getAttribute('aria-label')).toBe('Play');
+            handle.dispose();
+        });
+
+        it('offers a single transport button', async () => {
+            const { handle, root } = await mountWithRegion();
+            expect(root.querySelectorAll('.omni-audio__btn--icon')).toHaveLength(1);
+            handle.dispose();
+        });
+    });
+
+    // Zoom means nothing before the duration is known, and the original viewer
+    // kept the group out of the toolbar until then.
+    it('reveals the zoom group only once ready', async () => {
+        const surfer = fakeSurfer();
+        const container = document.createElement('div');
+        const handle = await mountAudioViewer(input(), container, stubCtx(), {
+            ...urlOptions,
+            deps: { loadWaveform: async () => library(surfer) }
+        });
+        const group = [...shadow(container).querySelectorAll('.omni-audio__group')]
+            .find((g) => g.querySelector('.omni-audio__zoom-label')) as HTMLElement;
+        expect(group.hidden).toBe(true);
+        surfer.emit('ready');
+        expect(group.hidden).toBe(false);
+        handle.dispose();
+    });
+
+    it('marks the active view mode instead of hiding it behind a menu', async () => {
+        const surfer = fakeSurfer();
+        const container = document.createElement('div');
+        const handle = await mountAudioViewer(input(), container, stubCtx(), {
+            ...urlOptions,
+            deps: { loadWaveform: async () => library(surfer, undefined, () => ({ destroy: () => undefined })) }
+        });
+        surfer.emit('ready');
+        const root = shadow(container);
+        const button = (mode: string): HTMLButtonElement =>
+            root.querySelector(`.omni-audio__mode[data-mode="${mode}"]`) as HTMLButtonElement;
+
+        expect(button('waveform').getAttribute('aria-pressed')).toBe('true');
+        expect(button('both').getAttribute('aria-pressed')).toBe('false');
+        button('both').click();
+        expect(button('both').getAttribute('aria-pressed')).toBe('true');
+        expect(button('both').classList.contains('is-active')).toBe(true);
+        expect(button('waveform').getAttribute('aria-pressed')).toBe('false');
+        handle.dispose();
     });
 
     it('applies zoom multipliers over the fit density', async () => {
@@ -194,35 +299,76 @@ describe('audio viewer with waveform engine', () => {
         regions.emit('region-out', region);
         expect(played).toEqual([]); // loop off
 
-        const loopButton = [...root.querySelectorAll('button')].find((b) => b.textContent === 'Loop')!;
-        loopButton.click();
+        const loopBox = root.querySelector('.omni-audio__checkbox') as HTMLInputElement;
+        const loopGroup = loopBox.closest('.omni-audio__group--loop') as HTMLElement;
+        expect(loopGroup.hidden).toBe(false);
+        // The label names what the toggle will repeat, which the selection decides.
+        expect(loopGroup.textContent).toBe('Loop region');
+        // jsdom does not fire 'change' for a checkbox click; browsers do.
+        loopBox.checked = true;
+        loopBox.dispatchEvent(new Event('change'));
         regions.emit('region-out', region);
         expect(played).toEqual(['r1']);
 
-        const clearButton = [...root.querySelectorAll('button')].find((b) => b.textContent === 'Clear regions')!;
-        clearButton.click();
-        expect(regions.cleared).toBe(1);
+        regions.emit('region-removed', region);
         expect(root.querySelector('.omni-audio__status')!.textContent).not.toContain('0:03');
+        expect(loopGroup.textContent).toBe('Loop track');
         handle.dispose();
     });
 
-    it('loops the whole track on finish when no region is selected', async () => {
+    // Whole-track looping has to be reachable without first making a region:
+    // the toggle is in the toolbar from 'ready' onwards, and what it repeats
+    // follows the selection.
+    it('loops the whole track on finish once no region is selected', async () => {
         const surfer = fakeSurfer();
+        const regions = fakeRegions();
         const container = document.createElement('div');
         const handle = await mountAudioViewer(input(), container, stubCtx(), {
             ...urlOptions,
-            deps: { loadWaveform: async () => library(surfer) }
+            deps: { loadWaveform: async () => library(surfer, regions) }
         });
         const root = shadow(container);
         surfer.emit('ready');
-        [...root.querySelectorAll('button')].find((b) => b.textContent === 'Loop')!.click();
+
+        const loopGroup = root.querySelector('.omni-audio__group--loop') as HTMLElement;
+        expect(loopGroup.hidden).toBe(false);
+        expect(loopGroup.textContent).toBe('Loop track');
+
+        const loopBox = root.querySelector('.omni-audio__checkbox') as HTMLInputElement;
+        loopBox.checked = true;
+        loopBox.dispatchEvent(new Event('change'));
+
+        surfer.calls.length = 0;
+        surfer.emit('finish');
+        // play(), not playPause(): wavesurfer 7.12.1 has not settled its
+        // playing flag when 'finish' fires, so the toggle read it as "playing"
+        // and stopped the track instead of looping it.
+        expect(surfer.calls).toEqual(['setTime:0', 'play']);
+        handle.dispose();
+    });
+
+    it('falls back to the toggle when the engine exposes no play', async () => {
+        const surfer = fakeSurfer();
+        delete (surfer as { play?: unknown }).play;
+        const regions = fakeRegions();
+        const container = document.createElement('div');
+        const handle = await mountAudioViewer(input(), container, stubCtx(), {
+            ...urlOptions,
+            deps: { loadWaveform: async () => library(surfer, regions) }
+        });
+        const root = shadow(container);
+        surfer.emit('ready');
+        const loopBox = root.querySelector('.omni-audio__checkbox') as HTMLInputElement;
+        loopBox.checked = true;
+        loopBox.dispatchEvent(new Event('change'));
+
         surfer.calls.length = 0;
         surfer.emit('finish');
         expect(surfer.calls).toEqual(['setTime:0', 'playPause']);
         handle.dispose();
     });
 
-    it('toggles the spectrogram plugin through the visualization select', async () => {
+    it('toggles the spectrogram plugin through the view-mode buttons', async () => {
         const surfer = fakeSurfer();
         const destroyed: string[] = [];
         const container = document.createElement('div');
@@ -232,12 +378,11 @@ describe('audio viewer with waveform engine', () => {
         });
         const root = shadow(container);
         surfer.emit('ready');
-        const select = root.querySelector('select') as HTMLSelectElement;
-        select.value = 'spectrogram';
-        select.dispatchEvent(new Event('change'));
+        const mode = (value: string): HTMLButtonElement =>
+            root.querySelector(`.omni-audio__mode[data-mode="${value}"]`) as HTMLButtonElement;
+        mode('spectrogram').click();
         expect(root.querySelector('.omni-audio__spectrogram--active')).toBeTruthy();
-        select.value = 'waveform';
-        select.dispatchEvent(new Event('change'));
+        mode('waveform').click();
         expect(destroyed).toEqual(['spec']);
         handle.dispose();
     });
@@ -384,12 +529,42 @@ describe('audio viewer with WASM decode engine', () => {
             handle.dispose();
         });
 
+        // A value typed past the opposite edge becomes that edge: the other
+        // boundary stays where it is.
         it('swaps reversed bounds rather than rejecting them', async () => {
-            const { handle, region, end } = await selectRegion();
+            const { handle, region, end } = await selectRegion(); // 10..20
             end.value = '4';
             end.dispatchEvent(new Event('change'));
             expect(region.start).toBe(4);
             expect(region.end).toBe(10);
+            handle.dispose();
+        });
+
+        it('swaps the same way when the start is typed past the end', async () => {
+            const { handle, region, start, end } = await selectRegion(); // 10..20
+            start.value = '35';
+            start.dispatchEvent(new Event('change'));
+            expect(region.start).toBe(20);
+            expect(region.end).toBe(35);
+            expect(start.value).toBe('20.000');
+            expect(end.value).toBe('35.000');
+            handle.dispose();
+        });
+
+        // Each field commits against the region's own other edge. Reading the
+        // other *input* instead is what collapsed a region to the 0.1s minimum:
+        // Enter commits twice (keydown and change), and the second pass saw the
+        // field it had just rewritten alongside the one still holding the typed
+        // text. (jsdom reports no focus inside a shadow root, so the focus half
+        // of that sequence is covered by the browser check, not here.)
+        it('commits against the region, not whatever the other field shows', async () => {
+            const { handle, region, start, end } = await selectRegion(); // 10..20
+            end.value = '999';
+            start.value = '12';
+            start.dispatchEvent(new Event('change'));
+            expect(region.start).toBe(12);
+            expect(region.end).toBe(20);
+            expect(end.value).toBe('20.000');
             handle.dispose();
         });
 
@@ -438,11 +613,128 @@ describe('audio viewer with WASM decode engine', () => {
             handle.dispose();
         });
 
-        it('reserves space under the waveform only while the editor is shown', async () => {
+        // Pressing away from the selection drops it: the engine moves the
+        // playhead there, and a highlight somewhere else would contradict it.
+        describe('pressing the waveform away from the selection', () => {
+            const mountWithAnchoredRegion = async () => {
+                const surfer = fakeSurfer();
+                const regions = fakeRegions();
+                const container = document.createElement('div');
+                const handle = await mountAudioViewer(input(), container, stubCtx(), {
+                    ...urlOptions,
+                    deps: { loadWaveform: async () => library(surfer, regions) }
+                });
+                surfer.emit('ready');
+                const root = shadow(container);
+                const waveform = root.querySelector('.omni-audio__waveform') as HTMLElement;
+
+                // The region element has to live inside the waveform for the
+                // containment check to mean anything.
+                const regionElement = document.createElement('div');
+                waveform.append(regionElement);
+                let removed = false;
+                const region: AudioRegionHandle = {
+                    id: 'r1', start: 3, end: 8, element: regionElement,
+                    play: () => undefined,
+                    remove: () => { removed = true; regions.emit('region-removed', region); }
+                };
+                regions.emit('region-created', region);
+                return { handle, root, waveform, regionElement, wasRemoved: () => removed };
+            };
+
+            it('drops the selection', async () => {
+                const { handle, root, waveform, wasRemoved } = await mountWithAnchoredRegion();
+                waveform.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+                expect(wasRemoved()).toBe(true);
+                expect((root.querySelector('.omni-audio__region-editor') as HTMLElement).hidden).toBe(true);
+                handle.dispose();
+            });
+
+            it('keeps the selection when the press lands on the region', async () => {
+                const { handle, root, regionElement, wasRemoved } = await mountWithAnchoredRegion();
+                regionElement.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+                expect(wasRemoved()).toBe(false);
+                expect((root.querySelector('.omni-audio__region-editor') as HTMLElement).hidden).toBe(false);
+                handle.dispose();
+            });
+
+            it('keeps the selection when the press lands on a resize handle', async () => {
+                const { handle, regionElement, wasRemoved } = await mountWithAnchoredRegion();
+                const handleEl = document.createElement('div');
+                regionElement.append(handleEl);
+                handleEl.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+                expect(wasRemoved()).toBe(false);
+                handle.dispose();
+            });
+
+            // What the engine actually does: regions are rendered inside its
+            // own shadow root, so the event this listener sees has been
+            // retargeted to the shadow host. Testing containment against that
+            // target reports "outside" for every press, which dropped the
+            // selection instead of letting the region be dragged.
+            it('keeps the selection when the region lives in the engine shadow root', async () => {
+                const surfer = fakeSurfer();
+                const regions = fakeRegions();
+                const container = document.createElement('div');
+                const handle = await mountAudioViewer(input(), container, stubCtx(), {
+                    ...urlOptions,
+                    deps: { loadWaveform: async () => library(surfer, regions) }
+                });
+                surfer.emit('ready');
+                const root = shadow(container);
+                const waveform = root.querySelector('.omni-audio__waveform') as HTMLElement;
+
+                const host = document.createElement('div');
+                waveform.append(host);
+                const regionElement = document.createElement('div');
+                host.attachShadow({ mode: 'open' }).append(regionElement);
+
+                let removed = false;
+                const region: AudioRegionHandle = {
+                    id: 'r1', start: 3, end: 8, element: regionElement,
+                    play: () => undefined,
+                    remove: () => { removed = true; regions.emit('region-removed', region); }
+                };
+                regions.emit('region-created', region);
+
+                regionElement.dispatchEvent(new Event('pointerdown', { bubbles: true, composed: true }));
+                expect(removed).toBe(false);
+                expect((root.querySelector('.omni-audio__region-editor') as HTMLElement).hidden).toBe(false);
+
+                // A press elsewhere in the waveform still drops it.
+                waveform.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+                expect(removed).toBe(true);
+                handle.dispose();
+            });
+
+            it('does nothing when there is no selection', async () => {
+                const surfer = fakeSurfer();
+                const container = document.createElement('div');
+                const handle = await mountAudioViewer(input(), container, stubCtx(), {
+                    ...urlOptions,
+                    deps: { loadWaveform: async () => library(surfer, fakeRegions()) }
+                });
+                surfer.emit('ready');
+                const waveform = shadow(container).querySelector('.omni-audio__waveform') as HTMLElement;
+                expect(() => waveform.dispatchEvent(new Event('pointerdown', { bubbles: true }))).not.toThrow();
+                handle.dispose();
+            });
+        });
+
+        // The toolbar carries no region controls beyond the loop toggle: a
+        // region is dropped by pressing the waveform outside it.
+        it('offers no clear-regions button', async () => {
             const { handle, root } = await selectRegion();
+            expect([...root.querySelectorAll('button')].map((b) => b.textContent))
+                .not.toContain('Clear regions');
+            handle.dispose();
+        });
+
+        it('reserves space under the waveform only while the editor is shown', async () => {
+            const { handle, root, regions, region } = await selectRegion();
             const wrap = root.querySelector('.omni-audio__waveform-wrap') as HTMLElement;
             expect(wrap.classList.contains('is-editing-region')).toBe(true);
-            [...root.querySelectorAll('button')].find((b) => b.textContent === 'Clear regions')!.click();
+            regions.emit('region-removed', region);
             expect(wrap.classList.contains('is-editing-region')).toBe(false);
             handle.dispose();
         });
@@ -474,9 +766,145 @@ describe('audio viewer with WASM decode engine', () => {
             handle.dispose();
         });
 
-        it('hides when regions are cleared', async () => {
-            const { handle, root, editor } = await selectRegion();
-            [...root.querySelectorAll('button')].find((b) => b.textContent === 'Clear regions')!.click();
+        // Dragging a new selection replaces the old one. The editors and the
+        // status line describe a single region, so leaving earlier ones on the
+        // waveform shows selections nothing can act on.
+        it('drops the previous region when a new one is dragged', async () => {
+            const surfer = fakeSurfer();
+            const regions = fakeRegions();
+            const live: AudioRegionHandle[] = [];
+            regions.getRegions = () => [...live];
+
+            const makeRegion = (id: string, start: number, end: number): AudioRegionHandle => {
+                const region: AudioRegionHandle = {
+                    id, start, end,
+                    play: () => undefined,
+                    remove: () => {
+                        live.splice(live.indexOf(region), 1);
+                        regions.emit('region-removed', region);
+                    }
+                };
+                live.push(region);
+                return region;
+            };
+
+            const container = document.createElement('div');
+            const handle = await mountAudioViewer(input(), container, stubCtx(), {
+                ...urlOptions,
+                deps: { loadWaveform: async () => library(surfer, regions) }
+            });
+            surfer.emit('ready');
+
+            regions.emit('region-created', makeRegion('r1', 1, 2));
+            expect(live.map((r) => r.id)).toEqual(['r1']);
+
+            regions.emit('region-created', makeRegion('r2', 5, 6));
+            expect(live.map((r) => r.id)).toEqual(['r2']);
+
+            // The survivor is the one the editors describe.
+            const start = shadow(container)
+                .querySelector('.omni-audio__region-field--start input') as HTMLInputElement;
+            expect(start.value).toBe('5.000');
+            expect((shadow(container).querySelector('.omni-audio__region-editor') as HTMLElement).hidden).toBe(false);
+            handle.dispose();
+        });
+
+        it('keeps the clicked region when selecting an existing one', async () => {
+            const surfer = fakeSurfer();
+            const regions = fakeRegions();
+            const region: AudioRegionHandle = {
+                id: 'r1', start: 3, end: 4, play: () => undefined, remove: () => undefined
+            };
+            regions.getRegions = () => [region];
+            const container = document.createElement('div');
+            const handle = await mountAudioViewer(input(), container, stubCtx(), {
+                ...urlOptions,
+                deps: { loadWaveform: async () => library(surfer, regions) }
+            });
+            surfer.emit('ready');
+            regions.emit('region-clicked', region);
+            const start = shadow(container)
+                .querySelector('.omni-audio__region-field--start input') as HTMLInputElement;
+            expect(start.value).toBe('3.000');
+            handle.dispose();
+        });
+
+        // The original viewer put the length above the region and the bounds
+        // below it. jsdom has no layout, so the geometry is injected.
+        it('places length above the region and start/end below it', async () => {
+            const surfer = fakeSurfer();
+            const regions = fakeRegions();
+            const container = document.createElement('div');
+            const handle = await mountAudioViewer(input(), container, stubCtx(), {
+                ...urlOptions,
+                deps: { loadWaveform: async () => library(surfer, regions) }
+            });
+            surfer.emit('ready');
+
+            const root = shadow(container);
+            const wrap = root.querySelector('.omni-audio__waveform-wrap') as HTMLElement;
+            const rect = (left: number, top: number, right: number, bottom: number): DOMRect =>
+                ({ left, top, right, bottom, width: right - left, height: bottom - top } as DOMRect);
+            wrap.getBoundingClientRect = () => rect(0, 0, 1000, 128);
+
+            const regionElement = document.createElement('div');
+            regionElement.getBoundingClientRect = () => rect(200, 0, 400, 128);
+            regions.emit('region-created', {
+                id: 'r1', start: 2, end: 4, element: regionElement,
+                play: () => undefined, remove: () => undefined
+            });
+
+            const at = (selector: string): { left: number; top: number } => {
+                const field = root.querySelector(selector) as HTMLElement;
+                return { left: Number.parseFloat(field.style.left), top: Number.parseFloat(field.style.top) };
+            };
+            const start = at('.omni-audio__region-field--start');
+            const duration = at('.omni-audio__region-field--duration');
+            const end = at('.omni-audio__region-field--end');
+
+            expect(duration.top).toBeLessThan(start.top);   // length sits above
+            expect(start.top).toBe(end.top);                // bounds share a row
+            expect(duration.left).toBe(300);                // centre of 200..400
+            expect(start.left).toBeLessThan(duration.left);
+            expect(end.left).toBeGreaterThan(duration.left);
+            handle.dispose();
+        });
+
+        it('keeps every field inside the waveform for a region at the edge', async () => {
+            const surfer = fakeSurfer();
+            const regions = fakeRegions();
+            const container = document.createElement('div');
+            const handle = await mountAudioViewer(input(), container, stubCtx(), {
+                ...urlOptions,
+                deps: { loadWaveform: async () => library(surfer, regions) }
+            });
+            surfer.emit('ready');
+
+            const root = shadow(container);
+            const wrap = root.querySelector('.omni-audio__waveform-wrap') as HTMLElement;
+            const rect = (left: number, top: number, right: number, bottom: number): DOMRect =>
+                ({ left, top, right, bottom, width: right - left, height: bottom - top } as DOMRect);
+            wrap.getBoundingClientRect = () => rect(0, 0, 1000, 128);
+
+            const regionElement = document.createElement('div');
+            regionElement.getBoundingClientRect = () => rect(980, 0, 1000, 128); // hard right
+            regions.emit('region-created', {
+                id: 'r1', start: 118, end: 120, element: regionElement,
+                play: () => undefined, remove: () => undefined
+            });
+
+            for (const selector of ['--start', '--duration', '--end']) {
+                const field = root.querySelector(`.omni-audio__region-field${selector}`) as HTMLElement;
+                const left = Number.parseFloat(field.style.left);
+                expect(left, selector).toBeGreaterThanOrEqual(0);
+                expect(left, selector).toBeLessThanOrEqual(1000);
+            }
+            handle.dispose();
+        });
+
+        it('hides when the region goes away', async () => {
+            const { handle, regions, region, editor } = await selectRegion();
+            regions.emit('region-removed', region);
             expect(editor.hidden).toBe(true);
             handle.dispose();
         });
@@ -582,26 +1010,27 @@ describe('audio viewer with WASM decode engine', () => {
             });
             surfer.emit('ready');
             const root = shadow(container);
-            const selects = [...root.querySelectorAll('select')];
+            const mode = (value: string): HTMLButtonElement =>
+                root.querySelector(`.omni-audio__mode[data-mode="${value}"]`) as HTMLButtonElement;
             return {
                 handle, root, created, destroyed,
-                vis: selects[0]!,
-                scale: selects[1]!,
+                mode,
+                scale: root.querySelector('.omni-audio__group--scale select') as HTMLSelectElement,
                 wave: root.querySelector('.omni-audio__waveform-wrap') as HTMLElement,
                 spectrogram: root.querySelector('.omni-audio__spectrogram') as HTMLElement
             };
         };
 
         it('offers waveform, spectrogram and both', async () => {
-            const { handle, vis } = await mountWithSpectrogram();
-            expect([...vis.options].map((o) => o.value)).toEqual(['waveform', 'spectrogram', 'both']);
+            const { handle, root } = await mountWithSpectrogram();
+            expect([...root.querySelectorAll('.omni-audio__mode')].map((b) => (b as HTMLElement).dataset.mode))
+                .toEqual(['waveform', 'spectrogram', 'both']);
             handle.dispose();
         });
 
         it('keeps the waveform visible in both mode', async () => {
-            const { handle, vis, wave, spectrogram, created } = await mountWithSpectrogram();
-            vis.value = 'both';
-            vis.dispatchEvent(new Event('change'));
+            const { handle, mode, wave, spectrogram, created } = await mountWithSpectrogram();
+            mode('both').click();
             expect(wave.classList.contains('is-collapsed')).toBe(false);
             expect(spectrogram.classList.contains('omni-audio__spectrogram--active')).toBe(true);
             expect(created).toHaveLength(1);
@@ -613,33 +1042,49 @@ describe('audio viewer with WASM decode engine', () => {
         // Measured on a 12-minute track — width 0 never finishes rendering,
         // a real width renders in ~6 s.
         it('collapses rather than hides the waveform in spectrogram-only mode', async () => {
-            const { handle, vis, wave } = await mountWithSpectrogram();
-            vis.value = 'spectrogram';
-            vis.dispatchEvent(new Event('change'));
+            const { handle, mode, wave } = await mountWithSpectrogram();
+            mode('spectrogram').click();
             expect(wave.classList.contains('is-collapsed')).toBe(true);
             expect(wave.hidden).toBe(false);
             handle.dispose();
         });
 
+        // The playhead clamp that keeps the cursor off an inline spectrogram is
+        // scoped to that case and sized to the waveform. Unscoped at a fixed
+        // 128px it cut the second channel's played overlay away entirely: a
+        // stereo file draws one 128px strip per channel.
+        it('clamps the playhead only while an inline spectrogram is mounted', async () => {
+            const { handle, mode, wave } = await mountWithSpectrogram();
+            expect(wave.classList.contains('has-inline-spectrogram')).toBe(false);
+            mode('spectrogram').click();
+            expect(wave.classList.contains('has-inline-spectrogram')).toBe(true);
+            mode('waveform').click();
+            expect(wave.classList.contains('has-inline-spectrogram')).toBe(false);
+            handle.dispose();
+        });
+
+        it('sizes the clamp to every channel strip', async () => {
+            const { handle, wave } = await mountWithSpectrogram();
+            // The fake decodes as stereo, so the waveform is two strips tall.
+            expect(wave.style.getPropertyValue('--omni-audio-wave-height')).toBe('256px');
+            handle.dispose();
+        });
+
         it('restores the waveform when switching back', async () => {
-            const { handle, vis, wave } = await mountWithSpectrogram();
-            vis.value = 'spectrogram';
-            vis.dispatchEvent(new Event('change'));
-            vis.value = 'waveform';
-            vis.dispatchEvent(new Event('change'));
+            const { handle, mode, wave } = await mountWithSpectrogram();
+            mode('spectrogram').click();
+            mode('waveform').click();
             expect(wave.classList.contains('is-collapsed')).toBe(false);
             handle.dispose();
         });
 
         it('exposes the scale control only while a spectrogram is shown', async () => {
-            const { handle, root, vis } = await mountWithSpectrogram();
+            const { handle, root, mode } = await mountWithSpectrogram();
             const group = root.querySelector('.omni-audio__group--scale') as HTMLElement;
             expect(group.hidden).toBe(true);
-            vis.value = 'spectrogram';
-            vis.dispatchEvent(new Event('change'));
+            mode('spectrogram').click();
             expect(group.hidden).toBe(false);
-            vis.value = 'waveform';
-            vis.dispatchEvent(new Event('change'));
+            mode('waveform').click();
             expect(group.hidden).toBe(true);
             handle.dispose();
         });
@@ -648,9 +1093,8 @@ describe('audio viewer with WASM decode engine', () => {
         // width, and pinning it doubled the column count — each column a
         // synchronous FFT, which froze the tab on a 12-minute track.
         it('builds the spectrogram with mel and lets the plugin choose the hop', async () => {
-            const { handle, vis, created } = await mountWithSpectrogram();
-            vis.value = 'spectrogram';
-            vis.dispatchEvent(new Event('change'));
+            const { handle, mode, created } = await mountWithSpectrogram();
+            mode('spectrogram').click();
             expect(created[0]).toMatchObject({
                 scale: 'mel', fftSamples: 4096, height: 250, labels: true
             });
@@ -661,9 +1105,8 @@ describe('audio viewer with WASM decode engine', () => {
         // The plugin fixes its scale at construction, so a scale change has to
         // rebuild it rather than mutate it.
         it('rebuilds the spectrogram when the scale changes', async () => {
-            const { handle, vis, scale, created, destroyed } = await mountWithSpectrogram();
-            vis.value = 'spectrogram';
-            vis.dispatchEvent(new Event('change'));
+            const { handle, mode, scale, created, destroyed } = await mountWithSpectrogram();
+            mode('spectrogram').click();
             expect(created).toHaveLength(1);
 
             scale.value = 'bark';
@@ -675,9 +1118,8 @@ describe('audio viewer with WASM decode engine', () => {
         });
 
         it('does not rebuild when the scale is unchanged', async () => {
-            const { handle, vis, scale, created } = await mountWithSpectrogram();
-            vis.value = 'spectrogram';
-            vis.dispatchEvent(new Event('change'));
+            const { handle, mode, scale, created } = await mountWithSpectrogram();
+            mode('spectrogram').click();
             scale.value = 'mel';
             scale.dispatchEvent(new Event('change'));
             expect(created).toHaveLength(1);
@@ -908,6 +1350,284 @@ describe('audio viewer with WASM decode engine', () => {
         });
     });
 
+    // Without this path every mp3 is decoded whole however long it is — a
+    // 20-minute file expands to ~400 MiB and takes the tab down.
+    // The payoff of the windowed renderer: a spectrogram on files where the
+    // whole-file plugin cannot run at all, peaks mode included.
+    describe('windowed spectrogram', () => {
+        const wavInput = (frames: number) => ({
+            fileName: 'take.wav',
+            data: encodeWavFromFloat32(
+                Float32Array.from({ length: frames * 2 }, (_, i) => Math.sin(i / 7) * 0.6),
+                2, 44100
+            )
+        });
+
+        const mountWav = async (frames: number, extra: Record<string, unknown> = {}) => {
+            const surfer = fakeSurfer();
+            const pluginBuilds: number[] = [];
+            const lib = library(surfer, undefined, () => { pluginBuilds.push(1); return { destroy: () => undefined }; });
+            const container = document.createElement('div');
+            const handle = await mountAudioViewer(wavInput(frames), container, stubCtx(), {
+                ...urlOptions, ...extra, deps: { loadWaveform: async () => lib }
+            });
+            surfer.emit('ready');
+            const root = shadow(container);
+            return {
+                handle, root, surfer, pluginBuilds,
+                mode: (value: string) => root.querySelector(`.omni-audio__mode[data-mode="${value}"]`) as HTMLButtonElement,
+                canvas: () => root.querySelector('.omni-audio__spectrogram-canvas') as HTMLCanvasElement | null
+            };
+        };
+
+        const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 300));
+
+        it('renders its own canvas instead of building the whole-file plugin', async () => {
+            const { handle, mode, canvas, pluginBuilds } = await mountWav(20000);
+            mode('spectrogram').click();
+            await settle();
+            expect(canvas()).not.toBeNull();
+            expect(pluginBuilds).toHaveLength(0);
+            handle.dispose();
+        });
+
+        // The plugin needs a decoded buffer, which peaks mode never builds — so
+        // this used to be simply unavailable on large files.
+        it('stays available in peaks mode', async () => {
+            const { handle, mode, canvas } = await mountWav(20000, { analyzeDecodedBytes: 2 });
+            expect(mode('spectrogram').disabled).toBe(false);
+            mode('spectrogram').click();
+            await settle();
+            expect(canvas()).not.toBeNull();
+            handle.dispose();
+        });
+
+        it('redraws when the visible range scrolls', async () => {
+            const { handle, mode, canvas, surfer } = await mountWav(200000);
+            mode('spectrogram').click();
+            await settle();
+            const before = canvas()!.width;
+
+            surfer.emit('scroll', 10);
+            // The fake emitter passes one argument, so the range collapses to a
+            // point and the view asks for the whole track instead — either way
+            // a redraw must happen without throwing.
+            await settle();
+            expect(canvas()!.width).toBeGreaterThan(0);
+            expect(before).toBeGreaterThan(0);
+            handle.dispose();
+        });
+
+        it('releases the canvas when leaving spectrogram modes', async () => {
+            const { handle, mode, canvas } = await mountWav(20000);
+            mode('spectrogram').click();
+            await settle();
+            expect(canvas()).not.toBeNull();
+            mode('waveform').click();
+            expect(canvas()).toBeNull();
+            handle.dispose();
+        });
+
+        // flac has no windowed reader, so the plugin stays in charge there.
+        it('leaves formats it cannot window to the plugin', async () => {
+            const surfer = fakeSurfer();
+            const pluginBuilds: number[] = [];
+            const lib = library(surfer, undefined, () => { pluginBuilds.push(1); return { destroy: () => undefined }; });
+            const container = document.createElement('div');
+            const handle = await mountAudioViewer(engineInput(), container, stubCtx(), {
+                ...urlOptions, deps: { loadWaveform: async () => lib }
+            });
+            surfer.emit('ready');
+            const root = shadow(container);
+            (root.querySelector('.omni-audio__mode[data-mode="spectrogram"]') as HTMLButtonElement).click();
+            expect(pluginBuilds).toHaveLength(1);
+            expect(root.querySelector('.omni-audio__spectrogram-canvas')).toBeNull();
+            handle.dispose();
+        });
+
+        // Once the engine has decoded a track, its samples are in memory: every
+        // format becomes windowable, and re-decoding the file per viewport
+        // would be pure waste.
+        it('windows a format it cannot parse once the engine has decoded it', async () => {
+            const surfer = fakeSurfer();
+            surfer.getDecodedData = () => ({
+                numberOfChannels: 2,
+                sampleRate: 44100,
+                duration: 120,
+                getChannelData: (channel: number) =>
+                    Float32Array.from({ length: 44100 * 4 }, (_, i) =>
+                        Math.sin(i / (channel === 0 ? 7 : 11)) * 0.6)
+            });
+            const pluginBuilds: number[] = [];
+            const lib = library(surfer, undefined, () => { pluginBuilds.push(1); return { destroy: () => undefined }; });
+            const container = document.createElement('div');
+            const handle = await mountAudioViewer(engineInput(), container, stubCtx(), {
+                ...urlOptions, deps: { loadWaveform: async () => lib }
+            });
+            surfer.emit('ready');
+            const root = shadow(container);
+            (root.querySelector('.omni-audio__mode[data-mode="spectrogram"]') as HTMLButtonElement).click();
+            await settle();
+            expect(root.querySelector('.omni-audio__spectrogram-canvas')).not.toBeNull();
+            expect(pluginBuilds).toHaveLength(0);
+            handle.dispose();
+        });
+
+        it('offers the frequency range only where a window reader can honour it', async () => {
+            const { handle, root, mode } = await mountWav(20000);
+            const group = () => root.querySelector('.omni-audio__group--frequency') as HTMLElement;
+            expect(group().hidden).toBe(true);
+            mode('spectrogram').click();
+            await settle();
+            expect(group().hidden).toBe(false);
+            expect([...group().querySelectorAll('option')].map((o) => o.value))
+                .toEqual(['0', '2000', '4000', '8000', '16000']);
+            mode('waveform').click();
+            expect(group().hidden).toBe(true);
+            handle.dispose();
+        });
+
+        it('redraws when a frequency ceiling is chosen', async () => {
+            const { handle, root, mode, canvas } = await mountWav(200000);
+            mode('spectrogram').click();
+            await settle();
+            const before = canvas()!.height;
+
+            const select = root.querySelector('.omni-audio__group--frequency select') as HTMLSelectElement;
+            select.value = '4000';
+            select.dispatchEvent(new Event('change', { bubbles: true }));
+            await settle();
+            expect(canvas()!.height).toBe(before);
+            expect(canvas()!.width).toBeGreaterThan(0);
+            handle.dispose();
+        });
+
+        // The waveform library is stereo here, so both channels get a band.
+        it('stacks a band per channel and sizes the canvas for them', async () => {
+            const { handle, mode, canvas } = await mountWav(200000);
+            mode('spectrogram').click();
+            await settle();
+            expect(canvas()!.height).toBe(500);
+            handle.dispose();
+        });
+
+        it('honours spectrogram options from the mount call', async () => {
+            const { handle, mode, canvas } = await mountWav(200000, {
+                spectrogram: { height: 64, fftSize: 512, splitChannels: false, labels: false }
+            });
+            mode('spectrogram').click();
+            await settle();
+            expect(canvas()!.height).toBe(64);
+            const axis = canvas()!.parentElement!.querySelector('.omni-audio__spectrogram-axis') as HTMLCanvasElement;
+            expect(axis.hidden).toBe(true);
+            handle.dispose();
+        });
+    });
+
+    describe('streaming analysis for mp3', () => {
+        const mp3Bytes = (frames: number): Uint8Array => {
+            const header = [0xff, 0xfb, 0x90, 0x00];
+            const out = new Uint8Array(417 * frames);
+            for (let i = 0; i < frames; i++) out.set(header, i * 417);
+            return out;
+        };
+
+        /** Minimal WebCodecs stand-in installed as a global for the viewer. */
+        const installWebCodecs = (): void => {
+            class FakeDecoder {
+                decodeQueueSize = 0;
+                constructor(private init: { output(data: unknown): void }) {}
+                configure(): void { /* nothing */ }
+                decode(): void {
+                    this.init.output({
+                        numberOfFrames: 1152,
+                        numberOfChannels: 2,
+                        format: 'f32-planar',
+                        allocationSize: () => 1152 * 4,
+                        copyTo: (destination: ArrayBufferView) => (destination as Float32Array).fill(0.5, 0, 1152),
+                        close: () => undefined
+                    });
+                }
+                async flush(): Promise<void> { /* synchronous fake */ }
+                close(): void { /* nothing */ }
+            }
+            vi.stubGlobal('AudioDecoder', FakeDecoder);
+            vi.stubGlobal('EncodedAudioChunk', class { constructor(public init: unknown) {} });
+        };
+
+        afterEach(() => vi.unstubAllGlobals());
+
+        it('feeds mp3 peaks to the surfer instead of decoding the whole file', async () => {
+            installWebCodecs();
+            const created: Array<Record<string, unknown>> = [];
+            const surfer = fakeSurfer();
+            const lib: AudioWaveformLibrary = {
+                createWaveSurfer: (o) => { created.push(o as unknown as Record<string, unknown>); return surfer; }
+            };
+            const handle = await mountAudioViewer(
+                { fileName: 'long.mp3', data: mp3Bytes(400) },
+                document.createElement('div'), stubCtx(),
+                { ...urlOptions, analyzeDecodedBytes: 2, deps: { loadWaveform: async () => lib } }
+            );
+            const peaks = created[0]?.peaks as number[][];
+            expect(peaks).toHaveLength(2);
+            expect(Math.max(...peaks[0]!)).toBeCloseTo(0.5, 2);
+            expect(created[0]?.duration).toBeCloseTo(400 * 1152 / 44100, 4);
+            handle.dispose();
+        });
+
+        // Chrome-only capability, so the viewer must still open elsewhere.
+        it('falls back to the browser decode where WebCodecs is missing', async () => {
+            const created: Array<Record<string, unknown>> = [];
+            const surfer = fakeSurfer();
+            const lib: AudioWaveformLibrary = {
+                createWaveSurfer: (o) => { created.push(o as unknown as Record<string, unknown>); return surfer; }
+            };
+            const handle = await mountAudioViewer(
+                { fileName: 'long.mp3', data: mp3Bytes(400) },
+                document.createElement('div'), stubCtx(),
+                { ...urlOptions, analyzeDecodedBytes: 2, deps: { loadWaveform: async () => lib } }
+            );
+            expect(created[0]?.peaks).toBeUndefined();
+            handle.dispose();
+        });
+    });
+
+    // When nothing can produce peaks the browser decodes everything, and at the
+    // source rate that is what takes a tab down. Trading bandwidth keeps it up.
+    describe('reduced-rate fallback', () => {
+        const mountLargeWav = async (frames: number, budget: number) => {
+            const created: Array<Record<string, unknown>> = [];
+            const surfer = fakeSurfer();
+            const lib: AudioWaveformLibrary = {
+                createWaveSurfer: (o) => { created.push(o as unknown as Record<string, unknown>); return surfer; }
+            };
+            // A WAV the streaming analyzer cannot read: valid RIFF, broken fmt.
+            const data = encodeWavFromFloat32(new Float32Array(frames * 2), 2, 44100);
+            data[20] = 0x63; // unsupported format tag
+            const container = document.createElement('div');
+            const handle = await mountAudioViewer(
+                { fileName: 'broken.wav', data }, container, stubCtx(),
+                { ...urlOptions, analyzeDecodedBytes: budget, deps: { loadWaveform: async () => lib } }
+            );
+            return { handle, container, options: created[0]! };
+        };
+
+        it('lowers the decode rate rather than letting the decode blow the budget', async () => {
+            const { handle, container, options } = await mountLargeWav(200000, 64 * 1024);
+            expect(options.sampleRate).toBeLessThan(44100);
+            expect(options.sampleRate).toBeGreaterThanOrEqual(16000);
+            expect(shadow(container).textContent).toContain('reduced quality');
+            handle.dispose();
+        });
+
+        it('leaves the rate alone when the decode already fits', async () => {
+            const { handle, options } = await mountLargeWav(1000, 64 * 1024 * 1024);
+            expect(options.sampleRate).toBe(44100);
+            handle.dispose();
+        });
+    });
+
     describe('streaming analysis for WAV', () => {
         const wavInput = (frames: number, left: number, right: number) => ({
             fileName: 'take.wav',
@@ -1085,16 +1805,16 @@ describe('audio viewer with WASM decode engine', () => {
             deps: { loadWaveform: async () => lib, engine }
         });
         const root = shadow(container);
-        const visSelect = root.querySelector('select') as HTMLSelectElement;
+        const spectrogramButton = root.querySelector('.omni-audio__mode[data-mode="spectrogram"]') as HTMLButtonElement;
 
         surfers[0]!.emit('ready');
-        expect(visSelect.disabled).toBe(true); // peaks mode: no samples to transform
+        expect(spectrogramButton.disabled).toBe(true); // peaks mode: no samples to transform
 
         surfers[0]!.emit('error', new Error('cannot play this codec'));
         await vi.waitFor(() => expect(engine.decode).toHaveBeenCalledOnce());
         surfers[1]!.emit('ready');
 
-        expect(visSelect.disabled).toBe(false);
+        expect(spectrogramButton.disabled).toBe(false);
         expect(root.textContent).toContain('L peak');
         handle.dispose();
     });

@@ -183,6 +183,23 @@ describe('visualization modes', () => {
         controller.dispatch({ type: 'set-spectrogram-scale', scale: 'nonsense' as never });
         expect(controller.state.spectrogramScale).toBe('bark');
     });
+
+    it('starts on the full frequency range and takes a ceiling', () => {
+        const controller = createAudioController();
+        expect(controller.state.spectrogramFrequencyMax).toBe(0);
+        controller.dispatch({ type: 'set-spectrogram-frequency-max', hz: 4000 });
+        expect(controller.state.spectrogramFrequencyMax).toBe(4000);
+        controller.dispatch({ type: 'set-spectrogram-frequency-max', hz: 0 });
+        expect(controller.state.spectrogramFrequencyMax).toBe(0);
+    });
+
+    it('ignores a nonsensical frequency ceiling', () => {
+        const controller = createAudioController();
+        controller.dispatch({ type: 'set-spectrogram-frequency-max', hz: 8000 });
+        controller.dispatch({ type: 'set-spectrogram-frequency-max', hz: -1 });
+        controller.dispatch({ type: 'set-spectrogram-frequency-max', hz: Number.NaN });
+        expect(controller.state.spectrogramFrequencyMax).toBe(8000);
+    });
 });
 
 describe('region bounds', () => {
