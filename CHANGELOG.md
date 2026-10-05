@@ -5,6 +5,75 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.0] - 2026-10-05
+
+### Added
+
+- Jupyter Notebook (`.ipynb`, nbformat 4) parser and read-only viewer, exported
+  through `parsers/notebook`, `viewers/notebook`, and its `self-loading` helper.
+  Markdown, code, and raw cells display alongside saved streams, HTML tables,
+  raster/SVG images, Markdown/LaTeX/JSON/text results, and error tracebacks.
+  Reuses the existing JSON parser, Markdown sanitization/rendering/styles,
+  syntax highlighter, math renderer, and SVG sanitizer. Includes attachment
+  images, execution counts, cell search, code/output visibility controls,
+  persisted collapse hints, resource limits, localized diagnostics, extension
+  and content detection, `styles/notebook.css`, and a sample notebook. Code
+  and interactive outputs are never executed; external resources are blocked.
+
+- HAR (HTTP Archive) parsing and a network-log viewer, exposed through
+  `parsers/har` and `viewers/har`. `parseHar` is a contract parser
+  (`ParseOutcome<HarDocument>`) that reads the archive through the core JSON
+  layer, so a truncated export still yields the requests it held. Every entry
+  keeps its headers, query string, cookies, request payload, and response body,
+  and gains the fields triage needs: host, path, status class, resource type
+  (`_resourceType` when the writer supplied one, MIME type otherwise),
+  transferred bytes (`_transferSize` when present), decoded resource size, and
+  a phase breakdown with the TLS handshake taken out of `connect`. Timestamps
+  use a core ISO-8601 parser instead of `new Date(string)` and the timeline's
+  origin is the earliest entry, so offsets and waterfall positions are
+  identical on every platform; base64 bodies are decoded for textual MIME types
+  and reported by size only otherwise (the URL-safe alphabet
+  included); a preview-limit cut and a body the archive stored incompletely are
+  reported separately, and a size or start time the archive omits stays unknown
+  instead of rendering as zero. The viewer renders summary figures, a
+  request table sortable by every column with per-request waterfall bars,
+  filters for method, status class, resource type, domain, and free text over
+  URLs, status text and headers (with an opt-in body search), and a detail pane
+  for headers, payload, response body (pretty-printed through the JSON
+  serializer when it is JSON), cookies, and timings, plus page-timing and
+  archive-info tabs. Detection claims `.har` by extension and recognizes an
+  extensionless archive by content — a `log` object holding an `entries` array
+  — before the generic JSON viewer. Parsing is bounded by input size, entry
+  count, and body preview limits, and warns about an empty or foreign-version
+  archive, entries that are not objects, unparseable start times, truncated or
+  binary bodies, and requests that failed before a response arrived.
+- ExecuTorch (`.pte`) parsing and an interactive viewer, exposed through
+  `parsers/pte` and `viewers/pte`. A `.pte` is the FlatBuffer
+  `to_executorch().save()` writes (`program.fbs`, identifier `ET12`), optionally
+  followed by data segments that the `eh00` extended header locates. `parsePte`
+  reads the FlatBuffer with a dependency-free reader and never decodes a
+  segment or buffer payload: methods with their values, instructions,
+  operators, and delegates are kept, and every tensor's bytes are resolved to
+  the inline `constant_buffer`, the constant segment (padded slot size and
+  absolute file offset), a mutable data segment, an external `.ptd` file, a
+  memory-planned arena slot, or a runtime input. Kernel call outputs are
+  taken from the return value the emitter appends after the arguments;
+  delegate call arguments are split into inputs and outputs by data flow,
+  with memory-plan aliases — views the emitter gave their own EValue —
+  resolved to the value they alias. Every EValue kind gets a preview, delegate compile specs are
+  decoded when they are short text, and emitter stack traces are kept for the
+  leading instructions. The viewer draws each method's kernel, delegate, and
+  move calls with inputs, consumed constants, and outputs, an inspector
+  (arguments, delegate backend and compile specs, jump destination, stack
+  trace), searchable instruction, value, input/output, delegate, segment, and
+  model-information panels, and a method selector. Detection claims `.pte` by
+  extension validated against the `ET12` identifier and recognizes an
+  extensionless program by content. Parsing is bounded by object, element,
+  text, rank, and stack-trace limits, and warns about backends the runtime must
+  register, external tensors, segments it cannot locate or that run past the
+  file, missing constant data, references to segments the program never
+  declares, and unrecognized scalar types, value kinds, or instruction kinds.
+
 ## [0.18.0] - 2026-09-16
 
 ### Added

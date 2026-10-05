@@ -84,6 +84,10 @@ export const GGUF_MAGIC_SIGNATURES: readonly MagicSignature[] = [[{offset:0,byte
  *  parser is deliberately more lenient and merely warns on a foreign identifier,
  *  which still reaches hosts that route by extension without sniff bytes. */
 export const TFLITE_MAGIC_SIGNATURES: readonly MagicSignature[] = [[{offset:4,bytes:[0x54,0x46,0x4c,0x33]}]];
+/** An ExecuTorch program is a FlatBuffer too: root offset, then the 'ET12'
+ *  identifier. Same strict/lenient split as TFLite — detection demands the
+ *  current identifier, the parser only warns about a foreign one. */
+export const PTE_MAGIC_SIGNATURES: readonly MagicSignature[] = [[{offset:4,bytes:[0x45,0x54,0x31,0x32]}]];
 
 /** Farthest byte any signature needs (WebP reaches offset 8 + 4 = 12). */
 const signatureReach = (sigs: readonly MagicSignature[]): number =>
@@ -107,6 +111,7 @@ export const REQUIRED_SNIFF_BYTES = Math.max(
     signatureReach(GGUF_MAGIC_SIGNATURES)
     ,signatureReach(MF4_MAGIC_SIGNATURES)
     ,signatureReach(TFLITE_MAGIC_SIGNATURES)
+    ,signatureReach(PTE_MAGIC_SIGNATURES)
 );
 
 export const CSV_VIEWER_DESCRIPTOR: ViewerDescriptor = {
@@ -178,6 +183,7 @@ export const OPENVINO_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'openvino',displ
 // `archive_format` marker (or the legacy serialized_exported_program.json).
 export const PT2_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'pt2',displayNameKey:'pt2.title',extensions:['pt2'],priority:20,requiredServices:[],optionalServices:['clipboard']};
 export const TFLITE_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'tflite',displayNameKey:'tflite.title',extensions:['tflite','lite'],priority:20,magicSignatures:TFLITE_MAGIC_SIGNATURES,requiredServices:[],optionalServices:['clipboard']};
+export const PTE_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'pte',displayNameKey:'pte.title',extensions:['pte'],priority:20,magicSignatures:PTE_MAGIC_SIGNATURES,requiredServices:[],optionalServices:['clipboard']};
 // A `.keras` model is a ZIP, so it carries no distinguishing leading magic and
 // is claimed by extension; extensionless archives reach it through
 // probeContainer, which recognizes the config.json + model.weights.h5 layout.
@@ -195,6 +201,15 @@ export const BLF_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'blf',displayNameKey:
 export const MF4_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'mf4',displayNameKey:'mf4.title',extensions:['mf4'],priority:20,magicSignatures:MF4_MAGIC_SIGNATURES,requiredServices:[],optionalServices:['clipboard']};
 export const PCAP_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'pcap',displayNameKey:'pcap.title',extensions:['pcap'],priority:20,magicSignatures:PCAP_MAGIC_SIGNATURES,requiredServices:[],optionalServices:['clipboard']};
 export const PCAPNG_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'pcapng',displayNameKey:'pcapng.title',extensions:['pcapng'],priority:20,magicSignatures:PCAPNG_MAGIC_SIGNATURES,requiredServices:[],optionalServices:['clipboard']};
+// A `.har` archive is JSON, so it carries no leading magic and is claimed by
+// extension; an extensionless archive reaches the viewer through the text sniff
+// below, which recognizes a `log` object holding an `entries` array.
+export const HAR_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'har',displayNameKey:'har.title',extensions:['har'],priority:20,requiredServices:[],optionalServices:['clipboard']};
+
+export const NOTEBOOK_VIEWER_DESCRIPTOR: ViewerDescriptor = {
+    id: 'notebook', displayNameKey: 'notebook.title', extensions: ['ipynb'], priority: 20,
+    requiredServices: [], optionalServices: ['navigation', 'documentAssets']
+};
 export const MERMAID_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'mermaid',displayNameKey:'mermaid.title',extensions:['mmd','mermaid'],priority:20,requiredServices:[],optionalServices:['clipboard','writeback','save']};
 export const PLANTUML_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'plantuml',displayNameKey:'plantuml.title',extensions:['puml','plantuml','iuml'],priority:20,requiredServices:[],optionalServices:['clipboard','writeback','save']};
 export const SHAPEFILE_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'shapefile',displayNameKey:'shapefile.title',extensions:['shp'],priority:20,magicSignatures:SHAPEFILE_MAGIC_SIGNATURES,requiredServices:[],optionalServices:[]};
@@ -301,6 +316,7 @@ export const CORE_VIEWER_DESCRIPTORS: readonly ViewerDescriptor[] = [
     MF4_VIEWER_DESCRIPTOR,
     PCAP_VIEWER_DESCRIPTOR,
     PCAPNG_VIEWER_DESCRIPTOR,
+    HAR_VIEWER_DESCRIPTOR,
     MERMAID_VIEWER_DESCRIPTOR,
     PLANTUML_VIEWER_DESCRIPTOR,
     SHAPEFILE_VIEWER_DESCRIPTOR,
@@ -322,12 +338,14 @@ export const CORE_VIEWER_DESCRIPTORS: readonly ViewerDescriptor[] = [
     COREML_VIEWER_DESCRIPTOR,
     OPENVINO_VIEWER_DESCRIPTOR,
     PT2_VIEWER_DESCRIPTOR,
+    PTE_VIEWER_DESCRIPTOR,
     PPT_VIEWER_DESCRIPTOR,
     WORD_VIEWER_DESCRIPTOR,
     HWP_VIEWER_DESCRIPTOR,
     EXCEL_VIEWER_DESCRIPTOR,
     IMAGE_VIEWER_DESCRIPTOR,
     MARKDOWN_VIEWER_DESCRIPTOR,
+    NOTEBOOK_VIEWER_DESCRIPTOR,
     ARCHIVE_VIEWER_DESCRIPTOR,
     CSV_VIEWER_DESCRIPTOR,
     JSON_VIEWER_DESCRIPTOR,
@@ -339,7 +357,7 @@ export const CORE_VIEWER_DESCRIPTORS: readonly ViewerDescriptor[] = [
     FALLBACK_VIEWER_DESCRIPTOR
 ];
 
-export { looksLikeJsonDocument, looksLikeJsonl, looksLikeLatex, looksLikeOpenVinoIr, looksLikeProto, sniffTextViewer } from './sniff.js';
+export { looksLikeHar, looksLikeNotebook, looksLikeJsonDocument, looksLikeJsonl, looksLikeLatex, looksLikeOpenVinoIr, looksLikeProto, sniffTextViewer } from './sniff.js';
 export {
     CONTAINER_SNIFF_BYTES,
     OFFICE_CONTAINER_BY_EXT,
@@ -444,7 +462,7 @@ export function detectViewer(
     }
     if (sniffBytes) {
         const unambiguous = descriptors.find(d =>
-            ['avro', 'bag', 'stp', 'db3', 'blf', 'mf4', 'pcap', 'pcapng', 'shapefile', 'psd', 'gguf', 'tflite'].includes(d.id) && servicesMet(d) && magicMatches(d)
+            ['avro', 'bag', 'stp', 'db3', 'blf', 'mf4', 'pcap', 'pcapng', 'shapefile', 'psd', 'gguf', 'tflite', 'pte'].includes(d.id) && servicesMet(d) && magicMatches(d)
         );
         if (unambiguous) return { viewerId: unambiguous.id, matchedBy: 'content' };
     }

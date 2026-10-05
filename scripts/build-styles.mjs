@@ -19,6 +19,7 @@ const entries = [
     ['viewers/excel/styles.js', 'excelViewerCss', 'excel.css'],
     ['viewers/image/styles.js', 'imageViewerCss', 'image.css']
     ,['viewers/markdown/styles.js', 'markdownViewerCss', 'markdown.css']
+    ,['viewers/notebook/styles.js', 'notebookViewerCss', 'notebook.css']
     ,['viewers/latex/styles.js', 'latexViewerCss', 'latex.css']
     ,['viewers/archive/styles.js', 'archiveViewerCss', 'archive.css']
     ,['viewers/parquet/styles.js', 'parquetViewerCss', 'parquet.css']
@@ -37,6 +38,8 @@ const entries = [
     ,['viewers/coreml/styles.js', 'coremlViewerCss', 'coreml.css']
     ,['viewers/openvino/styles.js', 'openvinoViewerCss', 'openvino.css']
     ,['viewers/pt2/styles.js', 'pt2ViewerCss', 'pt2.css']
+    ,['viewers/pte/styles.js', 'pteViewerCss', 'pte.css']
+    ,['viewers/har/styles.js', 'harViewerCss', 'har.css']
     ,['viewers/automotive/styles.js', 'automotiveViewerCss', 'automotive.css']
     ,['viewers/audio/index.js', 'audioViewerCss', 'audio.css']
     ,['viewers/video/index.js', 'videoViewerCss', 'video.css']

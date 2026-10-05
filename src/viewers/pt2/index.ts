@@ -65,7 +65,14 @@ export async function mountPt2Viewer(
     options: MountOptions = {}
 ): Promise<ViewerHandle> {
     if (options.signal?.aborted) throw new MountAbortedError();
-    const model = await parsePt2(input.data, options.signal ? { signal: options.signal } : {});
+    let model: Pt2Document;
+    try {
+        model = await parsePt2(input.data, options.signal ? { signal: options.signal } : {});
+    } catch (error) {
+        // A cancel while the inflater runs surfaces as the parser's AbortError.
+        if (options.signal?.aborted) throw new MountAbortedError();
+        throw error;
+    }
     if (options.signal?.aborted) throw new MountAbortedError();
     return mountPt2Document(model, input.fileName, container, ctx, options);
 }
@@ -77,9 +84,19 @@ type Selection = { kind: 'node'; node: Pt2Node } | { kind: 'value'; name: string
 interface Card { id: string; kind: CardKind; title: string; detail: string; selection: Selection; depth: number }
 
 const MAX_GRAPH_NODES = 240;
+/** Cards reserved out of MAX_GRAPH_NODES for user inputs and for outputs. */
+const MAX_GRAPH_INPUT_CARDS = 48;
+const MAX_GRAPH_OUTPUT_CARDS = 32;
 const MAX_GRAPH_EDGES = 800;
 const MAX_TABLE_ROWS = 2000;
 const MAX_INSPECTOR_ITEMS = 64;
+/** Dimensions listed in a shape summary, and the summary's length cap. */
+const MAX_SUMMARY_DIMS = 16;
+const MAX_SUMMARY_CHARS = 768;
+/** Length cap on the per-item text a search is matched against. */
+const MAX_SEARCH_CHARS = 65_536;
+/** Characters of value summaries added to one node's search text, and shown in one table cell. */
+const MAX_LABEL_CHARS = 4096;
 const CARD_WIDTH = 170;
 const COLUMN_GAP = 220;
 const ROW_GAP = 86;
@@ -170,16 +187,23 @@ export function mountPt2Document(
     let specsByArg = new Map<string, Pt2InputSpec>();
     let valuesByName = new Map<string, Pt2Value>();
     let payloadsByPlaceholder = new Map<string, Pt2Payload>();
+    // A value is referenced from many rows and cards; its summary is built once
+    // and kept short, so a crafted shape never multiplies through the tables.
+    const summaryCache = new Map<string, string>();
+    const searchCache: SearchCache = new WeakMap();
     const indexModel = (): void => {
         producers = new Map();
         consumers = new Map();
         specsByArg = new Map();
         valuesByName = new Map();
         payloadsByPlaceholder = new Map();
+        summaryCache.clear();
         if (!model) return;
         for (const node of model.graph.nodes) {
             for (const output of node.outputs) for (const ref of output.refs) if (!producers.has(ref)) producers.set(ref, node);
-            for (const input of node.inputs) for (const ref of input.refs) push(consumers, ref, node);
+            // A node reading the same value through several arguments is one consumer.
+            const read = new Set<string>();
+            for (const input of node.inputs) for (const ref of input.refs) if (!read.has(ref)) { read.add(ref); push(consumers, ref, node); }
         }
         for (const spec of model.inputSpecs) if (spec.arg && !specsByArg.has(spec.arg)) specsByArg.set(spec.arg, spec);
         for (const value of model.graph.values) if (!valuesByName.has(value.name)) valuesByName.set(value.name, value);
@@ -225,11 +249,16 @@ export function mountPt2Document(
     };
 
     const valueSummary = (name: string): string => {
+        const cached = summaryCache.get(name);
+        if (cached !== undefined) return cached;
         const value = valuesByName.get(name);
-        if (!value) return name;
-        if (value.kind === 'tensor') return `${value.dtype || '?'}[${value.shape.join(', ')}]`;
-        if (value.kind === 'custom_obj') return value.detail || 'custom_obj';
-        return `${value.kind === 'sym_int' ? 'Sym' : value.kind === 'sym_bool' ? 'SymBool' : 'SymFloat'}(${value.detail || name})`;
+        let text = name;
+        if (value?.kind === 'tensor') text = `${value.dtype || '?'}[${shapeText(value.shape, ', ')}]`;
+        else if (value?.kind === 'custom_obj') text = value.detail || 'custom_obj';
+        else if (value) text = `${value.kind === 'sym_int' ? 'Sym' : value.kind === 'sym_bool' ? 'SymBool' : 'SymFloat'}(${value.detail || name})`;
+        text = clip(text, MAX_SUMMARY_CHARS);
+        summaryCache.set(name, text);
+        return text;
     };
     const argumentText = (argument: Pt2Argument): string => argument.name ? `${argument.name}=${argument.text}` : argument.text;
     const outputSummary = (node: Pt2Node): string => {
@@ -238,6 +267,29 @@ export function mountPt2Document(
     };
     const kindOf = (spec: Pt2InputSpec | undefined): CardKind =>
         spec?.kind === 'parameter' ? 'param' : spec?.kind === 'buffer' ? 'buffer' : spec?.kind === 'tensor_constant' || spec?.kind === 'custom_obj' ? 'constant' : 'input';
+
+    // What the tables show beside the raw fields, so every visible cell is searchable.
+    const payloadLabels = (payload: Pt2Payload): string[] => [
+        t(`pt2.kind.${payload.kind}`), t(`pt2.status.${payload.status}`), String(payload.elementCount), formatFileSize(payload.bytes),
+        payload.fileSize === null ? '' : formatFileSize(payload.fileSize), ...(payload.shape.length === 0 && payload.dtype ? [t('pt2.scalar')] : [])
+    ];
+    // Distinct output summaries only, within a small budget: a node's outputs
+    // often share one value, and every entry is retained by the search cache.
+    const nodeLabels = (node: Pt2Node): string[] => {
+        const labels = [String(node.index)];
+        const seen = new Set<string>();
+        let budget = MAX_LABEL_CHARS;
+        for (const output of node.outputs) {
+            const summary = output.refs[0] ? valueSummary(output.refs[0]) : '';
+            if (!summary || seen.has(summary)) continue;
+            if ((budget -= summary.length) < 0) break;
+            seen.add(summary);
+            labels.push(summary);
+        }
+        return labels;
+    };
+    const payloadMatches = (payload: Pt2Payload, q: string): boolean => payloadMatchesSearch(searchCache, payload, q, payloadLabels);
+    const nodeMatches = (node: Pt2Node, q: string): boolean => nodeMatchesSearch(searchCache, node, q, nodeLabels);
 
     const renderTable = (title: string, headers: string[], rows: Array<Array<string | number>>, total: number): void => {
         const visible = rows.slice(0, MAX_TABLE_ROWS);
@@ -271,39 +323,40 @@ export function mountPt2Document(
             }
         };
         collect(current.graph, '', 0);
-        const result = collectRows(flat, item => !q || nodeMatchesSearch(item.node, q) || item.graphName.toLowerCase().includes(q),
-            item => [item.node.index, item.node.name, item.node.op, item.node.module || '—', previewItems(item.node.inputs, argumentText), item.node.outputs.map(output => output.refs[0] ? `${output.text}: ${valueSummary(output.refs[0])}` : output.text).join(', ') || '—', item.graphName || '—']);
+        const result = collectRows(flat, item => !q || nodeMatches(item.node, q) || item.graphName.toLowerCase().includes(q),
+            item => [item.node.index, item.node.name, item.node.op, item.node.module || '—', clip(previewItems(item.node.inputs, argumentText), MAX_LABEL_CHARS), clip(previewItems(item.node.outputs, output => output.refs[0] ? `${output.text}: ${valueSummary(output.refs[0])}` : output.text), MAX_LABEL_CHARS) || '—', item.graphName || '—']);
         renderTable(t('pt2.nodes'), ['pt2.column.index', 'pt2.column.name', 'pt2.column.op', 'pt2.column.module', 'pt2.column.inputs', 'pt2.column.outputs', 'pt2.column.graph'].map(key => t(key)), result.rows, result.total);
     };
 
     const renderWeightTable = (current: Pt2Model): void => {
         const q = query();
-        const result = collectRows([...current.weights, ...current.constants], payload => !q || payloadMatchesSearch(payload, q),
-            payload => [t(`pt2.kind.${payload.kind}`), payload.name, payload.placeholder || '—', payload.dtype || '—', payload.shape.join(' × ') || (payload.dtype ? t('pt2.scalar') : '—'), payload.elementCount, formatFileSize(payload.bytes), payload.path || '—', payload.fileSize === null ? '—' : formatFileSize(payload.fileSize), t(`pt2.status.${payload.status}`), payload.preview.join(', ') || '—']);
+        const result = collectRows([...current.weights, ...current.constants], payload => !q || payloadMatches(payload, q),
+            payload => [t(`pt2.kind.${payload.kind}`), payload.name, payload.placeholder || '—', payload.dtype || '—', shapeText(payload.shape, ' × ') || (payload.dtype ? t('pt2.scalar') : '—'), payload.elementCount, formatFileSize(payload.bytes), payload.path || '—', payload.fileSize === null ? '—' : formatFileSize(payload.fileSize), t(`pt2.status.${payload.status}`), payload.preview.join(', ') || '—']);
         renderTable(t('pt2.weights'), ['pt2.column.kind', 'pt2.column.name', 'pt2.column.placeholder', 'pt2.column.dtype', 'pt2.column.shape', 'pt2.column.elements', 'pt2.column.bytes', 'pt2.column.path', 'pt2.column.fileSize', 'pt2.column.status', 'pt2.column.preview'].map(key => t(key)), result.rows, result.total);
     };
 
     const renderIoTable = (current: Pt2Model): void => {
         const rows: Array<Array<string | number>> = [];
         let total = 0;
-        const add = (row: Array<string | number>): void => {
-            if (!queryMatches(row)) return;
+        const q = query();
+        const add = (spec: object, row: () => Array<string | number>): void => {
+            if (q && !searchText(searchCache, spec, append => { for (const value of row()) append(value); }).includes(q)) return;
             total++;
-            if (rows.length < MAX_TABLE_ROWS) rows.push(row);
+            if (rows.length < MAX_TABLE_ROWS) rows.push(row());
         };
         for (const spec of current.inputSpecs) {
             const detail = spec.kind === 'constant_input' ? spec.value : spec.kind === 'buffer' ? t(spec.persistent === false ? 'pt2.nonPersistent' : 'pt2.persistent') : '';
-            add([t('pt2.side.input'), t(`pt2.kind.${spec.kind}`), spec.arg || '—', spec.target || '—', spec.kind === 'constant_input' ? '—' : valueSummary(spec.arg), detail || '—']);
+            add(spec, () => [t('pt2.side.input'), t(`pt2.kind.${spec.kind}`), spec.arg || '—', spec.target || '—', spec.kind === 'constant_input' ? '—' : valueSummary(spec.arg), detail || '—']);
         }
         for (const spec of current.outputSpecs) {
-            add([t('pt2.side.output'), t(`pt2.kind.${spec.kind}`), spec.arg || '—', spec.target || '—', valueSummary(spec.arg), '—']);
+            add(spec, () => [t('pt2.side.output'), t(`pt2.kind.${spec.kind}`), spec.arg || '—', spec.target || '—', valueSummary(spec.arg), '—']);
         }
         renderTable(t('pt2.io'), ['pt2.column.side', 'pt2.column.kind', 'pt2.column.value', 'pt2.column.target', 'pt2.column.typeShape', 'pt2.column.detail'].map(key => t(key)), rows, total);
     };
 
     const renderModuleTable = (current: Pt2Model): void => {
         const q = query();
-        const result = collectRows(current.modules, module => !q || textMatches(q, module.fqn, module.className, ...module.forwardArgNames),
+        const result = collectRows(current.modules, module => !q || textMatches(q, module.fqn || t('pt2.rootModule'), module.className, module.nodeCount, module.totalNodeCount, module.hasSignature ? t('pt2.preserved') : '', ...module.forwardArgNames, ...module.inputs, ...module.outputs),
             module => [`${'· '.repeat(module.depth)}${module.fqn || t('pt2.rootModule')}`, module.className || '—', module.nodeCount, module.totalNodeCount, module.hasSignature ? t('pt2.preserved') : '—', module.forwardArgNames.join(', ') || '—', module.inputs.join(', ') || '—', module.outputs.join(', ') || '—']);
         renderTable(t('pt2.modules'), ['pt2.column.module', 'pt2.column.class', 'pt2.column.nodes', 'pt2.column.totalNodes', 'pt2.column.signature', 'pt2.column.forwardArgs', 'pt2.column.inputs', 'pt2.column.outputs'].map(key => t(key)), result.rows, result.total);
     };
@@ -373,7 +426,7 @@ export function mountPt2Document(
         }
         content.append(element('h2', 'omni-pt2__section', t('pt2.files')));
         const q = query();
-        const result = collectRows(pkg.files, file => !q || textMatches(q, file.name, file.category, file.method),
+        const result = collectRows(pkg.files, file => !q || textMatches(q, file.name, file.category, t(`pt2.category.${file.category}`), formatFileSize(file.size), formatFileSize(file.compressedSize), file.method),
             file => [file.name, t(`pt2.category.${file.category}`), formatFileSize(file.size), formatFileSize(file.compressedSize), file.method]);
         renderTable(t('pt2.files'), ['pt2.column.path', 'pt2.column.category', 'pt2.column.fileSize', 'pt2.column.compressedSize', 'pt2.column.method'].map(key => t(key)), result.rows, result.total);
     };
@@ -385,29 +438,32 @@ export function mountPt2Document(
         const cards: Card[] = [];
         const byValue = new Map<string, Card>();
         const nodeCards = new Map<Pt2Node, Card>();
-        let total = 0;
-        const take = (): boolean => { total++; return cards.length < MAX_GRAPH_NODES; };
-        // Placeholders first, in signature order; lifted parameters and constants
-        // are moved beside their first consumer once node depths are known.
-        for (const input of graph.inputs) {
-            const name = input.refs[0];
-            if (!name) continue;
-            if (!take()) continue;
+        // Card budget: user inputs and outputs are few and always shown; operator
+        // nodes come next; the lifted parameters, buffers, and constants — which
+        // precede every node in Export IR and can number in the hundreds — take
+        // whatever remains, closest consumers first, so a real model never spends
+        // the whole budget on weights before its first operator.
+        const placeholders = graph.inputs.filter(input => input.refs.length);
+        const userInputs = placeholders.filter(input => kindOf(specsByArg.get(input.refs[0]!)) === 'input');
+        const lifted = placeholders.filter(input => kindOf(specsByArg.get(input.refs[0]!)) !== 'input');
+        const total = placeholders.length + graph.nodes.length + graph.outputs.length;
+        const reservedOutputs = Math.min(graph.outputs.length, MAX_GRAPH_OUTPUT_CARDS);
+        const placeholderCard = (name: string): Card => {
             const spec = specsByArg.get(name);
-            const kind = kindOf(spec);
             const value = valuesByName.get(name);
             const card: Card = {
-                id: `value:${name}`, kind,
+                id: `value:${name}`, kind: kindOf(spec),
                 title: spec?.target || name,
                 detail: value ? `${t(`pt2.kind.${spec?.kind ?? 'user_input'}`)} · ${valueSummary(name)}` : t(`pt2.kind.${spec?.kind ?? 'user_input'}`),
                 selection: { kind: 'value', name }, depth: 0
             };
-            cards.push(card);
             byValue.set(name, card);
-        }
+            return card;
+        };
+        for (const input of userInputs.slice(0, MAX_GRAPH_INPUT_CARDS)) cards.push(placeholderCard(input.refs[0]!));
         const depths = new Map<Card, number>();
         for (const node of graph.nodes) {
-            if (!take()) continue;
+            if (cards.length >= MAX_GRAPH_NODES - reservedOutputs) break;
             let depth = 0;
             for (const input of node.inputs) for (const ref of input.refs) {
                 const source = byValue.get(ref);
@@ -425,16 +481,27 @@ export function mountPt2Document(
             nodeCards.set(node, card);
             for (const output of node.outputs) for (const ref of output.refs) if (!byValue.has(ref)) byValue.set(ref, card);
         }
+        // Lifted tensors read by a shown node first, in signature order; the rest
+        // (unused buffers, tensors whose consumers were cut) fill any space left.
+        const shownConsumer = (name: string): boolean => (consumers.get(name) ?? []).some(node => nodeCards.has(node));
+        for (const pass of [true, false]) {
+            for (const input of lifted) {
+                if (cards.length >= MAX_GRAPH_NODES - reservedOutputs) break;
+                const name = input.refs[0]!;
+                if (byValue.has(name) || shownConsumer(name) !== pass) continue;
+                cards.push(placeholderCard(name));
+            }
+        }
         // A parameter sits one column before the shallowest node that reads it.
         for (const card of cards) {
             if (card.selection.kind !== 'value' || card.kind === 'input') continue;
-            const readers = consumers.get(card.selection.name) ?? [];
-            const depth = Math.min(...readers.map(node => nodeCards.get(node)?.depth ?? Number.POSITIVE_INFINITY));
+            let depth = Number.POSITIVE_INFINITY;
+            for (const node of consumers.get(card.selection.name) ?? []) depth = Math.min(depth, nodeCards.get(node)?.depth ?? Number.POSITIVE_INFINITY);
             card.depth = Number.isFinite(depth) ? Math.max(0, depth - 1) : 0;
         }
         graph.outputs.forEach((output, index) => {
+            if (cards.length >= MAX_GRAPH_NODES) return;
             const name = output.refs[0];
-            if (!take()) return;
             const source = name ? byValue.get(name) : undefined;
             cards.push({
                 id: `output:${index}`, kind: 'output', title: output.text,
@@ -545,7 +612,7 @@ export function mountPt2Document(
         if (value.kind !== 'tensor') return [{ label: t('pt2.column.kind'), value: value.kind }, { label: t('pt2.column.detail'), value: value.detail || '—' }];
         return [
             { label: t('pt2.column.dtype'), value: value.dtype || '—' },
-            { label: t('pt2.column.shape'), value: value.shape.join(' × ') || t('pt2.scalar') },
+            { label: t('pt2.column.shape'), value: shapeText(value.shape, ' × ') || t('pt2.scalar') },
             { label: t('pt2.inspector.strides'), value: value.strides.join(', ') || '—' },
             { label: t('pt2.inspector.storageOffset'), value: value.storageOffset || '0' },
             { label: t('pt2.inspector.device'), value: value.device || '—' },
@@ -573,8 +640,10 @@ export function mountPt2Document(
             }));
             appendChips(inspector, t('pt2.inspector.outputs'), node.outputs.map(output => {
                 const name = output.refs[0];
-                const targets = name ? (consumers.get(name) ?? []).map(item => item.name) : [];
-                return `${output.text}${name ? `: ${valueSummary(name)}` : ''}${targets.length ? ` → ${previewList(targets, 6)}` : ''}`;
+                const readers = name ? consumers.get(name) ?? [] : [];
+                // Only the shown few are formatted: a value may have thousands of readers.
+                const targets = previewItems(readers.slice(0, 6), item => item.name, 6) + (readers.length > 6 ? `, … (+${readers.length - 6})` : '');
+                return `${output.text}${name ? `: ${valueSummary(name)}` : ''}${readers.length ? ` → ${targets}` : ''}`;
             }));
             if (node.subgraphs.length) {
                 inspector.append(element('h3', undefined, t('pt2.inspector.subgraphs')));
@@ -646,10 +715,10 @@ export function mountPt2Document(
     };
     const cardMatchesSearch = (card: Card, q: string): boolean => {
         if (!q) return true;
-        if (card.selection.kind === 'node') return nodeMatchesSearch(card.selection.node, q);
+        if (card.selection.kind === 'node') return nodeMatches(card.selection.node, q);
         if (card.selection.kind === 'value') {
             const payload = payloadsByPlaceholder.get(card.selection.name);
-            return textMatches(q, card.title, card.detail, card.selection.name) || (payload !== undefined && payloadMatchesSearch(payload, q));
+            return textMatches(q, card.title, card.detail, card.selection.name) || (payload !== undefined && payloadMatches(payload, q));
         }
         return textMatches(q, card.title, card.detail);
     };
@@ -727,17 +796,69 @@ function textMatches(query: string, ...values: Array<string | number>): boolean 
     return values.some(value => String(value).toLowerCase().includes(query));
 }
 
-function payloadMatchesSearch(payload: Pt2Payload, query: string): boolean {
-    return textMatches(query, payload.name, payload.kind, payload.placeholder, payload.dtype, payload.path, payload.status, payload.device, ...payload.shape, ...payload.preview);
+/** Shape dimensions for display: the leading few, then a count of the rest. */
+function shapeText(shape: string[], separator: string): string {
+    const visible = shape.slice(0, MAX_SUMMARY_DIMS).map(dim => clip(dim, 32));
+    return shape.length > MAX_SUMMARY_DIMS ? `${visible.join(separator)}${separator}…(+${shape.length - MAX_SUMMARY_DIMS})` : visible.join(separator);
 }
 
-function nodeMatchesSearch(node: Pt2Node, query: string, depth = 0): boolean {
-    return !query || textMatches(query, node.name, node.target, node.op, node.module, node.stackTrace) ||
-        node.inputs.some(input => textMatches(query, input.name, input.text)) ||
-        node.outputs.some(output => textMatches(query, output.text)) ||
-        node.metadata.some(item => textMatches(query, item.label, item.value)) ||
-        node.moduleStack.some(frame => textMatches(query, frame.fqn, frame.className)) ||
-        (depth < 8 && node.subgraphs.some(subgraph => textMatches(query, subgraph.name) || subgraph.graph.nodes.some(inner => nodeMatchesSearch(inner, query, depth + 1))));
+function clip(text: string, limit: number): string {
+    return text.length > limit ? `${text.slice(0, limit)}…` : text;
+}
+
+/**
+ * Lower-cased searchable text per item, built once per mount: a search runs
+ * over every row on each keystroke, so the work per item must be a substring
+ * scan, not a re-join of its fields. The cache is per mount because the IO
+ * rows embed translated labels.
+ */
+type SearchCache = WeakMap<object, string>;
+
+function searchText(cache: SearchCache, item: object, build: (append: (value: string | number) => boolean) => void): string {
+    let text = cache.get(item);
+    if (text === undefined) {
+        let joined = '';
+        // Fields are appended one at a time and stop at the cap, so a deep
+        // sub-graph never materialises a list larger than the text it yields.
+        build(value => {
+            if (joined.length >= MAX_SEARCH_CHARS) return false;
+            joined += `${String(value)}\n`;
+            return true;
+        });
+        text = clip(joined, MAX_SEARCH_CHARS).toLowerCase();
+        cache.set(item, text);
+    }
+    return text;
+}
+
+/** `labels` supplies the translated or derived text the table shows beside the raw fields. */
+function payloadMatchesSearch(cache: SearchCache, payload: Pt2Payload, query: string, labels: (payload: Pt2Payload) => string[]): boolean {
+    return searchText(cache, payload, append => {
+        for (const value of [payload.name, payload.kind, payload.placeholder, payload.dtype, payload.path, payload.status, payload.device, ...payload.shape.slice(0, MAX_SUMMARY_DIMS), ...payload.preview, ...labels(payload)]) append(value);
+    }).includes(query);
+}
+
+function nodeMatchesSearch(cache: SearchCache, node: Pt2Node, query: string, labels: (node: Pt2Node) => string[]): boolean {
+    return !query || searchText(cache, node, append => {
+        for (const value of labels(node)) if (!append(value)) return;
+        appendNodeSearchFields(node, 0, append);
+    }).includes(query);
+}
+
+/** Appends a node's searchable fields, sub-graphs included, until `append` reports the cap. */
+function appendNodeSearchFields(node: Pt2Node, depth: number, append: (value: string | number) => boolean): boolean {
+    for (const value of [node.name, node.target, node.op, node.module, node.stackTrace]) if (!append(value)) return false;
+    for (const input of node.inputs) if (!append(input.name) || !append(input.text)) return false;
+    for (const output of node.outputs) if (!append(output.text)) return false;
+    for (const item of node.metadata) if (!append(item.label) || !append(item.value)) return false;
+    for (const frame of node.moduleStack) if (!append(frame.fqn) || !append(frame.className)) return false;
+    if (depth < 8) {
+        for (const subgraph of node.subgraphs) {
+            if (!append(subgraph.name)) return false;
+            for (const inner of subgraph.graph.nodes) if (!appendNodeSearchFields(inner, depth + 1, append)) return false;
+        }
+    }
+    return true;
 }
 
 function graphEdge(x1: number, y1: number, x2: number, y2: number, output: boolean): SVGPathElement {

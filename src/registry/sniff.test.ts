@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { looksLikeJsonDocument, looksLikeJsonl, sniffTextViewer } from './sniff.js';
+import { looksLikeHar, looksLikeJsonDocument, looksLikeJsonl, sniffTextViewer } from './sniff.js';
 
 describe('looksLikeJsonDocument (부록 B-6)', () => {
     it('accepts objects and arrays', () => {
@@ -37,5 +37,24 @@ describe('sniffTextViewer — JSONL wins over JSON', () => {
 
     it('returns null for non-JSON text', () => {
         expect(sniffTextViewer('hello world')).toBeNull();
+    });
+});
+
+describe('looksLikeHar', () => {
+    const HAR = '{"log":{"version":"1.2","entries":[{"request":{"url":"https://example.com/"}}]}}';
+
+    it('needs a log object holding an entries array', () => {
+        expect(looksLikeHar(HAR)).toBe(true);
+        // A sniff sample is the head of the file, so a truncated archive counts.
+        expect(looksLikeHar(HAR.slice(0, 40))).toBe(true);
+        expect(looksLikeHar('{"log":{"version":"1.2"}}')).toBe(false);
+        expect(looksLikeHar('{"entries":[]}')).toBe(false);
+        expect(looksLikeHar('[{"log":{"entries":[]}}]')).toBe(false);
+        expect(looksLikeHar('plain text')).toBe(false);
+    });
+
+    it('is claimed before the generic JSON tree', () => {
+        expect(sniffTextViewer(HAR)).toBe('har');
+        expect(sniffTextViewer('{"a":1}')).toBe('json');
     });
 });

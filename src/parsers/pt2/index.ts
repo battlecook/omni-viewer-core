@@ -258,6 +258,12 @@ const MAX_ZIP_ENTRIES = 65_536;
 const MAX_MODELS = 64;
 const MAX_GRAPH_DEPTH = 16;
 const MAX_ARGUMENTS = 512;
+/** Graph placeholders and outputs: every lifted parameter is one, so this is a model-size bound. */
+const MAX_PLACEHOLDERS = 65_536;
+/** Nested argument containers (`as_string_to_argument`) accepted before the rest is elided. */
+const MAX_ARGUMENT_NESTING = 32;
+/** Value references kept per argument; nested tensor lists can declare far more. */
+const MAX_ARGUMENT_REFS = 4096;
 const MAX_LIST_ITEMS = 256;
 const MAX_TEXT = 4096;
 const MAX_STACK_TRACE = 16_384;
@@ -266,7 +272,11 @@ const MAX_MODULE_FRAMES = 64;
 const MAX_DIMS = 64;
 const MAX_EXTRA_TEXT = 64 * 1024;
 const MAX_EXTRAS = 256;
+/** AOTInductor metadata JSON members read per package. */
+const MAX_AOTI_METADATA = 256;
 const MAX_MODEL_METADATA = 256;
+/** Distinct nn.Module FQNs kept per program. */
+const MAX_MODULES = 65_536;
 const MAX_EXPRESSION_CHARS = 2048;
 const MAX_EXPRESSION_DEPTH = 32;
 /** Schema major this reader was written against. */
@@ -396,9 +406,9 @@ export async function parsePt2(data: Uint8Array, options: Pt2ParseOptions = {}):
     // Model names come from models/<name>.json; each brings its own configs.
     const modelNames: string[] = [];
     for (const name of byName.keys()) {
-        if (name.startsWith(MODELS_DIR) && name.endsWith('.json') && !name.slice(MODELS_DIR.length, -5).includes('/')) {
-            modelNames.push(name.slice(MODELS_DIR.length, -5));
-        }
+        const modelName = name.startsWith(MODELS_DIR) && name.endsWith('.json') ? name.slice(MODELS_DIR.length, -5) : '';
+        // The empty name is reserved for the legacy program file.
+        if (modelName && !modelName.includes('/')) modelNames.push(modelName);
     }
     modelNames.sort(compareText);
     if (layout === 'legacy' && byName.has(LEGACY_PROGRAM)) modelNames.unshift('');
@@ -409,25 +419,27 @@ export async function parsePt2(data: Uint8Array, options: Pt2ParseOptions = {}):
 
     const maxJsonBytes = options.maxJsonBytes ?? DEFAULT_MAX_JSON_BYTES;
     const requests: MemberRequest[] = [];
-    const request = (name: string, inflateLimit: number, sliceLimit = Number.POSITIVE_INFINITY): void => {
+    const request = (name: string, inflateLimit: number, sliceLimit = Number.POSITIVE_INFINITY, quiet = false): void => {
         const entry = byName.get(name);
-        if (entry) requests.push({ entry, name, inflateLimit, sliceLimit });
+        if (entry) requests.push({ entry, name, inflateLimit, sliceLimit, quiet });
     };
     for (const marker of [ARCHIVE_FORMAT_PATH, ARCHIVE_VERSION_PATH, BYTEORDER_PATH, DATA_VERSION_PATH, SERIALIZATION_ID_PATH]) request(marker, MAX_TEXT, MAX_TEXT);
     for (const model of modelNames) {
-        if (model === '') { request(LEGACY_PROGRAM, maxJsonBytes); continue; }
-        request(`${MODELS_DIR}${model}.json`, maxJsonBytes);
-        request(`${WEIGHTS_DIR}${model}_weights_config.json`, maxJsonBytes);
-        request(`${CONSTANTS_DIR}${model}_constants_config.json`, maxJsonBytes);
+        // JSON is decoded and parsed in full, so the cap applies to stored members too.
+        if (model === '') { request(LEGACY_PROGRAM, maxJsonBytes, maxJsonBytes); continue; }
+        request(`${MODELS_DIR}${model}.json`, maxJsonBytes, maxJsonBytes);
+        request(`${WEIGHTS_DIR}${model}_weights_config.json`, maxJsonBytes, maxJsonBytes);
+        request(`${CONSTANTS_DIR}${model}_constants_config.json`, maxJsonBytes, maxJsonBytes);
     }
     const extraNames: string[] = [];
     const aotiMetadata: string[] = [];
     for (const name of byName.keys()) {
         if (name.startsWith(EXTRA_DIR) && name.length > EXTRA_DIR.length) {
-            if (extraNames.length < MAX_EXTRAS) { extraNames.push(name); request(name, MAX_EXTRA_TEXT, MAX_EXTRA_TEXT); }
+            // A large user file is ordinary, not a package fault: it is listed
+            // by size and only small ones are shown as text.
+            if (extraNames.length < MAX_EXTRAS) { extraNames.push(name); request(name, MAX_EXTRA_TEXT, MAX_EXTRA_TEXT, true); }
         } else if (name.startsWith(AOTINDUCTOR_DIR) && name.endsWith('.json')) {
-            aotiMetadata.push(name);
-            request(name, MAX_EXTRA_TEXT, MAX_EXTRA_TEXT);
+            if (aotiMetadata.length < MAX_AOTI_METADATA) { aotiMetadata.push(name); request(name, MAX_EXTRA_TEXT, MAX_EXTRA_TEXT, true); }
         }
     }
     const members = await readMembers(data, requests, warnings, options);
@@ -448,7 +460,8 @@ export async function parsePt2(data: Uint8Array, options: Pt2ParseOptions = {}):
         valuesDropped: 0,
         payloadsDropped: 0,
         danglingRefs: 0,
-        depthExceeded: 0
+        depthExceeded: 0,
+        placeholdersDropped: 0
     };
     for (const modelName of modelNames) {
         throwIfAborted(options.signal);
@@ -483,6 +496,7 @@ export async function parsePt2(data: Uint8Array, options: Pt2ParseOptions = {}):
     if (budget.payloadsDropped) warnings.push({ key: 'pt2.warning.payloadsLimited', args: { count: budget.payloadsDropped } });
     if (budget.danglingRefs) warnings.push({ key: 'pt2.warning.danglingRefs', args: { count: budget.danglingRefs } });
     if (budget.depthExceeded) warnings.push({ key: 'pt2.warning.subgraphDepth', args: { count: budget.depthExceeded, limit: MAX_GRAPH_DEPTH } });
+    if (budget.placeholdersDropped) warnings.push({ key: 'pt2.warning.placeholdersLimited', args: { count: budget.placeholdersDropped, limit: MAX_PLACEHOLDERS } });
 
     const aotInductor = collectAotInductor(files, aotiMetadata, members, warnings);
     const extras: Pt2ExtraFile[] = extraNames.sort(compareText).map(name => {
@@ -524,15 +538,21 @@ function emptyDocument(bytes: number, warnings: Pt2Warning[]): Pt2Document {
  * a flat archive has none.
  */
 function findPrefix(entries: ZipEntry[]): string {
+    // The writer emits `archive_format` last, after any user `extra/` files,
+    // so a member whose name merely ends in the marker can precede it in the
+    // directory: the shallowest folder holding a marker is the package root.
+    let best: { folder: string; legacy: boolean } | undefined;
     for (const entry of entries) {
         if (!isPt2Marker(entry.name)) continue;
         const slash = entry.name.lastIndexOf('/');
         const marker = entry.name.slice(slash + 1);
         const folder = slash < 0 ? '' : entry.name.slice(0, slash);
-        // `.data/version` also ends in a known name; only the two markers count.
-        if (marker === ARCHIVE_FORMAT_PATH || marker === LEGACY_PROGRAM) return folder;
+        const legacy = marker === LEGACY_PROGRAM;
+        const depth = folder ? folder.split('/').length : 0;
+        const bestDepth = best === undefined ? Number.POSITIVE_INFINITY : best.folder ? best.folder.split('/').length : 0;
+        if (best === undefined || depth < bestDepth || (depth === bestDepth && best.legacy && !legacy)) best = { folder, legacy };
     }
-    return '';
+    return best?.folder ?? '';
 }
 
 function categorize(name: string): Pt2EntryCategory {
@@ -580,6 +600,7 @@ interface Budget {
     payloadsDropped: number;
     danglingRefs: number;
     depthExceeded: number;
+    placeholdersDropped: number;
 }
 
 interface ModelSource {
@@ -622,8 +643,6 @@ function buildModel(source: ModelSource): Pt2Model {
         .sort((a, b) => b.count - a.count || compareText(a.op, b.op));
 
     const valuesByName = new Map(graph.values.map(value => [value.name, value]));
-    const placeholderByTarget = new Map<string, Pt2InputSpec>();
-    for (const spec of inputSpecs) if (spec.target) placeholderByTarget.set(`${payloadKindOf(spec.kind)} ${spec.target}`, spec);
 
     const weights = readPayloads(source, source.weightsConfig, 'weights', inputSpecs, valuesByName);
     const constants = readPayloads(source, source.constantsConfig, 'constants', inputSpecs, valuesByName);
@@ -636,15 +655,15 @@ function buildModel(source: ModelSource): Pt2Model {
 
     const opsets: Pt2Entry[] = [];
     if (isRecord(program['opset_version'])) {
-        for (const [key, value] of Object.entries(program['opset_version']).slice(0, MAX_MODEL_METADATA)) opsets.push({ label: key, value: scalarText(value) });
+        for (const [key, value] of Object.entries(program['opset_version']).slice(0, MAX_MODEL_METADATA)) opsets.push({ label: truncate(key, MAX_TEXT), value: truncate(scalarText(value), MAX_TEXT) });
     }
     const rangeConstraints: Pt2RangeConstraint[] = [];
     if (isRecord(program['range_constraints'])) {
         for (const [symbol, range] of Object.entries(program['range_constraints']).slice(0, MAX_MODEL_METADATA)) {
             rangeConstraints.push({
-                symbol,
-                min: isRecord(range) ? scalarText(range['min_val'], '-∞') : '?',
-                max: isRecord(range) ? scalarText(range['max_val'], '∞') : '?'
+                symbol: truncate(symbol, MAX_TEXT),
+                min: isRecord(range) ? truncate(scalarText(range['min_val'], '-∞'), MAX_TEXT) : '?',
+                max: isRecord(range) ? truncate(scalarText(range['max_val'], '∞'), MAX_TEXT) : '?'
             });
         }
     }
@@ -714,7 +733,9 @@ function readGraph(raw: unknown, depth: number, budget: Budget): Pt2Graph {
     const noteRefs = (argument: Pt2Argument): void => {
         for (const ref of argument.refs) if (!known.has(ref)) budget.danglingRefs++;
     };
-    graph.inputs = asList(raw['inputs']).slice(0, MAX_ARGUMENTS).map(item => formatArgument(item, depth, budget));
+    const inputs = asList(raw['inputs']);
+    if (inputs.length > MAX_PLACEHOLDERS) budget.placeholdersDropped += inputs.length - MAX_PLACEHOLDERS;
+    graph.inputs = inputs.slice(0, MAX_PLACEHOLDERS).map(item => formatArgument(item, depth, budget));
     // Graph inputs are placeholders: they define values rather than use them.
     for (const input of graph.inputs) for (const ref of input.refs) known.add(ref);
 
@@ -727,7 +748,9 @@ function readGraph(raw: unknown, depth: number, budget: Budget): Pt2Graph {
         for (const output of node.outputs) for (const ref of output.refs) known.add(ref);
         graph.nodes.push(node);
     }
-    graph.outputs = asList(raw['outputs']).slice(0, MAX_ARGUMENTS).map(item => formatArgument(item, depth, budget));
+    const outputs = asList(raw['outputs']);
+    if (outputs.length > MAX_PLACEHOLDERS) budget.placeholdersDropped += outputs.length - MAX_PLACEHOLDERS;
+    graph.outputs = outputs.slice(0, MAX_PLACEHOLDERS).map(item => formatArgument(item, depth, budget));
     for (const output of graph.outputs) noteRefs(output);
     return graph;
 }
@@ -778,12 +801,15 @@ function readTensorMeta(meta: Record<string, unknown>): TensorMeta {
     const sizeValues = sizes.map(symIntValue);
     const strideValues = strides.map(symIntValue);
     const storageOffset = symIntValue(meta['storage_offset']) ?? 0;
-    const concrete = sizeValues.every((size): size is number => size !== null);
+    // A product beyond the safe-integer range cannot be a real tensor; treat it as unknown.
+    const concreteSizes = sizeValues.every((size): size is number => size !== null) ? sizeValues : null;
+    const elementCount = concreteSizes ? concreteSizes.reduce((total, size) => total * size, 1) : null;
+    const concrete = elementCount !== null && elementCount <= Number.MAX_SAFE_INTEGER;
     return {
-        dtype: dtypeCode === null ? asText(meta['dtype']) : SCALAR_TYPES[dtypeCode]?.short ?? `dtype${dtypeCode}`,
+        dtype: dtypeCode === null ? truncate(asText(meta['dtype']), MAX_TEXT) : SCALAR_TYPES[dtypeCode]?.short ?? `dtype${dtypeCode}`,
         dtypeCode: dtypeCode ?? -1,
         shape: sizes.map(formatSym),
-        sizes: concrete ? sizeValues : null,
+        sizes: concrete ? concreteSizes : null,
         strides: strides.map(formatSym),
         strideValues: strideValues.every((stride): stride is number => stride !== null) ? strideValues : null,
         storageOffset: formatSym(meta['storage_offset']),
@@ -791,7 +817,7 @@ function readTensorMeta(meta: Record<string, unknown>): TensorMeta {
         device: formatDevice(meta['device']),
         layout: enumLabel(meta['layout'], LAYOUTS, LAYOUT_NAMES),
         requiresGrad: meta['requires_grad'] === true,
-        elementCount: concrete ? sizeValues.reduce((total, size) => total * size, 1) : null
+        elementCount: concrete ? elementCount : null
     };
 }
 
@@ -840,7 +866,8 @@ const EMPTY_STACK_HOOK = '_empty_nn_module_stack_from_metadata_hook';
  */
 function parseModuleStack(text: string): Pt2ModuleFrame[] {
     const frames: Pt2ModuleFrame[] = [];
-    for (const frame of text.split(';')) {
+    // Bound the split before it happens: only MAX_MODULE_FRAMES frames of MAX_TEXT can survive.
+    for (const frame of text.slice(0, MAX_MODULE_FRAMES * (MAX_TEXT * 2 + 3)).split(';')) {
         if (!frame || frame.startsWith(EMPTY_STACK_HOOK)) continue;
         if (frames.length >= MAX_MODULE_FRAMES) break;
         const parts = frame.split(',');
@@ -856,7 +883,7 @@ function readSignature(raw: unknown): { inputSpecs: Pt2InputSpec[]; outputSpecs:
     if (!isRecord(raw)) return { inputSpecs, outputSpecs };
     const inputKinds: Pt2InputKind[] = ['user_input', 'parameter', 'buffer', 'tensor_constant', 'custom_obj', 'token', 'constant_input'];
     const outputKinds: Pt2OutputKind[] = ['user_output', 'loss_output', 'buffer_mutation', 'parameter_mutation', 'gradient_to_parameter', 'gradient_to_user_input', 'user_input_mutation', 'token'];
-    for (const item of asList(raw['input_specs']).slice(0, MAX_ARGUMENTS * 8)) {
+    for (const item of asList(raw['input_specs']).slice(0, MAX_PLACEHOLDERS)) {
         const union = unionOf(item);
         if (!union || !inputKinds.includes(union.tag as Pt2InputKind)) continue;
         const kind = union.tag as Pt2InputKind;
@@ -873,7 +900,7 @@ function readSignature(raw: unknown): { inputSpecs: Pt2InputSpec[]; outputSpecs:
         }
         inputSpecs.push(spec);
     }
-    for (const item of asList(raw['output_specs']).slice(0, MAX_ARGUMENTS * 8)) {
+    for (const item of asList(raw['output_specs']).slice(0, MAX_PLACEHOLDERS)) {
         const union = unionOf(item);
         if (!union || !outputKinds.includes(union.tag as Pt2OutputKind)) continue;
         const body = isRecord(union.value) ? union.value : {};
@@ -889,7 +916,7 @@ function readSignature(raw: unknown): { inputSpecs: Pt2InputSpec[]; outputSpecs:
 /** Name of a TensorArgument / TokenArgument / CustomObjArgument, or the display form of a general Argument. */
 function argumentName(raw: unknown): string {
     if (isRecord(raw) && typeof raw['name'] === 'string') return truncate(raw['name'], MAX_TEXT);
-    const noBudget: Budget = { nodes: 0, values: 0, payloads: 0, nodesDropped: 0, valuesDropped: 0, payloadsDropped: 0, danglingRefs: 0, depthExceeded: 0 };
+    const noBudget: Budget = { nodes: 0, values: 0, payloads: 0, nodesDropped: 0, valuesDropped: 0, payloadsDropped: 0, danglingRefs: 0, depthExceeded: 0, placeholdersDropped: 0 };
     return formatArgument(raw, MAX_GRAPH_DEPTH, noBudget).text;
 }
 
@@ -899,22 +926,24 @@ function formatConstantValue(raw: unknown): string {
     if (union.tag === 'as_none') return 'None';
     if (union.tag === 'as_string') return quote(asText(union.value));
     if (union.tag === 'as_bool') return union.value ? 'True' : 'False';
-    return scalarText(union.value);
+    return truncate(scalarText(union.value), MAX_TEXT);
 }
 
 function readModules(raw: unknown, graph: Pt2Graph): Pt2Module[] {
     const byFqn = new Map<string, Pt2Module>();
-    const ensure = (fqn: string): Pt2Module => {
+    const ensure = (fqn: string): Pt2Module | undefined => {
         let module = byFqn.get(fqn);
         if (!module) {
+            if (byFqn.size >= MAX_MODULES) return undefined;
             module = { fqn, className: '', depth: fqn ? fqn.split('.').length : 0, nodeCount: 0, totalNodeCount: 0, hasSignature: false, forwardArgNames: [], inputs: [], outputs: [] };
             byFqn.set(fqn, module);
         }
         return module;
     };
-    for (const item of asList(raw).slice(0, MAX_ARGUMENTS * 8)) {
+    for (const item of asList(raw).slice(0, MAX_PLACEHOLDERS)) {
         if (!isRecord(item)) continue;
         const module = ensure(truncate(asText(item['fqn']), MAX_TEXT));
+        if (!module) break;
         const signature = item['signature'];
         if (isRecord(signature)) {
             module.hasSignature = true;
@@ -927,26 +956,30 @@ function readModules(raw: unknown, graph: Pt2Graph): Pt2Module[] {
         const seen = new Set<string>();
         for (const frame of node.moduleStack) {
             const module = ensure(frame.fqn);
+            if (!module) continue;
             if (!module.className && frame.className) module.className = frame.className;
             if (!seen.has(frame.fqn)) { module.totalNodeCount++; seen.add(frame.fqn); }
         }
-        if (node.moduleStack.length) ensure(node.module).nodeCount++;
+        const innermost = node.moduleStack.length ? ensure(node.module) : undefined;
+        if (innermost) innermost.nodeCount++;
     });
     return [...byFqn.values()].sort((a, b) => compareText(a.fqn, b.fqn));
 }
 
 // ── Arguments ───────────────────────────────────────────────────────────────
 
-function formatArgument(raw: unknown, depth: number, budget: Budget): Pt2Argument {
+function formatArgument(raw: unknown, depth: number, budget: Budget, nesting = 0): Pt2Argument {
     const argument: Pt2Argument = { name: '', kind: '', text: '', refs: [] };
     const union = unionOf(raw);
     if (!union) { argument.text = truncate(scalarText(raw), MAX_TEXT); return argument; }
     const { tag, value } = union;
-    const ref = (name: string): string => { argument.refs.push(name); return name; };
+    const ref = (name: string): string => { if (argument.refs.length < MAX_ARGUMENT_REFS) argument.refs.push(name); return name; };
     const tensorName = (item: unknown): string => isRecord(item) && typeof item['name'] === 'string' ? ref(truncate(item['name'], MAX_TEXT)) : '?';
     const optionalTensor = (item: unknown): string => {
         const inner = unionOf(item);
-        return inner?.tag === 'as_tensor' ? tensorName(inner.value) : 'None';
+        if (inner?.tag !== 'as_tensor') return 'None';
+        // Schema 5 (torch ≤ 2.3) wrote the tensor name as a bare string.
+        return typeof inner.value === 'string' ? ref(truncate(inner.value, MAX_TEXT)) : tensorName(inner.value);
     };
     const symName = (item: unknown, fallback: (value: unknown) => string): string => {
         const inner = unionOf(item);
@@ -1004,10 +1037,12 @@ function formatArgument(raw: unknown, depth: number, budget: Budget): Pt2Argumen
             break;
         }
         case 'as_string_to_argument': {
+            // JSON.parse accepts arbitrarily deep nesting; the formatter must not follow it.
+            if (nesting >= MAX_ARGUMENT_NESTING) { argument.text = '{…}'; break; }
             const entries = isRecord(value) ? Object.entries(value).slice(0, MAX_LIST_ITEMS) : [];
             argument.text = `{${entries.map(([key, item]) => {
-                const inner = formatArgument(item, depth, budget);
-                argument.refs.push(...inner.refs);
+                const inner = formatArgument(item, depth, budget, nesting + 1);
+                for (const name of inner.refs) ref(name);
                 return `${quote(key)}: ${inner.text}`;
             }).join(', ')}}`;
             break;
@@ -1029,29 +1064,34 @@ function unionOf(raw: unknown): { tag: string; value: unknown } | null {
     return { tag, value: raw[tag] };
 }
 
+/**
+ * Concrete value of a SymInt. Sizes, strides, and storage offsets are
+ * non-negative integers in torch; anything else (a symbolic expression, or a
+ * malformed literal) is reported as unknown so it can never drive a byte
+ * offset or a product.
+ */
 function symIntValue(raw: unknown): number | null {
     const union = unionOf(raw);
-    if (!union) return typeof raw === 'number' ? raw : null;
-    if (union.tag === 'as_int' && typeof union.value === 'number') return union.value;
-    return null;
+    const value = union ? (union.tag === 'as_int' ? union.value : null) : raw;
+    return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
 /** Display form of a SymInt / SymBool / SymFloat: the literal, or the pretty-printed expression. */
 function formatSym(raw: unknown): string {
     const union = unionOf(raw);
-    if (!union) return scalarText(raw);
+    if (!union) return truncate(scalarText(raw), MAX_TEXT);
     if (union.tag === 'as_expr') {
         const expr = isRecord(union.value) ? union.value : {};
         const text = prettySymExpr(asText(expr['expr_str']));
         const hint = unionOf(expr['hint']);
-        return hint ? `${text} (hint ${scalarText(hint.value)})` : text;
+        return truncate(hint ? `${text} (hint ${scalarText(hint.value)})` : text, MAX_TEXT);
     }
     if (union.tag === 'as_bool') return union.value ? 'True' : 'False';
-    return scalarText(union.value);
+    return truncate(scalarText(union.value), MAX_TEXT);
 }
 
 function formatDevice(raw: unknown): string {
-    if (!isRecord(raw)) return asText(raw);
+    if (!isRecord(raw)) return truncate(asText(raw), MAX_TEXT);
     const type = truncate(asText(raw['type']), MAX_TEXT);
     const index = raw['index'];
     return typeof index === 'number' ? `${type}:${index}` : type;
@@ -1061,7 +1101,7 @@ function formatDevice(raw: unknown): string {
 function enumCode(raw: unknown, names: Record<string, number>): number | null {
     if (typeof raw === 'number' && Number.isInteger(raw)) return raw;
     if (typeof raw === 'string') {
-        if (raw in names) return names[raw]!;
+        if (Object.hasOwn(names, raw)) return names[raw]!;
         const numeric = /^\d+$/.test(raw) ? Number(raw) : Number.NaN;
         return Number.isNaN(numeric) ? null : numeric;
     }
@@ -1160,7 +1200,7 @@ function print(node: SymNode, outer: number): string {
     switch (node.kind) {
         case 'string': return node.value;
         case 'number': return node.value;
-        case 'name': return CONSTANTS[node.value] ?? node.value;
+        case 'name': return Object.hasOwn(CONSTANTS, node.value) ? CONSTANTS[node.value]! : node.value;
         case 'call': break;
     }
     const args = node.args;
@@ -1168,21 +1208,24 @@ function print(node: SymNode, outer: number): string {
     switch (node.name) {
         case 'Symbol': return first?.kind === 'string' ? first.value : 'symbol';
         case 'Integer': case 'Float': return first ? print(first, outer) : '?';
-        case 'Rational': return args.length === 2 ? `${print(args[0]!, 2)}/${print(args[1]!, 2)}` : print(node, 0);
+        case 'Rational': if (args.length === 2) return `${print(args[0]!, 2)}/${print(args[1]!, 2)}`; break;
         case 'Identity': case 'ToFloat': case 'Not': {
             const inner = first ? print(first, node.name === 'Not' ? 4 : 0) : '?';
             return node.name === 'Not' ? `not ${inner}` : node.name === 'ToFloat' ? `float(${inner})` : inner;
         }
         default: break;
     }
-    const infix = INFIX[node.name];
+    const infix = Object.hasOwn(INFIX, node.name) ? INFIX[node.name] : undefined;
     if (infix && args.length >= 2) {
+        const inner = infix.precedence + (node.name === 'Pow' ? 1 : 0);
+        // Each operand is printed exactly once: printing `first` twice would make
+        // the cost double per nesting level.
+        const parts = args.map(item => print(item, inner));
         // `Mul(Integer(-1), x)` reads as `-x`.
-        if (node.name === 'Mul' && first && print(first, 0) === '-1' && args.length === 2) {
-            const rest = print(args[1]!, infix.precedence);
-            return outer > infix.precedence ? `(-${rest})` : `-${rest}`;
+        if (node.name === 'Mul' && args.length === 2 && parts[0] === '-1') {
+            return outer > infix.precedence ? `(-${parts[1]})` : `-${parts[1]}`;
         }
-        const text = args.map(item => print(item, infix.precedence + (node.name === 'Pow' ? 1 : 0))).join(infix.op);
+        const text = parts.join(infix.op);
         return outer > infix.precedence ? `(${text})` : text;
     }
     return `${node.name}(${args.map(item => print(item, Number.NEGATIVE_INFINITY)).join(', ')})`;
@@ -1320,7 +1363,8 @@ function storageBytes(meta: TensorMeta): number {
     } else {
         span = meta.sizes.reduce((total, size) => total * size, 1);
     }
-    return (meta.storageOffsetValue + span) * width;
+    const bytes = (meta.storageOffsetValue + span) * width;
+    return Number.isSafeInteger(bytes) ? bytes : 0;
 }
 
 /** Decode the leading storage elements of a raw payload for display. */
@@ -1332,6 +1376,7 @@ function previewPayload(data: Uint8Array, entry: ZipEntry, meta: TensorMeta, lit
     const bytes = sliceStoredEntry(data, entry);
     if (!bytes) return [];
     const start = meta.storageOffsetValue * info.bytes;
+    if (start >= bytes.byteLength) return [];
     const available = Math.min(count, total, Math.floor((bytes.byteLength - start) / info.bytes));
     if (available <= 0) return [];
     const view = new DataView(bytes.buffer, bytes.byteOffset + start, available * info.bytes);
@@ -1451,6 +1496,8 @@ interface MemberRequest {
     inflateLimit: number;
     /** Cap on a stored member; Infinity where viewing it in place is free. */
     sliceLimit: number;
+    /** Skip an over-limit member without a warning (optional members). */
+    quiet: boolean;
 }
 
 const EOCD_SIG = 0x06054b50;
@@ -1570,22 +1617,25 @@ async function readMembers(
 ): Promise<Map<string, Uint8Array>> {
     const bytes = new Map<string, Uint8Array>();
     const deflated: MemberRequest[] = [];
-    const tooLarge = (name: string, limit: number): void => {
-        warnings.push({ key: 'pt2.warning.memberTooLarge', args: { name, limit: formatFileSize(limit) } });
+    const tooLarge = (request: MemberRequest, limit: number): void => {
+        if (!request.quiet) warnings.push({ key: 'pt2.warning.memberTooLarge', args: { name: request.name, limit: formatFileSize(limit) } });
     };
+    // Inflated members are all held at once, so their total is capped as well
+    // as each one: a re-zipped package cannot expand past the JSON budget.
+    let inflateBudget = options.maxJsonBytes ?? DEFAULT_MAX_JSON_BYTES;
     for (const request of requests) {
         const { entry, name } = request;
         if (entry.method === 8) {
-            if (entry.uncompressedSize > request.inflateLimit) tooLarge(name, request.inflateLimit);
-            else deflated.push(request);
+            if (entry.uncompressedSize > request.inflateLimit || entry.uncompressedSize > inflateBudget) tooLarge(request, Math.min(request.inflateLimit, Math.max(0, inflateBudget)));
+            else { inflateBudget -= entry.uncompressedSize; deflated.push(request); }
             continue;
         }
         if (entry.method !== 0) {
-            warnings.push({ key: 'pt2.warning.memberMethod', args: { name, method: entry.method } });
+            if (!request.quiet) warnings.push({ key: 'pt2.warning.memberMethod', args: { name, method: entry.method } });
             continue;
         }
         if (entry.uncompressedSize > request.sliceLimit) {
-            tooLarge(name, request.sliceLimit);
+            tooLarge(request, request.sliceLimit);
             continue;
         }
         const stored = sliceStoredEntry(data, entry);

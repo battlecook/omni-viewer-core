@@ -13,11 +13,14 @@ models, viewers mount into a DOM element, and everything host-specific
 ## Supported formats
 
 - **Documents** — PDF, Word (DOCX and legacy DOC), HWP, PowerPoint (PPTX and
-  legacy PPT), Markdown, LaTeX (structure and math preview, not typesetting)
+  legacy PPT), Markdown, Jupyter Notebook (.ipynb),
+  LaTeX (structure and math preview, not typesetting)
 - **Data & spreadsheets** — Excel, CSV/TSV, JSON, JSONL/NDJSON, YAML, TOML,
   Parquet, Avro, HDF5, MATLAB MAT, NumPy (NPY/NPZ), Safetensors, GGUF, ONNX, TFLite/LiteRT,
   Keras (.keras and legacy .h5), Core ML (.mlmodel and .mlpackage),
-  OpenVINO IR (.xml + .bin), PyTorch Export (.pt2), Protocol Buffers, ReqIF, SQLite
+  OpenVINO IR (.xml + .bin), PyTorch Export (.pt2), ExecuTorch (.pte), Protocol
+  Buffers, ReqIF, SQLite
+- **Web & network** — HAR (HTTP Archive) request logs
 - **Media & graphics** — audio (waveform/spectrogram), video, images,
   Photoshop PSD
 - **Engineering & automotive** — CAN DBC, AUTOSAR ARXML, ASAM A2L, Vector
@@ -298,6 +301,143 @@ through `probeContainer`, which recognizes the `archive_format` marker
 (`looksLikePt2Archive` is also exported from `omni-viewer-core/parsers/pt2`).
 A plain `torch.save` checkpoint (`.pt` / `.pth`) is not an Export package and
 is not claimed.
+
+### ExecuTorch programs (.pte)
+
+A `.pte` is what `to_executorch().save()` writes: a FlatBuffer following
+ExecuTorch's `program.fbs` (file identifier `ET12`), optionally followed by data
+segments — constant tensors, delegate blobs, mutable initial state, and named
+blobs — that an extended header (`eh00`, inserted right after the identifier)
+locates. The parser reads the FlatBuffer directly with no schema compiler and no
+runtime dependency, and never decodes a segment or buffer payload:
+
+```ts
+import { mountPteViewer } from 'omni-viewer-core/viewers/pte';
+
+await mountPteViewer({ fileName: file.name, data: bytes }, container, ctx);
+```
+
+`parsePte` keeps every method (`ExecutionPlan`) with its values, instructions,
+operators, and delegates, and resolves where each tensor's bytes live: the
+deprecated inline `constant_buffer`, the constant segment (`constant_segment`
+offsets, with the alignment-padded slot size and absolute file offset), a
+mutable data segment for buffers with initial state, an external `.ptd` file
+(`ExtraTensorInfo.location = EXTERNAL`), a memory-planned arena slot
+(`AllocationDetails`), or nothing at all for runtime inputs. A kernel call's
+outputs come from the return value the emitter appends after the schema
+arguments (the out tensor, a TensorList of the out tensors, or a fresh scalar
+for a symbolic op), and only the out-argument positions in front of it are
+dropped from the inputs; a delegate call carries inputs then outputs with no marker,
+so those are split by data flow — the trailing arguments nothing defined yet.
+A view or alias the emitter gave its own EValue — a tensor nothing writes that
+shares a memory-planned slot with an earlier one — is resolved to the value it
+aliases when the file leaves no other reading, so a delegate fed through
+aliases keeps its inputs and the graph keeps its edges. Every EValue kind
+gets a preview, delegate compile specs are decoded when they are short text,
+and the leading instructions keep their emitter stack traces.
+
+The viewer draws each method's kernel, delegate, and move calls as a graph with
+inputs, consumed constants, and outputs, plus an inspector (arguments with their
+values, backend and compile specs for a delegate call, jump destination, stack
+trace), and searchable instruction, value, input/output, delegate, segment, and
+model-information panels; a multi-method program gets a method selector.
+Warnings cover backends the runtime must register, tensors stored in a separate
+`.ptd`, segments the file cannot locate or that run past its end, constant data
+the program never provides, references to segments the program never declares,
+and unrecognized scalar types, value kinds, or instruction kinds.
+
+Routing is by the `.pte` extension, validated against the `ET12` identifier at
+offset 4; an extensionless program is detected from the same bytes. A `.ptd`
+data file (`FT01`) is not a program and is not claimed.
+
+### Jupyter notebooks (.ipynb)
+
+View nbformat 4 notebooks with their code and saved results in file order.
+Markdown cells reuse the Markdown renderer, syntax highlighter, math renderer,
+and prose styles. Code cells show `In`/`Out` execution counts, stdout/stderr,
+HTML tables, PNG/JPEG/GIF/WebP/SVG images, Markdown, LaTeX, JSON, plain text,
+and error tracebacks. Raw cells display as text. Code is never executed.
+
+```ts
+import { mountNotebookViewer } from 'omni-viewer-core/viewers/notebook';
+import { loadNotebookViewerDeps } from 'omni-viewer-core/viewers/notebook/self-loading';
+
+const deps = await loadNotebookViewerDeps();
+const handle = await mountNotebookViewer(
+  { fileName: 'analysis.ipynb', data: notebookBytes }, container, hostContext, deps
+);
+// Release the viewer, listeners, and any host-resolved assets on close.
+handle.dispose();
+```
+
+The loader requires the existing optional peers `marked` and `dompurify`;
+`highlight.js` and `katex` enhance code and formulas when installed. Adapters
+can inject the same dependencies they use for Markdown. Load KaTeX CSS and
+fonts inside the viewer's shadow root when using KaTeX, as with Markdown.
+Scoped mounting uses `styles/notebook.css`.
+
+Search cells and results, hide all code or outputs, or expand individual cells.
+Persisted `source_hidden`, `outputs_hidden`, and `collapsed` hints set the
+initial expansion state. One static representation is selected per MIME bundle;
+interactive widget/JavaScript outputs fall back to saved plain text, or a
+clear unsupported-output notice. Markdown `attachment:` images work offline.
+Relative images use the optional `documentAssets` service, external links use
+`navigation`, and remote resources and active HTML are blocked.
+
+`parseNotebook` is also available from `parsers/notebook`. It returns a typed
+`ParseOutcome<NotebookDocument>` and uses the core JSON parser, retaining raw
+JSON output tokens. Defaults: 64 MiB input, 2,000 cells, 10,000 outputs, 4 MiB
+per preview, and 16 MiB cumulative previews. `limits.maxEntries` counts cells;
+`maxOutputs` and `maxTotalPreviewBytes` are independent limits. Truncation
+returns `partial` with diagnostics. Invalid JSON and unsupported major versions
+return typed failures. See [viewer details](examples/notebook/README.md) and the
+[sample notebook](examples/notebook/analysis.ipynb).
+
+### HAR network logs (.har)
+
+A `.har` file is the HTTP Archive a browser's network panel (or curl, Charles,
+Fiddler, Playwright) exports: one JSON `log` holding every request of a session
+with its headers, bodies, sizes, and phase timings. It is the artifact a web or
+API failure usually arrives as, so the viewer is built for triage rather than
+for reading JSON:
+
+```ts
+import { mountHarViewer } from 'omni-viewer-core/viewers/har';
+
+await mountHarViewer({ fileName: file.name, data: bytes }, container, ctx);
+```
+
+`parseHar` is a contract parser (`ParseOutcome<HarDocument>`) and reads the
+archive through the core JSON layer, so a truncated export still yields the
+requests it did hold. Each entry keeps its request and response headers, query
+string, cookies, request payload, and response body, and gains what the table
+needs: host, path, status class, resource type (from `_resourceType` when the
+writer supplied one, from the MIME type otherwise), transferred bytes
+(`_transferSize` when present), decoded resource size, and a phase breakdown
+with the TLS handshake taken out of `connect` so a waterfall cannot
+double-count it. Timestamps go through a core ISO-8601 parser rather than
+`new Date(string)`, and the timeline's origin is the earliest entry, so offsets
+and bar positions are the same on every platform. A base64 body is decoded when
+its MIME type is textual (the URL-safe alphabet included) and reported by size
+only when it is not; bodies are kept up to a preview limit, and entries up to
+`HAR_DEFAULT_MAX_ENTRIES` (a larger archive comes back `partial` with a
+diagnostic). A body cut by the preview limit and one the archive stored
+incompletely — several padded base64 chunks, or a tail outside the alphabet —
+are reported as two different things, and a size or start time the archive never
+gave is kept unknown rather than shown as a confident zero.
+
+The viewer shows summary figures (requests, elapsed, transferred, resources,
+domains, errors), a request table sortable by every column with a per-entry
+waterfall bar, and filters for method, status class, resource type, domain, and
+free text over URLs, status text, and headers — with an opt-in toggle that
+extends the search to bodies. Selecting a request opens headers (general,
+request, response), payload (query string and request body, form fields
+expanded), response (body pretty-printed through the JSON serializer when it
+really is JSON), cookies, and timings (drawn phases plus the values the archive
+reported, with `-1` shown as not applicable). Page load timings and archive
+metadata get their own tabs. Routing is by the `.har` extension; an
+extensionless archive is recognized by content — a `log` object holding an
+`entries` array — and claimed before the generic JSON viewer.
 
 ### Archive host integration
 

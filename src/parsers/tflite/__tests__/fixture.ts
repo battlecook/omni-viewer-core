@@ -54,6 +54,7 @@ export class FlatBufferBuilder {
     writeInt32(value: number): void { this.ensure(4); this.space -= 4; this.view.setInt32(this.space, value, true); }
     writeInt64(value: bigint): void { this.ensure(8); this.space -= 8; this.view.setBigInt64(this.space, value, true); }
     writeFloat32(value: number): void { this.ensure(4); this.space -= 4; this.view.setFloat32(this.space, value, true); }
+    writeFloat64(value: number): void { this.ensure(8); this.space -= 8; this.view.setFloat64(this.space, value, true); }
 
     /** Write a uoffset pointing back at an already-built object. */
     private writeOffset(target: number): void {
@@ -108,6 +109,13 @@ export class FlatBufferBuilder {
         return this.offset();
     }
 
+    createDoubleVector(values: readonly number[]): number {
+        this.startVector(8, values.length, 8);
+        for (let index = values.length - 1; index >= 0; index--) this.writeFloat64(values[index]!);
+        this.writeInt32(values.length);
+        return this.offset();
+    }
+
     createShortVector(values: readonly number[]): number {
         this.startVector(2, values.length, 2);
         for (let index = values.length - 1; index >= 0; index--) this.writeInt16(values[index]!);
@@ -138,6 +146,7 @@ export class FlatBufferBuilder {
     addInt32(field: number, value: number): void { this.prep(4, 0); this.writeInt32(value); this.slot(field); }
     addInt64(field: number, value: bigint): void { this.prep(8, 0); this.writeInt64(value); this.slot(field); }
     addFloat32(field: number, value: number): void { this.prep(4, 0); this.writeFloat32(value); this.slot(field); }
+    addFloat64(field: number, value: number): void { this.prep(8, 0); this.writeFloat64(value); this.slot(field); }
     addOffset(field: number, target: number): void {
         if (!target) return;
         this.writeOffset(target);

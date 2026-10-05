@@ -12,6 +12,7 @@ import {
     SOURCE_LINE_ATTRIBUTE, type ScrollPair
 } from './source-map.js';
 import { markdownViewerCss } from './styles.js';
+import { MARKDOWN_SANITIZE_PROFILE as SANITIZE } from './sanitize.js';
 
 export { parseMarkdown, type MarkdownDocument } from '../../parsers/markdown/index.js';
 export { markdownViewerCss } from './styles.js';
@@ -71,11 +72,6 @@ export interface MarkdownMountOptions extends MountOptions {
     scrollSync?: boolean;
 }
 
-const SANITIZE = {
-    USE_PROFILES: { html: true }, ADD_ATTR: ['target', 'rel'],
-    FORBID_TAGS: ['style', 'script', 'iframe', 'object', 'embed', 'form', 'input', 'button', 'textarea', 'select'],
-    FORBID_ATTR: ['style', 'srcdoc'], ALLOW_UNKNOWN_PROTOCOLS: false
-};
 const SVG_SANITIZE = {
     USE_PROFILES: { svg: true, svgFilters: true }, ADD_TAGS: ['foreignObject'],
     ADD_ATTR: ['dominant-baseline', 'text-anchor', 'viewBox', 'xmlns', 'role', 'aria-roledescription']

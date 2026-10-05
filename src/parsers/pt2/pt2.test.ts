@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-    RICH_PROGRAM, TINY_PROGRAM, aotiArchive, buildZip, encode, floats, legacyArchive, multiArchive, pt2Archive, richArchive, tinyArchive
+    RICH_PROGRAM, TINY_PROGRAM, TINY_WEIGHTS_CONFIG, TINY_WEIGHT_VALUES, aotiArchive, buildZip, encode, floats, legacyArchive, multiArchive, pt2Archive, richArchive, tinyArchive
 } from './__tests__/fixture.js';
 import { looksLikePt2Archive, parsePt2, prettySymExpr } from './index.js';
 
@@ -270,6 +270,16 @@ describe('parsePt2', () => {
         expect(model.weights[0]!.requiresGrad).toBe(true);
     });
 
+    it('takes the package root from the shallowest marker, not the first one listed', async () => {
+        // The writer emits archive_format last, so a user extra file of the same name precedes it.
+        const document = await parsePt2(pt2Archive({ prefix: 'm', models: { model: TINY_PROGRAM }, members: [{ name: 'extra/archive_format', data: 'user note' }] }));
+        expect(document.prefix).toBe('m');
+        expect(document.archiveFormat).toBe('pt2');
+        expect(document.models).toHaveLength(1);
+        expect(document.extras).toEqual([{ name: 'archive_format', size: 9, text: 'user note' }]);
+        expect(document.warnings).toEqual([]);
+    });
+
     it('reads a ZIP64 directory and a flat archive without a package folder', async () => {
         const zip64 = await parsePt2(tinyArchive({ zip64: true }));
         expect(zip64.warnings).toEqual([]);
@@ -293,6 +303,32 @@ describe('parsePt2', () => {
         // Deflated payloads are listed but not previewed: only stored members are viewed in place.
         expect(document.models[0]!.weights[0]!.status).toBe('raw');
         expect(document.models[0]!.weights[0]!.preview).toEqual([]);
+    });
+
+    it('caps the total bytes it inflates across a re-zipped package', async () => {
+        const JSZip = (await import('jszip')).default;
+        const zip = new JSZip();
+        zip.file('m/archive_format', 'pt2');
+        for (const name of ['a', 'b', 'c']) zip.file(`m/models/${name}.json`, `${JSON.stringify(TINY_PROGRAM)}${' '.repeat(3000)}`);
+        const bytes = await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' });
+        const document = await parsePt2(bytes, { maxJsonBytes: 25_000 });
+        // Two programs fit the budget; the third is reported rather than inflated.
+        expect(document.models.map(model => model.name)).toEqual(['a', 'b']);
+        expect(document.warnings).toEqual([{ key: 'pt2.warning.memberTooLarge', args: { name: 'models/c.json', limit: expect.any(String) } }]);
+    });
+
+    it('truncates constant inputs, opsets, and range constraints, and reads schema-5 optional tensors', async () => {
+        const program = JSON.parse(JSON.stringify(TINY_PROGRAM));
+        program.graph_module.signature.input_specs.push({ constant_input: { name: 'n', value: { as_ints: Array.from({ length: 100_000 }, () => 7) } } });
+        program.opset_version = { aten: Array.from({ length: 100_000 }, () => 1) };
+        program.range_constraints = { s17: { min_val: Array.from({ length: 100_000 }, () => 1), max_val: 64 } };
+        program.graph_module.graph.nodes[0].inputs.push({ name: 'indices', arg: { as_optional_tensors: [{ as_tensor: 'x' }, { as_none: [] }] }, kind: 1 });
+        const document = await parsePt2(pt2Archive({ models: { model: program } }));
+        const model = document.models[0]!;
+        expect(model.inputSpecs[5]!.value.length).toBeLessThanOrEqual(4097);
+        expect(model.opsets[0]!.value.length).toBeLessThanOrEqual(4097);
+        expect(model.rangeConstraints[0]!.min.length).toBeLessThanOrEqual(4097);
+        expect(model.graph.nodes[0]!.inputs[3]!).toMatchObject({ text: '[x, None]', refs: ['x'] });
     });
 
     it('reports unreadable input without throwing', async () => {
@@ -323,6 +359,110 @@ describe('parsePt2', () => {
         ]));
         const orphan = await parsePt2(pt2Archive({ models: { model: program } }));
         expect(orphan.warnings).toContainEqual({ key: 'pt2.warning.danglingRefs', args: { count: 1 } });
+    });
+
+    it('survives hostile tensor metadata and argument nesting without throwing', async () => {
+        const program = JSON.parse(JSON.stringify(TINY_PROGRAM));
+        const config = JSON.parse(JSON.stringify(TINY_WEIGHTS_CONFIG));
+        config.config['fc.weight'].tensor_meta.storage_offset = { as_int: -100000 };
+        config.config['fc.bias'].tensor_meta.sizes = [{ as_int: 1e300 }, { as_int: 1e300 }];
+        config.config.scale.tensor_meta.storage_offset = { as_int: 2 };
+        // Too deep for JSON.stringify, so the nesting is spliced in as text.
+        program.graph_module.graph.nodes[0].inputs.push({ name: 'deep', arg: 'DEEP_ARGUMENT', kind: 2 });
+        program.graph_module.graph.tensor_values.x.sizes = [{ as_int: -4 }, { as_int: 4 }];
+        const depth = 100_000;
+        const programJson = JSON.stringify(program).replace('"DEEP_ARGUMENT"', `${'{"as_string_to_argument":{"k":'.repeat(depth)}{"as_int":1}${'}}'.repeat(depth)}`);
+        const document = await parsePt2(pt2Archive({
+            members: [
+                { name: 'models/model.json', data: programJson },
+                { name: 'data/weights/weight_0', data: floats(TINY_WEIGHT_VALUES) },
+                { name: 'data/weights/weight_1', data: floats([1, 2, 3]) },
+                { name: 'data/weights/weight_2', data: floats([1, 2, 3, 4]) },
+                { name: 'data/weights/model_weights_config.json', data: JSON.stringify(config) }
+            ]
+        }));
+        const model = document.models[0]!;
+        // A negative offset never reaches the byte view; an absurd size is reported as unknown.
+        expect(model.weights[0]!).toMatchObject({ storageOffset: 0, preview: ['0.5', '-1.25', '2', '0', '1', '2', '3', '4'] });
+        expect(model.weights[1]!).toMatchObject({ elementCount: 0, bytes: 0, status: 'raw', preview: [] });
+        expect(model.weights[1]!.shape).toEqual(['1e+300', '1e+300']);
+        // A storage offset skips leading storage elements.
+        expect(model.weights[2]!).toMatchObject({ storageOffset: 2, bytes: 12, preview: ['3'] });
+        expect(model.graph.nodes[0]!.inputs[3]!.text.startsWith('{')).toBe(true);
+        expect(model.graph.nodes[0]!.inputs[3]!.text).toContain('{…}');
+        expect(model.graph.values.find(value => value.name === 'x')!.elementCount).toBeNull();
+        expect(Number.isFinite(model.parameterCount)).toBe(true);
+    });
+
+    it('ignores inherited object keys when an enum is spelled as a name', async () => {
+        const program = JSON.parse(JSON.stringify(TINY_PROGRAM));
+        program.graph_module.graph.tensor_values.x.dtype = 'constructor';
+        program.graph_module.graph.tensor_values.x.layout = '__proto__';
+        program.graph_module.graph.nodes[1].inputs.push({ name: 'dtype', arg: { as_scalar_type: 'valueOf' }, kind: 2 });
+        const document = await parsePt2(pt2Archive({ models: { model: program } }));
+        const x = document.models[0]!.graph.values.find(value => value.name === 'x')!;
+        expect(x.dtype).toBe('constructor');
+        expect(x.layout).toBe('__proto__');
+        expect(document.models[0]!.graph.nodes[1]!.inputs[1]!.text).toBe('valueOf');
+    });
+
+    it('bounds tensor metadata text, the module table, and ignores an empty model name', async () => {
+        const program = JSON.parse(JSON.stringify(TINY_PROGRAM));
+        const graph = program.graph_module.graph;
+        const huge = 'x'.repeat(200_000);
+        graph.tensor_values.x.sizes = [{ as_expr: { expr_str: huge } }, { as_int: 4 }];
+        graph.tensor_values.x.dtype = huge;
+        graph.tensor_values.x.device = huge;
+        graph.sym_int_values.s = { as_expr: { expr_str: huge, hint: { as_int: 1 } } };
+        for (let index = 0; index < 5; index++) graph.nodes[index].metadata.nn_module_stack = Array.from({ length: 64 }, (_, frame) => `k,m${index}_${frame},C`).join(';');
+        // A frame list far beyond what can be kept is cut before it is split.
+        graph.nodes[0].metadata.nn_module_stack = `k,root,R;${';'.repeat(2_000_000)}`;
+        const document = await parsePt2(pt2Archive({ members: [{ name: 'models/.json', data: '{}' }, { name: 'models/model.json', data: JSON.stringify(program) }] }));
+        expect(document.models.map(model => model.name)).toEqual(['model']);
+        const x = document.models[0]!.graph.values.find(value => value.name === 'x')!;
+        expect(x.shape[0]!.length).toBeLessThanOrEqual(4097);
+        expect(x.dtype.length).toBeLessThanOrEqual(4097);
+        expect(x.device.length).toBeLessThanOrEqual(4097);
+        expect(document.models[0]!.graph.values.find(value => value.name === 's')!.detail.length).toBeLessThanOrEqual(4097);
+        expect(document.models[0]!.modules.length).toBeLessThanOrEqual(65_536);
+        expect(document.models[0]!.modules.filter(module => module.fqn.startsWith('m1_'))).toHaveLength(64);
+        expect(document.models[0]!.graph.nodes[0]!.moduleStack).toEqual([{ fqn: 'root', className: 'R' }]);
+    });
+
+    it('caps the value references one argument can carry', async () => {
+        const program = JSON.parse(JSON.stringify(TINY_PROGRAM));
+        const wide = { as_nested_tensors: Array.from({ length: 256 }, () => Array.from({ length: 256 }, () => ({ name: 'x' }))) };
+        program.graph_module.graph.nodes[0].inputs.push({ name: 'wide', arg: { as_string_to_argument: { a: { as_string_to_argument: { b: wide, c: wide } } } }, kind: 2 });
+        const document = await parsePt2(pt2Archive({ models: { model: program } }));
+        const argument = document.models[0]!.graph.nodes[0]!.inputs[3]!;
+        expect(argument.refs).toHaveLength(4096);
+        expect(argument.refs.every(ref => ref === 'x')).toBe(true);
+        expect(argument.text.length).toBeLessThanOrEqual(4097);
+    });
+
+    it('enforces maxJsonBytes on stored members, lists oversized extras quietly, and bounds placeholders', async () => {
+        const capped = await parsePt2(tinyArchive(), { maxJsonBytes: 16 });
+        expect(capped.models).toEqual([]);
+        expect(capped.warnings[0]).toEqual({ key: 'pt2.warning.memberTooLarge', args: { name: 'models/model.json', limit: '16 B' } });
+
+        const metadata = Array.from({ length: 300 }, (_, index) => ({ name: `data/aotinductor/m/${index}_metadata.json`, data: `{"AOTI_DEVICE_KEY": "cpu", "n": ${index}}` }));
+        const many = await parsePt2(pt2Archive({ members: metadata }));
+        expect(many.aotInductor[0]!.files).toHaveLength(300);
+        // Only the first MAX_AOTI_METADATA members are decoded and the shared key is kept once,
+        // then the per-model metadata cap applies.
+        expect(many.aotInductor[0]!.metadata).toHaveLength(256);
+        expect(many.aotInductor[0]!.metadata.filter(item => item.label === 'AOTI_DEVICE_KEY')).toHaveLength(1);
+
+        const big = await parsePt2(pt2Archive({ models: { model: TINY_PROGRAM }, members: [{ name: 'extra/big.bin', data: new Uint8Array(70 * 1024) }] }));
+        expect(big.warnings).toEqual([]);
+        expect(big.extras).toEqual([{ name: 'big.bin', size: 70 * 1024, text: '' }]);
+
+        const program = JSON.parse(JSON.stringify(TINY_PROGRAM));
+        const inputs = program.graph_module.graph.inputs as unknown[];
+        for (let index = 0; index < 65_600; index++) inputs.push({ as_tensor: { name: `extra_${index}` } });
+        const wide = await parsePt2(pt2Archive({ models: { model: program } }));
+        expect(wide.models[0]!.graph.inputs).toHaveLength(65_536);
+        expect(wide.warnings).toContainEqual({ key: 'pt2.warning.placeholdersLimited', args: { count: 69, limit: 65_536 } });
     });
 
     it('honours an abort signal', async () => {
@@ -357,10 +497,19 @@ describe('prettySymExpr', () => {
         expect(prettySymExpr(`Eq(${s0}, Integer(1))`)).toBe('s0 == 1');
         expect(prettySymExpr(`And(Gt(${s0}, Integer(1)), true)`)).toBe('s0 > 1 and True');
         expect(prettySymExpr("Rational(1, 2)")).toBe('1/2');
+        expect(prettySymExpr("Rational(Integer(1))")).toBe('Rational(1)');
+        expect(prettySymExpr('Identity(__proto__)')).toBe('__proto__');
+        expect(prettySymExpr('constructor(Integer(1), Integer(2))')).toBe('constructor(1, 2)');
+        expect(prettySymExpr('Mul(hasOwnProperty, Integer(2))')).toBe('hasOwnProperty*2');
         expect(prettySymExpr("Float('1.5', precision=53)")).toBe('1.5');
         expect(prettySymExpr(`ToFloat(${s0})`)).toBe('float(s0)');
         expect(prettySymExpr('2*s0')).toBe('2*s0');
         expect(prettySymExpr('s0')).toBe('s0');
         expect(prettySymExpr('Mul(Integer(2), Symbol(')).toBe('Mul(Integer(2), Symbol(');
+        // Deep Mul nesting must stay linear: each operand is printed once.
+        const deep = `${'Mul('.repeat(30)}Integer(2), Integer(3)${', Integer(3))'.repeat(30)}`;
+        const started = Date.now();
+        expect(prettySymExpr(deep)).toBe(`${'2*3'}${'*3'.repeat(30)}`);
+        expect(Date.now() - started).toBeLessThan(500);
     });
 });

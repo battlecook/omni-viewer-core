@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from 'vitest';
-import { aotiArchive, legacyArchive, multiArchive, richArchive, tinyArchive } from '../../parsers/pt2/__tests__/fixture.js';
+import { RICH_PROGRAM, TINY_PROGRAM, aotiArchive, legacyArchive, multiArchive, pt2Archive, richArchive, tensorMeta, tinyArchive } from '../../parsers/pt2/__tests__/fixture.js';
 import { parsePt2 } from '../../parsers/pt2/index.js';
 import { createCatalogI18n } from '../../i18n/index.js';
 import { MountAbortedError } from '../types.js';
@@ -212,6 +212,112 @@ describe('mountPt2Viewer', () => {
         legacyHandle.dispose();
     });
 
+    it('keeps operator nodes on the canvas when a model lifts more parameters than the card budget', async () => {
+        const program = JSON.parse(JSON.stringify(TINY_PROGRAM));
+        const graph = program.graph_module.graph;
+        const specs = program.graph_module.signature.input_specs as unknown[];
+        for (let index = 0; index < 300; index++) {
+            graph.inputs.splice(index, 0, { as_tensor: { name: `p_${index}` } });
+            graph.tensor_values[`p_${index}`] = tensorMeta(7, [2]);
+            specs.splice(index, 0, { parameter: { arg: { name: `p_${index}` }, parameter_name: `layer.${index}.weight` } });
+        }
+        // The first lifted parameter is actually read; the others are unused ballast.
+        graph.nodes[0].inputs.push({ name: 'extra', arg: { as_tensor: { name: 'p_0' } }, kind: 2 });
+        const container = document.createElement('div');
+        const handle = await mountPt2Viewer({ fileName: 'wide.pt2', data: pt2Archive({ models: { model: program } }) }, container, ctx, { styleIsolation: 'scoped' });
+        expect(container.querySelectorAll('.omni-pt2__node--node')).toHaveLength(5);
+        expect(container.querySelectorAll('.omni-pt2__node--input')).toHaveLength(2);
+        expect(container.querySelectorAll('.omni-pt2__node--output')).toHaveLength(2);
+        expect(cards(container)).toHaveLength(240);
+        // Parameters that feed a shown node come before unused ones.
+        const params = cards(container).filter(item => item.classList.contains('omni-pt2__node--param')).map(item => item.querySelector('strong')?.textContent);
+        expect(params.slice(0, 3)).toEqual(['layer.0.weight', 'fc.weight', 'fc.bias']);
+        expect(container.querySelectorAll('.omni-pt2__edge').length).toBeGreaterThan(10);
+        expect(container.textContent).toContain('pt2.graphLimited');
+        handle.dispose();
+    });
+
+    it('treats a node that reads a value through many arguments as one consumer', async () => {
+        const program = JSON.parse(JSON.stringify(TINY_PROGRAM));
+        const wide = { as_nested_tensors: Array.from({ length: 256 }, () => Array.from({ length: 256 }, () => ({ name: 'b_scale' }))) };
+        for (const node of program.graph_module.graph.nodes) node.inputs.push({ name: 'wide', arg: wide, kind: 2 });
+        const container = document.createElement('div');
+        const handle = await mountPt2Viewer({ fileName: 'wide.pt2', data: pt2Archive({ models: { model: program } }) }, container, ctx, { styleIsolation: 'scoped' });
+        card(container, 'scale').click();
+        const consumers = [...container.querySelectorAll('.omni-pt2__inspector .omni-pt2__chip')].map(chip => chip.textContent).filter(text => text?.startsWith('→'));
+        expect(consumers).toHaveLength(5);
+        expect(new Set(consumers).size).toBe(5);
+        // A node output lists a few of its readers and the count of the rest.
+        card(container, 'relu').click();
+        expect(container.querySelector('.omni-pt2__inspector')!.textContent).toContain('relu: f32[s17 (hint 2), 3] → mul');
+        handle.dispose();
+    });
+
+    it('keeps a crafted shape from multiplying through the tables and the search', async () => {
+        const program = JSON.parse(JSON.stringify(TINY_PROGRAM));
+        const graph = program.graph_module.graph;
+        graph.tensor_values.x.sizes = Array.from({ length: 64 }, () => ({ as_expr: { expr_str: 'y'.repeat(4096) } }));
+        const specs = program.graph_module.signature.input_specs as unknown[];
+        for (let index = 0; index < 3000; index++) specs.push({ user_input: { arg: { as_tensor: { name: 'x' } } } });
+        graph.nodes[0].outputs = Array.from({ length: 64 }, () => ({ as_tensor: { name: 'x' } }));
+        const container = document.createElement('div');
+        const handle = await mountPt2Viewer({ fileName: 'shape.pt2', data: pt2Archive({ models: { model: program } }) }, container, ctx, { styleIsolation: 'scoped' });
+        expect(card(container, 'x').textContent!.length).toBeLessThan(900);
+        tab(container, 'pt2.io').click();
+        expect(container.querySelectorAll('tbody tr')).toHaveLength(2000);
+        expect(container.textContent!.length).toBeLessThan(2000 * 900);
+        expect(container.textContent).toContain('…(+48)');
+        // A node whose many outputs share that value keeps one summary in its row and search text.
+        tab(container, 'pt2.nodes').click();
+        setSearch(container, 'yyyy');
+        expect(container.querySelectorAll('tbody tr')).toHaveLength(1);
+        expect(container.querySelector('tbody tr')!.textContent!.length).toBeLessThan(2 * 4096 + 200);
+        tab(container, 'pt2.io').click();
+        const started = Date.now();
+        setSearch(container, 'yyy');
+        setSearch(container, 'yyyy');
+        expect(Date.now() - started).toBeLessThan(2000);
+        expect(container.querySelectorAll('tbody tr')).toHaveLength(2000);
+        handle.dispose();
+    });
+
+    it('searches a deeply populated sub-graph without materialising it, and re-translates on re-mount', async () => {
+        const program = JSON.parse(JSON.stringify(RICH_PROGRAM));
+        const cond = program.graph_module.graph.nodes.find((node: { name: string }) => node.name === 'cond');
+        const innerGraph = cond.inputs[1].arg.as_graph.graph;
+        const nested = JSON.parse(JSON.stringify(cond));
+        nested.inputs[1].arg.as_graph.graph.nodes = Array.from({ length: 12_000 }, (_, index) => ({
+            target: 'torch.ops.aten.add.Tensor', name: `deep_${index}`,
+            inputs: Array.from({ length: 5 }, (__, arg) => ({ name: `a${arg}`, arg: { as_tensor: { name: 'to' } }, kind: 1 })),
+            outputs: [{ as_tensor: { name: `deep_${index}` } }], metadata: {}
+        }));
+        innerGraph.nodes.push(nested);
+        const container = document.createElement('div');
+        const handle = await mountPt2Viewer({ fileName: 'deep.pt2', data: pt2Archive({ models: { model: program } }) }, container, ctx, { styleIsolation: 'scoped' });
+        tab(container, 'pt2.nodes').click();
+        setSearch(container, 'deep_1');
+        expect(container.querySelectorAll('tbody tr').length).toBeGreaterThan(0);
+        setSearch(container, 'cond');
+        expect(container.querySelectorAll('tbody tr').length).toBeGreaterThan(0);
+        tab(container, 'pt2.graph').click();
+        setSearch(container, 'deep_5');
+        expect(cards(container).filter(item => !item.classList.contains('omni-pt2__node--dim')).map(item => item.querySelector('strong')?.textContent)).toEqual(['cond']);
+        handle.dispose();
+
+        // The search text of the IO rows embeds translated labels, so it must not survive a mount.
+        const parsed = await parsePt2(tinyArchive());
+        const first = mountPt2Document(parsed, 'tiny.pt2', document.createElement('div'), { ...ctx, i18n: { t: (key: string) => key === 'pt2.side.input' ? 'INPUT-EN' : key } }, { styleIsolation: 'scoped' });
+        first.dispose();
+        const second = document.createElement('div');
+        const secondHandle = mountPt2Document(parsed, 'tiny.pt2', second, { ...ctx, i18n: { t: (key: string) => key === 'pt2.side.input' ? '입력' : key } }, { styleIsolation: 'scoped' });
+        tab(second, 'pt2.io').click();
+        setSearch(second, '입력');
+        expect(second.querySelectorAll('tbody tr')).toHaveLength(5);
+        setSearch(second, 'input-en');
+        expect(second.querySelectorAll('tbody tr')).toHaveLength(0);
+        secondHandle.dispose();
+    });
+
     it('copies the document as JSON, uses shadow DOM by default, and honours abort signals', async () => {
         const writeText = vi.fn().mockResolvedValue(undefined);
         const container = document.createElement('div');
@@ -242,7 +348,33 @@ describe('mountPt2Viewer', () => {
             button.click();
             expect(container.textContent).not.toMatch(/pt2\.[a-zA-Z.]+/);
         }
+        // Visible translated labels and value summaries are searchable, consistently across tabs.
+        buttons(container).find(item => item.textContent === i18n.t('pt2.weights'))!.click();
+        setSearch(container, 'raw bytes');
+        expect(container.querySelectorAll('tbody tr')).toHaveLength(5);
+        setSearch(container, 'tensor constant');
+        expect(container.querySelectorAll('tbody tr')).toHaveLength(3);
+        buttons(container).find(item => item.textContent === i18n.t('pt2.nodes'))!.click();
+        setSearch(container, 'bf16');
+        expect([...container.querySelectorAll('tbody tr')].map(row => row.querySelectorAll('td')[1]!.textContent)).toEqual(['to', 'cond', 'pad']);
+        buttons(container).find(item => item.textContent === i18n.t('pt2.modules'))!.click();
+        setSearch(container, 'batch_norm');
+        expect(container.querySelectorAll('tbody tr')).toHaveLength(1);
+        setSearch(container, '(root)');
+        expect(container.querySelectorAll('tbody tr')).toHaveLength(1);
+        buttons(container).find(item => item.textContent === i18n.t('pt2.weights'))!.click();
+        setSearch(container, '108');
+        expect([...container.querySelectorAll('tbody tr')].map(row => row.querySelectorAll('td')[1]!.textContent)).toEqual(['sub.conv.weight']);
+        buttons(container).find(item => item.textContent === i18n.t('pt2.archive'))!.click();
+        setSearch(container, 'sample inputs');
+        expect(container.querySelectorAll('tbody tr')).toHaveLength(1);
+        setSearch(container, '835 B');
+        expect(container.querySelectorAll('tbody tr')).toHaveLength(1);
+        setSearch(container, '');
         buttons(container).find(item => item.textContent === i18n.t('pt2.graph'))!.click();
+        setSearch(container, 'bf16');
+        expect(cards(container).filter(item => !item.classList.contains('omni-pt2__node--dim')).map(item => item.querySelector('strong')?.textContent)).toEqual(['to', 'cond', 'pad', 'pad']);
+        setSearch(container, '');
         card(container, 'cond').click();
         expect(container.querySelector('.omni-pt2__inspector')!.textContent).toContain('Sub-graphs');
         expect(container.textContent).not.toMatch(/pt2\.[a-zA-Z.]+/);

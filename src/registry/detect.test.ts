@@ -66,6 +66,8 @@ describe('detectViewer (stage 1)', () => {
             ['a.onnx', 'onnx'],
             ['a.tflite', 'tflite'],
             ['a.lite', 'tflite'],
+            ['a.pte', 'pte'],
+            ['a.har', 'har'],
             ['a.keras', 'keras'],
             ['a.mlmodel', 'coreml'],
             ['a.mlpackage', 'coreml'],
@@ -122,6 +124,18 @@ describe('detectViewer (TFLite)', () => {
     });
 });
 
+describe('detectViewer (ExecuTorch)', () => {
+    // The identifier sits at offset 4, after the FlatBuffer root offset.
+    const PTE = new Uint8Array([0x1c, 0, 0, 0, ...new TextEncoder().encode('ET12')]);
+
+    it('validates the extension magic and detects an extensionless ExecuTorch program', () => {
+        expect(detectViewer('model.pte', undefined, undefined, PTE)).toEqual({ viewerId: 'pte', matchedBy: 'extension' });
+        expect(detectViewer('model.bin', undefined, undefined, PTE)).toEqual({ viewerId: 'pte', matchedBy: 'content' });
+        expect(detectViewer('broken.pte', undefined, undefined, new Uint8Array(8))).toEqual({ viewerId: 'fallback', matchedBy: 'fallback' });
+        expect(detectViewer('model.pte')).toEqual({ viewerId: 'pte', matchedBy: 'extension' });
+    });
+});
+
 describe('detectViewer (Keras)', () => {
     const ZIP = new Uint8Array([0x50, 0x4b, 0x03, 0x04]);
     const HDF5 = new Uint8Array([0x89, 0x48, 0x44, 0x46, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -139,6 +153,26 @@ describe('detectViewer (Keras)', () => {
         expect(detectViewer('model', undefined, undefined, ZIP)).toEqual({
             viewerId: 'fallback', matchedBy: 'ambiguous-container', container: 'zip'
         });
+    });
+});
+
+describe('detectViewer (HAR)', () => {
+    const HAR = '{"log":{"version":"1.2","creator":{"name":"WebInspector"},"entries":[{"request":{"url":"https://example.com/"}}]}}';
+    const sniff = (name: string, text: string) => detectViewer(name, undefined, undefined, undefined, text);
+
+    it('claims .har by extension and an extensionless archive by content', () => {
+        expect(detectViewer('session.har')).toEqual({ viewerId: 'har', matchedBy: 'extension' });
+        expect(sniff('session', HAR)).toEqual({ viewerId: 'har', matchedBy: 'content' });
+        // A truncated archive — the usual way a big HAR arrives in a sniff
+        // sample — is still recognized.
+        expect(sniff('session', HAR.slice(0, 80))).toEqual({ viewerId: 'har', matchedBy: 'content' });
+    });
+
+    it('leaves a .json file and other JSON documents to the JSON viewer', () => {
+        // The extension is trusted first (§7-3), even for HAR content.
+        expect(sniff('session.json', HAR)).toEqual({ viewerId: 'json', matchedBy: 'extension' });
+        expect(sniff('data', '{"log":{"version":"1.2"}}').viewerId).toBe('json');
+        expect(sniff('data', '{"entries":[]}').viewerId).toBe('json');
     });
 });
 

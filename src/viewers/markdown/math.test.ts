@@ -5,6 +5,31 @@ import { mountMarkdownViewer, type MarkdownViewerContext, type MarkdownViewerDep
 import { maskMathSegments, mathSegmentLiteral } from './math.js';
 
 describe('maskMathSegments', () => {
+    it('recognizes math closers only after an even number of backslashes', () => {
+        expect(maskMathSegments('$\\text{cost: \\$} + x$').segments).toEqual([{ source: '\\text{cost: \\$} + x', display: false }]);
+        expect(maskMathSegments('$$\\text{cost: \\$} + x$$').segments).toEqual([{ source: '\\text{cost: \\$} + x', display: true }]);
+        expect(maskMathSegments('$x\\\\$').segments).toEqual([{ source: 'x\\\\', display: false }]);
+        expect(maskMathSegments('$x\\$').segments).toEqual([]);
+    });
+
+    it('bounds repeated dollar scanning on a long single line', () => {
+        const source = '$ '.repeat(640_000);
+        const start = performance.now();
+        const result = maskMathSegments(source, { preserveHtml: true, preserveMarkdown: true });
+        expect(result.masked).toBe(source); expect(result.segments).toEqual([]);
+        expect(performance.now() - start).toBeLessThan(2000);
+    });
+
+    it('bounds scanning of repeated unterminated HTML tags', () => {
+        const source = '<a '.repeat(100_000);
+        const start = performance.now();
+        const result = maskMathSegments(source, { preserveHtml: true });
+        expect(result.masked).toBe(source);
+        expect(result.segments).toEqual([]);
+        // The former rescan took tens of seconds for this 300 KB input.
+        expect(performance.now() - start).toBeLessThan(2000);
+    });
+
     it('extracts inline and display math with placeholder tokens', () => {
         const { masked, segments } = maskMathSegments('Euler: $e^{i\\pi}+1=0$ and\n\n$$\\int_0^1 x\\,dx$$');
         expect(segments).toEqual([
