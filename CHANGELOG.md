@@ -5,6 +5,52 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.20.0] - 2026-10-23
+
+### Added
+
+- Generic XML (`.xml`, `.xsd`, `.xsl`/`.xslt`, `.wsdl`, `.xlf`/`.xliff`, `.rss`,
+  `.atom`, `.xaml`, `.kml`, `.gpx`, `.resx`, `.csproj`, `.vcxproj`, `.nuspec`)
+  parser and viewer, exported through `parsers/xml` and `viewers/xml`.
+  `parseXml` is a contract parser and a DOM-free, tolerant XML 1.0 scanner. It
+  keeps source offsets for every node and resolves namespaces. It reports
+  well-formedness errors with line and column, then recovers so a broken
+  document still opens as a tree. External entities are never read, and
+  internal entities expand one level under a budget. The viewer shows a
+  virtualized element/attribute tree with a node inspector and the source,
+  linked both ways: selecting a node highlights its source, and clicking the
+  source selects the node. It adds scoped search with next/previous and a
+  matches-only filter, XPath/value/XML copy, keyboard navigation, and
+  clickable diagnostics. Long single-line (minified) sources are split into
+  display segments. `createXmlController` exposes the same behavior without the
+  DOM. `.xml` files whose root is an OpenVINO IR still route to the `openvino`
+  viewer, and extensionless XML is recognized by `looksLikeXml`.
+  Adds `styles/xml.css`.
+
+- EPUB e-book (`.epub`, EPUB 2.0.1 and 3.x) parser and reader, exported through
+  `parsers/epub`, `viewers/epub`, and its `self-loading` helper.
+  `parseEpub` is a contract parser that reads only the package files
+  (container, OPF, navigation document or NCX, encryption) and maps EPUB 2
+  `opf:` attributes and EPUB 3 `refines` metadata onto one model; chapters and
+  images are inflated on demand through `openEpubArchive` with per-member and
+  cumulative caps, rejecting members that inflate past their declared size.
+  The viewer renders one spine document at a time from DOMPurify-sanitized
+  markup prepared in an inert document, without publisher CSS, scripts, forms,
+  frames, or media; shows container images from revoked-on-change blob URLs and
+  blocks remote ones; routes internal, fragment, and external links (the last
+  only through the host navigation service); and adds the table of contents
+  with section highlighting, a chapter picker, linear-spine next/previous with
+  RTL-aware arrow keys, text scaling, and a book-info panel with the cover,
+  metadata, and localized diagnostics. DRM-encrypted books fail with
+  `password-required`; missing, partly encrypted, and fixed-layout content is
+  reported. Routing uses the `.epub` extension and, for extensionless books,
+  the stored `mimetype` member in `probeContainer`. Adds `styles/epub.css`.
+
+### Changed
+
+- `.xml` files without an OpenVINO root now open in the generic XML viewer
+  instead of the fallback text preview.
+
 ## [0.19.0] - 2026-10-05
 
 ### Added

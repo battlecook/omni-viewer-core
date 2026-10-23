@@ -180,17 +180,17 @@ describe('detectViewer (OpenVINO IR)', () => {
     const IR = '<?xml version="1.0"?>\n<net name="m" version="11">\n\t<layers>\n\t\t<layer id="0" name="x" type="Parameter" version="opset1"/>\n\t</layers>\n\t<edges/>\n</net>\n';
     const sniff = (name: string, text: string) => detectViewer(name, undefined, undefined, undefined, text);
 
-    it('routes a .xml whose root is <net version> with <layers> by content, not by extension', () => {
+    it('routes a .xml whose root is <net version> with <layers> by content, ahead of the generic XML claim', () => {
         expect(sniff('model.xml', IR)).toEqual({ viewerId: 'openvino', matchedBy: 'content' });
         expect(sniff('model', IR)).toEqual({ viewerId: 'openvino', matchedBy: 'content' });
-        // No extension claim: without a text sample, an .xml stays on the fallback path.
-        expect(detectViewer('model.xml').viewerId).toBe('fallback');
+        // Without a text sample only the extension speaks: the generic XML viewer.
+        expect(detectViewer('model.xml').viewerId).toBe('xml');
     });
 
-    it('leaves other XML dialects and near-misses alone', () => {
-        expect(sniff('a.xml', '<?xml version="1.0"?><AUTOSAR xmlns="http://autosar.org/schema/r4.0"><AR-PACKAGES/></AUTOSAR>').viewerId).toBe('fallback');
-        expect(sniff('a.xml', '<network version="11"><layers/></network>').viewerId).toBe('fallback');
-        expect(sniff('a.xml', '<net name="no-version"><layers/></net>').viewerId).toBe('fallback');
+    it('leaves other XML dialects and near-misses to the generic XML viewer', () => {
+        expect(sniff('a.xml', '<?xml version="1.0"?><AUTOSAR xmlns="http://autosar.org/schema/r4.0"><AR-PACKAGES/></AUTOSAR>').viewerId).toBe('xml');
+        expect(sniff('a.xml', '<network version="11"><layers/></network>').viewerId).toBe('xml');
+        expect(sniff('a.xml', '<net name="no-version"><layers/></net>').viewerId).toBe('xml');
         // A trusted extension still wins over content (§7 point 3).
         expect(sniff('model.arxml', IR).viewerId).toBe('arxml');
     });

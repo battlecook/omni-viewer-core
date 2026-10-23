@@ -40,6 +40,8 @@ const entries = [
     ,['viewers/pt2/styles.js', 'pt2ViewerCss', 'pt2.css']
     ,['viewers/pte/styles.js', 'pteViewerCss', 'pte.css']
     ,['viewers/har/styles.js', 'harViewerCss', 'har.css']
+    ,['viewers/epub/styles.js', 'epubViewerCss', 'epub.css']
+    ,['viewers/xml/styles.js', 'xmlViewerCss', 'xml.css']
     ,['viewers/automotive/styles.js', 'automotiveViewerCss', 'automotive.css']
     ,['viewers/audio/index.js', 'audioViewerCss', 'audio.css']
     ,['viewers/video/index.js', 'videoViewerCss', 'video.css']

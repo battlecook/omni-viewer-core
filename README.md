@@ -13,9 +13,9 @@ models, viewers mount into a DOM element, and everything host-specific
 ## Supported formats
 
 - **Documents** — PDF, Word (DOCX and legacy DOC), HWP, PowerPoint (PPTX and
-  legacy PPT), Markdown, Jupyter Notebook (.ipynb),
+  legacy PPT), Markdown, Jupyter Notebook (.ipynb), EPUB e-books (2 and 3),
   LaTeX (structure and math preview, not typesetting)
-- **Data & spreadsheets** — Excel, CSV/TSV, JSON, JSONL/NDJSON, YAML, TOML,
+- **Data & spreadsheets** — Excel, CSV/TSV, JSON, JSONL/NDJSON, YAML, TOML, XML,
   Parquet, Avro, HDF5, MATLAB MAT, NumPy (NPY/NPZ), Safetensors, GGUF, ONNX, TFLite/LiteRT,
   Keras (.keras and legacy .h5), Core ML (.mlmodel and .mlpackage),
   OpenVINO IR (.xml + .bin), PyTorch Export (.pt2), ExecuTorch (.pte), Protocol
@@ -438,6 +438,80 @@ reported, with `-1` shown as not applicable). Page load timings and archive
 metadata get their own tabs. Routing is by the `.har` extension; an
 extensionless archive is recognized by content — a `log` object holding an
 `entries` array — and claimed before the generic JSON viewer.
+
+### EPUB e-books (.epub)
+
+EPUB 2.0.1 and EPUB 3.x books open in a reflowable reading pane with the
+book's table of contents, chapter navigation, text scaling, and a book-info
+panel (metadata, cover, diagnostics). Sanitizing chapter markup is mandatory,
+so the viewer takes a DOMPurify factory — `loadEpubViewerDeps` imports the
+optional `dompurify` peer for you:
+
+```ts
+import { mountEpubViewer } from 'omni-viewer-core/viewers/epub';
+import { loadEpubViewerDeps } from 'omni-viewer-core/viewers/epub/self-loading';
+
+await mountEpubViewer({ fileName: file.name, data: bytes }, container,
+    { ...ctx, navigation }, await loadEpubViewerDeps());
+```
+
+`parseEpub` is a contract parser (`ParseOutcome<EpubDocument>`) that reads
+only the package files — `container.xml`, the OPF package document, the EPUB 3
+navigation document or the EPUB 2 NCX, and `encryption.xml` — so opening a
+large illustrated book costs its package files, not its images. EPUB 2
+`opf:` attributes and EPUB 3 `refines` metadata map onto one model (title and
+subtitles, creators with roles and sort names, identifiers with schemes,
+publication date, series, subjects, plain-text description). Chapters and
+images are inflated on demand through `openEpubArchive`, each read capped per
+member and against a cumulative budget, and a member that inflates past the
+size its directory record declares is rejected as corrupt. Inflation uses the
+platform's `DecompressionStream('deflate-raw')`; pass `inflate` to supply one
+on hosts without it.
+
+Chapter markup is parsed and sanitized in an inert document before it reaches
+the page: scripts, forms, frames, media, and **publisher CSS** (`<link>`,
+`<style>`, `style=""`) are dropped and the viewer's own reading typography
+applies; container images become blob URLs revoked on chapter change; remote
+images are blocked and counted. Internal links move through the spine,
+fragments scroll within the chapter, and external links go only through the
+host `navigation` service (allow-listed schemes). Next/previous walk the linear
+spine (`linear="no"` covers and notes stay reachable by link), arrow keys turn
+pages in the book's progression direction, and `Ctrl/Cmd` `+`/`-`/`0` scale
+text. A book whose every chapter is DRM-encrypted fails with
+`password-required` (font obfuscation is ignored); partly encrypted, missing,
+or fixed-layout content is reported as diagnostics. Routing is by the `.epub`
+extension; an extensionless book is recognized by `probeContainer` from its
+stored `mimetype` member.
+
+### XML (.xml and XML dialects)
+
+Configuration and integration documents (`pom.xml`, Android manifests,
+MSBuild projects, SOAP/WSDL, RSS/Atom, XLIFF, KML/GPX…) open as an
+element/attribute tree with a node inspector and the original source side by
+side:
+
+```ts
+import { mountXmlViewer } from 'omni-viewer-core/viewers/xml';
+
+const handle = await mountXmlViewer({ fileName: file.name, data: bytes }, container, { ...ctx, clipboard });
+```
+
+`parseXml` is a contract parser (`ParseOutcome<XmlDocument>`) with no DOM
+dependency. Every node keeps its source range, and namespaces are resolved.
+Well-formedness errors (mismatched or unclosed tags, duplicate attributes,
+undeclared prefixes…) are reported with line and column, then recovered, so a
+broken file still opens as a `partial` tree. External entities are never
+loaded. Internal DTD entities expand one level only, under a budget, which
+rules out XXE and billion-laughs expansion.
+
+Selecting a node highlights its range in the source. Clicking a tag or
+attribute in the source selects that node. Search covers names, values, or
+comments and PIs, with next/previous and a matches-only filter. Copy gives the
+XPath (positions appear only where names repeat), the value, or the node's XML.
+Both panes are virtualized, and long single-line sources are split into
+display segments. Defaults are 64 MiB input, 500,000 nodes, and depth 1,000.
+ARXML and ReqIF keep their dedicated viewers by extension. An `.xml` whose root
+is an OpenVINO IR goes to the OpenVINO viewer when a text sample is provided.
 
 ### Archive host integration
 

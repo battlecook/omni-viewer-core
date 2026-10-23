@@ -1,6 +1,6 @@
 {
   "name": "omni-viewer-core",
-  "version": "0.19.0",
+  "version": "0.20.0",
   "description": "Shared parsing + rendering core for Omni Viewer (vscode / chrome / obsidian / web)",
   "type": "module",
   "license": "MIT",
@@ -42,6 +42,10 @@
     "executorch",
     "har",
     "http-archive",
+    "epub",
+    "ebook",
+    "xml",
+    "xpath",
     "mlmodel",
     "mlpackage",
     "hdf5"
@@ -246,6 +250,14 @@
     "./parsers/har": {
       "types": "./dist/parsers/har/index.d.ts",
       "default": "./dist/parsers/har/index.js"
+    },
+    "./parsers/xml": {
+      "types": "./dist/parsers/xml/index.d.ts",
+      "default": "./dist/parsers/xml/index.js"
+    },
+    "./parsers/epub": {
+      "types": "./dist/parsers/epub/index.d.ts",
+      "default": "./dist/parsers/epub/index.js"
     },
     "./parsers/keras": {
       "types": "./dist/parsers/keras/index.d.ts",
@@ -498,6 +510,18 @@
     "./viewers/har": {
       "types": "./dist/viewers/har/index.d.ts",
       "default": "./dist/viewers/har/index.js"
+    },
+    "./viewers/xml": {
+      "types": "./dist/viewers/xml/index.d.ts",
+      "default": "./dist/viewers/xml/index.js"
+    },
+    "./viewers/epub": {
+      "types": "./dist/viewers/epub/index.d.ts",
+      "default": "./dist/viewers/epub/index.js"
+    },
+    "./viewers/epub/self-loading": {
+      "types": "./dist/viewers/epub/self-loading.d.ts",
+      "default": "./dist/viewers/epub/self-loading.js"
     },
     "./viewers/keras": {
       "types": "./dist/viewers/keras/index.d.ts",

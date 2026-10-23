@@ -79,6 +79,8 @@ function probeZip(input: Uint8Array, options: ParseOptions): string | null {
             const storedSize = view.getUint32(pos + 20, true);
             const mimetype = readStoredEntry(input, view, localOffset, storedSize);
             if (mimetype.trim() === 'application/hwp+zip') return 'hwp';
+            // OCF (EPUB) uses the same stored-`mimetype` convention as ODF.
+            if (mimetype.trim() === 'application/epub+zip') return 'epub';
             if (mimetype.includes('spreadsheet')) return 'excel';
             if (mimetype.includes('text') || mimetype.includes('presentation')) return null;
         }

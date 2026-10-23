@@ -6,6 +6,7 @@
 // would regress them for extensionless files.
 
 import { parseJson } from '../parsers/json/index.js';
+import { asciiLower } from '../parsers/csv/index.js';
 import { looksLikeOpenVinoIr } from '../parsers/openvino/index.js';
 
 export { looksLikeOpenVinoIr } from '../parsers/openvino/index.js';
@@ -87,12 +88,57 @@ export function looksLikeLatex(text: string): boolean {
 }
 
 /**
+ * True if `text` starts like an XML document: after a BOM, whitespace, the
+ * declaration, comments, processing instructions and a DOCTYPE comes a start
+ * tag — or the text opens with an `<?xml` declaration and the sample ends
+ * before the root. HTML (an `html` root or `<!DOCTYPE html>`) is not
+ * claimed — it is rarely well-formed and the generic tree is the wrong view
+ * for it.
+ */
+export function looksLikeXml(text: string): boolean {
+    const sample = text.slice(0, 64 * 1024);
+    let index = sample.charCodeAt(0) === 0xfeff ? 1 : 0;
+    while (index < sample.length && /\s/.test(sample[index]!)) index++;
+    // An XML declaration claims the file on its own when the sample ends
+    // before the root (a long licence comment, a short sample); a root that
+    // turns out to be `html` still declines it.
+    const declared = /^<\?xml[\s?]/.test(sample.slice(index, index + 6));
+    // Scan forward once over the declaration, comments, PIs and the DOCTYPE.
+    for (;;) {
+        while (index < sample.length && /\s/.test(sample[index]!)) index++;
+        if (sample.startsWith('<!--', index)) {
+            const end = sample.indexOf('-->', index + 4);
+            if (end < 0) return declared;
+            index = end + 3;
+        } else if (sample.startsWith('<?', index)) {
+            const end = sample.indexOf('?>', index + 2);
+            if (end < 0) return declared;
+            index = end + 2;
+        } else if (sample.startsWith('<!DOCTYPE', index)) {
+            if (/^<!DOCTYPE\s+html[\s>]/i.test(sample.slice(index, index + 20))) return false;
+            // An internal subset `[...]` holds '>'s of its own; it ends at `]>`.
+            const gt = sample.indexOf('>', index);
+            const bracket = sample.indexOf('[', index);
+            const subsetEnd = bracket >= 0 && bracket < gt ? /\]\s*>/.exec(sample.slice(bracket)) : null;
+            const end = subsetEnd ? bracket + subsetEnd.index + subsetEnd[0].length : gt + 1;
+            if (gt < 0 || (bracket >= 0 && bracket < gt && !subsetEnd)) return declared;
+            index = end;
+        } else break;
+    }
+    const root = /^<([A-Za-z_:\u00C0-\uFFFF][\w.:\-\u00B7\u00C0-\uFFFF]*)[\s/>]/.exec(sample.slice(index, index + 256));
+    // No root yet: with a declaration, a sample that ran out (possibly inside
+    // the root's name) still counts.
+    if (!root) return declared && /^(<[^\s/<>]*)?$/.test(sample.slice(index));
+    return asciiLower(root[1]!) !== 'html';
+}
+
+/**
  * Classify a text sample to a viewer id by content (JSONL, then HAR, then
  * JSON — 부록 B-6). Returns null when nothing matches. JSONL wins over JSON for
  * multi-line object streams so a `{…}\n{…}` file is never mis-claimed as JSON;
  * if no jsonl viewer is registered the caller falls through to fallback.
  */
-export function sniffTextViewer(text: string): 'jsonl' | 'har' | 'notebook' | 'json' | 'openvino' | 'proto' | 'latex' | null {
+export function sniffTextViewer(text: string): 'jsonl' | 'har' | 'notebook' | 'json' | 'openvino' | 'xml' | 'proto' | 'latex' | null {
     if (looksLikeJsonl(text)) return 'jsonl';
     // A HAR is a JSON object, so it has to be claimed before the generic JSON
     // tree would take it.
@@ -102,6 +148,7 @@ export function sniffTextViewer(text: string): 'jsonl' | 'har' | 'notebook' | 'j
     // An OpenVINO IR is `.xml`, an extension no viewer claims, so its `<net
     // version><layers>` root is the only route to the viewer.
     if (looksLikeOpenVinoIr(text)) return 'openvino';
+    if (looksLikeXml(text)) return 'xml';
     if (looksLikeProto(text)) return 'proto';
     if (looksLikeLatex(text)) return 'latex';
     return null;

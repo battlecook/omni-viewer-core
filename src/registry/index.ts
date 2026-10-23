@@ -6,7 +6,7 @@
 
 import type { ServiceId } from '../host/index.js';
 import { asciiLower } from '../parsers/csv/index.js';
-import { sniffTextViewer } from './sniff.js';
+import { looksLikeOpenVinoIr, sniffTextViewer } from './sniff.js';
 import {
     CONTAINER_SNIFF_BYTES,
     OFFICE_CONTAINER_BY_EXT,
@@ -204,6 +204,10 @@ export const PCAPNG_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'pcapng',displayNa
 // A `.har` archive is JSON, so it carries no leading magic and is claimed by
 // extension; an extensionless archive reaches the viewer through the text sniff
 // below, which recognizes a `log` object holding an `entries` array.
+// An EPUB is a ZIP, so it carries no distinguishing leading magic and is
+// claimed by extension; an extensionless book reaches the viewer through
+// probeContainer, which reads its stored `mimetype` member.
+export const EPUB_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'epub',displayNameKey:'epub.title',extensions:['epub'],priority:20,requiredServices:[],optionalServices:['navigation']};
 export const HAR_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'har',displayNameKey:'har.title',extensions:['har'],priority:20,requiredServices:[],optionalServices:['clipboard']};
 
 export const NOTEBOOK_VIEWER_DESCRIPTOR: ViewerDescriptor = {
@@ -224,6 +228,16 @@ export const JSON_VIEWER_DESCRIPTOR: ViewerDescriptor = {
     // docs/viewers/json.md) and not part of this synchronous descriptor.
     requiredServices: [],
     optionalServices: ['clipboard', 'save', 'writeback']
+};
+
+// Generic XML (docs/viewers/xml.md §1). `.xml` is shared with OpenVINO IR, so
+// detectViewer hands an `.xml` whose sample has the `<net version><layers>`
+// root to the openvino viewer; dialects with their own extension (arxml,
+// reqif) keep it. Extensionless XML is claimed by the text sniff.
+export const XML_VIEWER_DESCRIPTOR: ViewerDescriptor = {
+    id: 'xml', displayNameKey: 'xml.title',
+    extensions: ['xml', 'xsd', 'xsl', 'xslt', 'wsdl', 'xlf', 'xliff', 'rss', 'atom', 'xaml', 'kml', 'gpx', 'resx', 'csproj', 'vcxproj', 'nuspec'],
+    priority: 10, requiredServices: [], optionalServices: ['clipboard']
 };
 
 export const TOML_VIEWER_DESCRIPTOR: ViewerDescriptor = {
@@ -317,6 +331,7 @@ export const CORE_VIEWER_DESCRIPTORS: readonly ViewerDescriptor[] = [
     PCAP_VIEWER_DESCRIPTOR,
     PCAPNG_VIEWER_DESCRIPTOR,
     HAR_VIEWER_DESCRIPTOR,
+    EPUB_VIEWER_DESCRIPTOR,
     MERMAID_VIEWER_DESCRIPTOR,
     PLANTUML_VIEWER_DESCRIPTOR,
     SHAPEFILE_VIEWER_DESCRIPTOR,
@@ -350,6 +365,7 @@ export const CORE_VIEWER_DESCRIPTORS: readonly ViewerDescriptor[] = [
     CSV_VIEWER_DESCRIPTOR,
     JSON_VIEWER_DESCRIPTOR,
     TOML_VIEWER_DESCRIPTOR,
+    XML_VIEWER_DESCRIPTOR,
     JSONL_VIEWER_DESCRIPTOR,
     YAML_VIEWER_DESCRIPTOR,
     PROTO_VIEWER_DESCRIPTOR,
@@ -357,7 +373,7 @@ export const CORE_VIEWER_DESCRIPTORS: readonly ViewerDescriptor[] = [
     FALLBACK_VIEWER_DESCRIPTOR
 ];
 
-export { looksLikeHar, looksLikeNotebook, looksLikeJsonDocument, looksLikeJsonl, looksLikeLatex, looksLikeOpenVinoIr, looksLikeProto, sniffTextViewer } from './sniff.js';
+export { looksLikeHar, looksLikeNotebook, looksLikeJsonDocument, looksLikeJsonl, looksLikeLatex, looksLikeOpenVinoIr, looksLikeProto, looksLikeXml, sniffTextViewer } from './sniff.js';
 export {
     CONTAINER_SNIFF_BYTES,
     OFFICE_CONTAINER_BY_EXT,
@@ -440,6 +456,12 @@ export function detectViewer(
         // friendly; the parser reports invalid-format if it truly isn't one).
         if (expected && container && container !== expected) {
             return { viewerId: 'fallback', matchedBy: 'ambiguous-container', container };
+        }
+        // An OpenVINO IR is an ordinary `.xml`; only its root tells it apart
+        // from the generic XML the extension names.
+        if (winner.d.id === 'xml' && winner.ext === 'xml' && sniffText !== undefined && looksLikeOpenVinoIr(sniffText)) {
+            const openvino = descriptors.find((d) => d.id === 'openvino');
+            if (openvino && servicesMet(openvino)) return { viewerId: 'openvino', matchedBy: 'content' };
         }
         return { viewerId: winner.d.id, matchedBy: 'extension' };
     }
