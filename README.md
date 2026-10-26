@@ -13,7 +13,7 @@ models, viewers mount into a DOM element, and everything host-specific
 ## Supported formats
 
 - **Documents** — PDF, Word (DOCX and legacy DOC), HWP, PowerPoint (PPTX and
-  legacy PPT), Markdown, Jupyter Notebook (.ipynb), EPUB e-books (2 and 3),
+  legacy PPT), HTML, Markdown, Jupyter Notebook (.ipynb), EPUB e-books (2 and 3),
   LaTeX (structure and math preview, not typesetting)
 - **Data & spreadsheets** — Excel, CSV/TSV, JSON, JSONL/NDJSON, YAML, TOML, XML,
   Parquet, Avro, HDF5, MATLAB MAT, NumPy (NPY/NPZ), Safetensors, GGUF, ONNX, TFLite/LiteRT,
@@ -27,6 +27,12 @@ models, viewers mount into a DOM element, and everything host-specific
   ASC/BLF logs, ASAM MDF 4 (MF4), PCAP/PCAPNG, ROS bag, STEP (STP)
 - **Diagrams & GIS** — Mermaid, PlantUML, ESRI Shapefile
 - **Archives** — ZIP-family listing and safe entry preview
+
+The HTML viewer handles `.html` and `.htm` files with preview and source tabs.
+The preview runs in a sandboxed iframe with scripts, external resources, and
+navigation removed or blocked; inline styles and embedded data images remain.
+Files over 8 MiB show a bounded source preview. Very dense markup opens in
+source view to keep parsing responsive.
 
 ## Install
 

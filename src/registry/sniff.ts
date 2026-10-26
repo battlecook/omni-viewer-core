@@ -87,6 +87,13 @@ export function looksLikeLatex(text: string): boolean {
     return /(^|[^\\])\\documentclass\s*(\[[^\]]*\])?\s*\{[^}]+\}/.test(sample);
 }
 
+/** Claim only recognizable HTML documents; fragments need a file extension. */
+export function looksLikeHtml(text: string): boolean {
+    const sample = text.slice(0, 64 * 1024).replace(/^\uFEFF?\s*/, '');
+    const start = sample.replace(/^(?:<!--[\s\S]*?-->\s*)*/, '');
+    return /^<!doctype\s+html(?:\s|>|\[)/i.test(start) || /^<html(?:\s|>)/i.test(start);
+}
+
 /**
  * True if `text` starts like an XML document: after a BOM, whitespace, the
  * declaration, comments, processing instructions and a DOCTYPE comes a start
@@ -138,13 +145,14 @@ export function looksLikeXml(text: string): boolean {
  * multi-line object streams so a `{…}\n{…}` file is never mis-claimed as JSON;
  * if no jsonl viewer is registered the caller falls through to fallback.
  */
-export function sniffTextViewer(text: string): 'jsonl' | 'har' | 'notebook' | 'json' | 'openvino' | 'xml' | 'proto' | 'latex' | null {
+export function sniffTextViewer(text: string): 'jsonl' | 'har' | 'notebook' | 'json' | 'html' | 'openvino' | 'xml' | 'proto' | 'latex' | null {
     if (looksLikeJsonl(text)) return 'jsonl';
     // A HAR is a JSON object, so it has to be claimed before the generic JSON
     // tree would take it.
     if (looksLikeHar(text)) return 'har';
     if (looksLikeNotebook(text)) return 'notebook';
     if (looksLikeJsonDocument(text)) return 'json';
+    if (looksLikeHtml(text)) return 'html';
     // An OpenVINO IR is `.xml`, an extension no viewer claims, so its `<net
     // version><layers>` root is the only route to the viewer.
     if (looksLikeOpenVinoIr(text)) return 'openvino';

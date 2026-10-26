@@ -1231,6 +1231,13 @@ export const CATALOG_EN: Record<string, string> = {
     'image.saveAsPng': 'Save as PNG',
     'image.saveAsPng.note': 'The edited image is saved as PNG (.png).',
 
+    // HTML viewer
+    'html.title': 'HTML',
+    'html.preview': 'Preview',
+    'html.source': 'Source',
+    'html.tooLarge': 'Preview is unavailable above {limit} bytes. Showing the first part of the source.',
+    'html.tooComplex': 'This document is too complex to preview safely. Showing the source.',
+
     // Fallback viewer
     'fallback.title.text': 'Text preview',
     'fallback.title.hex': 'Hex preview',

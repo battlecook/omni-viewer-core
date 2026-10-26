@@ -26,7 +26,7 @@ describe('detectViewer (generic XML)', () => {
         expect(detectViewer('ecu.arxml').viewerId).toBe('arxml');
         expect(detectViewer('spec.reqif').viewerId).toBe('reqif');
         expect(detectViewer('icon.svg').viewerId).toBe('image');
-        expect(detectViewer('page.html').viewerId).toBe('fallback');
+        expect(detectViewer('page.html').viewerId).toBe('html');
     });
 
     it('claims extensionless XML by content, after OpenVINO and the JSON family', () => {

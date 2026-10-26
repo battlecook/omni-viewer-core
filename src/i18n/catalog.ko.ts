@@ -1211,6 +1211,9 @@ export const CATALOG_KO: Record<string, string> = {
     'image.saveAsPng.note': '편집된 이미지는 PNG(.png)로 저장됩니다.',
 
     // 폴백 뷰어
+    'html.title': 'HTML', 'html.preview': '미리보기', 'html.source': '소스',
+    'html.tooLarge': '{limit}바이트를 초과해 미리보기를 표시할 수 없습니다. 소스의 앞부분을 표시합니다.',
+    'html.tooComplex': '문서가 너무 복잡해 미리보기를 표시할 수 없습니다. 소스를 표시합니다.',
     'fallback.title.text': '텍스트 미리보기',
     'fallback.title.hex': '16진수 미리보기',
     'fallback.truncated': '미리보기가 처음 {bytes}바이트로 잘렸습니다.',

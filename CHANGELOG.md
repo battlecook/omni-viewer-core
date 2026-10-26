@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.21.0] - 2026-10-26
+
+### Added
+
+- HTML (`.html`, `.htm`) viewer, exported through `viewers/html`, with preview
+  and source tabs. Extensionless HTML documents are recognized by content.
+  The preview preserves inline styles and embedded data images while isolating
+  the document in a sandboxed iframe; scripts, external resources, navigation,
+  and active embedded content are removed or blocked. UTF BOMs and early HTML
+  charset declarations are supported. Large or densely marked-up files open in
+  source view to keep parsing bounded. Adds `styles/html.css`.
+
+### Changed
+
+- `.html` and `.htm` files now open in the HTML viewer instead of the fallback
+  text preview.
+
 ## [0.20.0] - 2026-10-23
 
 ### Added

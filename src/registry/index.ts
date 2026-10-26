@@ -304,6 +304,10 @@ export const MARKDOWN_VIEWER_DESCRIPTOR: ViewerDescriptor = {
     extensions: ['md', 'markdown', 'mdown', 'mkdn', 'mkd'], priority: 10,
     requiredServices: [], optionalServices: ['clipboard', 'navigation', 'documentAssets', 'writeback', 'save']
 };
+export const HTML_VIEWER_DESCRIPTOR: ViewerDescriptor = {
+    id: 'html', displayNameKey: 'html.title', extensions: ['html', 'htm'], priority: 10,
+    requiredServices: [], optionalServices: []
+};
 export const ARCHIVE_MAGIC_SIGNATURES: readonly MagicSignature[] = [
     [{ offset: 0, bytes: [0x50,0x4b,0x03,0x04] }], [{ offset: 0, bytes: [0x50,0x4b,0x05,0x06] }],
     [{ offset: 257, bytes: [0x75,0x73,0x74,0x61,0x72] }], [{ offset: 0, bytes: [0x1f,0x8b] }],
@@ -360,6 +364,7 @@ export const CORE_VIEWER_DESCRIPTORS: readonly ViewerDescriptor[] = [
     EXCEL_VIEWER_DESCRIPTOR,
     IMAGE_VIEWER_DESCRIPTOR,
     MARKDOWN_VIEWER_DESCRIPTOR,
+    HTML_VIEWER_DESCRIPTOR,
     NOTEBOOK_VIEWER_DESCRIPTOR,
     ARCHIVE_VIEWER_DESCRIPTOR,
     CSV_VIEWER_DESCRIPTOR,
@@ -373,7 +378,7 @@ export const CORE_VIEWER_DESCRIPTORS: readonly ViewerDescriptor[] = [
     FALLBACK_VIEWER_DESCRIPTOR
 ];
 
-export { looksLikeHar, looksLikeNotebook, looksLikeJsonDocument, looksLikeJsonl, looksLikeLatex, looksLikeOpenVinoIr, looksLikeProto, looksLikeXml, sniffTextViewer } from './sniff.js';
+export { looksLikeHar, looksLikeNotebook, looksLikeJsonDocument, looksLikeJsonl, looksLikeHtml, looksLikeLatex, looksLikeOpenVinoIr, looksLikeProto, looksLikeXml, sniffTextViewer } from './sniff.js';
 export {
     CONTAINER_SNIFF_BYTES,
     OFFICE_CONTAINER_BY_EXT,

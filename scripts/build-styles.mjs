@@ -15,6 +15,7 @@ const entries = [
     ['viewers/jsonl/styles.js', 'jsonlViewerCss', 'jsonl.css'],
     ['viewers/yaml/index.js', 'yamlViewerCss', 'yaml.css'],
     ['viewers/fallback/styles.js', 'fallbackViewerCss', 'fallback.css'],
+    ['viewers/html/styles.js', 'htmlViewerCss', 'html.css'],
     ['viewers/pdf/styles.js', 'pdfViewerCss', 'pdf.css'],
     ['viewers/excel/styles.js', 'excelViewerCss', 'excel.css'],
     ['viewers/image/styles.js', 'imageViewerCss', 'image.css']
