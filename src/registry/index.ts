@@ -6,6 +6,7 @@
 
 import type { ServiceId } from '../host/index.js';
 import { asciiLower } from '../parsers/csv/index.js';
+import { looksLikeArrowIpc } from '../parsers/arrow/sniff.js';
 import { looksLikeOpenVinoIr, sniffTextViewer } from './sniff.js';
 import {
     CONTAINER_SNIFF_BYTES,
@@ -77,6 +78,10 @@ export const PCAP_MAGIC_SIGNATURES: readonly MagicSignature[] = [
 ];
 export const PCAPNG_MAGIC_SIGNATURES: readonly MagicSignature[] = [[{offset:0,bytes:[0x0a,0x0d,0x0d,0x0a]}]];
 export const PSD_MAGIC_SIGNATURES: readonly MagicSignature[] = [[{offset:0,bytes:[0x38,0x42,0x50,0x53]}]];
+export const FONT_MAGIC_SIGNATURES: readonly MagicSignature[] = [
+    [{ offset: 0, bytes: [0, 1, 0, 0] }], [{ offset: 0, bytes: [0x4f, 0x54, 0x54, 0x4f] }],
+    [{ offset: 0, bytes: [0x74, 0x72, 0x75, 0x65] }], [{ offset: 0, bytes: [0x77, 0x4f, 0x46, 0x46] }]
+];
 export const SHAPEFILE_MAGIC_SIGNATURES: readonly MagicSignature[] = [[{offset:0,bytes:[0x00,0x00,0x27,0x0a]}]];
 export const GGUF_MAGIC_SIGNATURES: readonly MagicSignature[] = [[{offset:0,bytes:[0x47,0x47,0x55,0x46]}]];
 /** A TFLite FlatBuffer opens with the root offset, then the 'TFL3' identifier.
@@ -141,6 +146,8 @@ export const PDF_VIEWER_DESCRIPTOR: ViewerDescriptor = {
     requiredServices: [],
     optionalServices: ['save', 'writeback', 'filePick', 'clipboard']
 };
+export const ARROW_MAGIC_SIGNATURES: readonly MagicSignature[] = [[{ offset: 0, bytes: [0x41, 0x52, 0x52, 0x4f, 0x57, 0x31] }]];
+export const ARROW_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'arrow',displayNameKey:'arrow.title',extensions:['arrow','feather'],priority:20,magicSignatures:ARROW_MAGIC_SIGNATURES,requiredServices:[],optionalServices:['clipboard','save']};
 export const PARQUET_MAGIC_SIGNATURES: readonly MagicSignature[] = [[{ offset: 0, bytes: [0x50, 0x41, 0x52, 0x31] }]];
 export const PARQUET_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'parquet',displayNameKey:'parquet.title',extensions:['parquet'],priority:20,magicSignatures:PARQUET_MAGIC_SIGNATURES,requiredServices:[],optionalServices:['clipboard','save']};
 export const AVRO_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'avro',displayNameKey:'avro.title',extensions:['avro'],priority:20,magicSignatures:AVRO_MAGIC_SIGNATURES,requiredServices:[],optionalServices:['clipboard']};
@@ -217,7 +224,15 @@ export const NOTEBOOK_VIEWER_DESCRIPTOR: ViewerDescriptor = {
 export const MERMAID_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'mermaid',displayNameKey:'mermaid.title',extensions:['mmd','mermaid'],priority:20,requiredServices:[],optionalServices:['clipboard','writeback','save']};
 export const PLANTUML_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'plantuml',displayNameKey:'plantuml.title',extensions:['puml','plantuml','iuml'],priority:20,requiredServices:[],optionalServices:['clipboard','writeback','save']};
 export const SHAPEFILE_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'shapefile',displayNameKey:'shapefile.title',extensions:['shp'],priority:20,magicSignatures:SHAPEFILE_MAGIC_SIGNATURES,requiredServices:[],optionalServices:[]};
+export const GEOJSON_VIEWER_DESCRIPTOR: ViewerDescriptor = {
+    id: 'geojson', displayNameKey: 'geojson.title', extensions: ['geojson'], priority: 20,
+    requiredServices: [], optionalServices: []
+};
 export const PSD_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'psd',displayNameKey:'psd.title',extensions:['psd'],priority:20,magicSignatures:PSD_MAGIC_SIGNATURES,requiredServices:[],optionalServices:[]};
+export const FONT_VIEWER_DESCRIPTOR: ViewerDescriptor = {
+    id: 'font', displayNameKey: 'font.title', extensions: ['ttf', 'otf', 'woff'], priority: 20,
+    magicSignatures: FONT_MAGIC_SIGNATURES, requiredServices: [], optionalServices: []
+};
 
 export const JSON_VIEWER_DESCRIPTOR: ViewerDescriptor = {
     id: 'json',
@@ -339,8 +354,11 @@ export const CORE_VIEWER_DESCRIPTORS: readonly ViewerDescriptor[] = [
     MERMAID_VIEWER_DESCRIPTOR,
     PLANTUML_VIEWER_DESCRIPTOR,
     SHAPEFILE_VIEWER_DESCRIPTOR,
+    GEOJSON_VIEWER_DESCRIPTOR,
     PSD_VIEWER_DESCRIPTOR,
+    FONT_VIEWER_DESCRIPTOR,
     PARQUET_VIEWER_DESCRIPTOR,
+    ARROW_VIEWER_DESCRIPTOR,
     AVRO_VIEWER_DESCRIPTOR,
     BAG_VIEWER_DESCRIPTOR,
     STP_VIEWER_DESCRIPTOR,
@@ -378,7 +396,7 @@ export const CORE_VIEWER_DESCRIPTORS: readonly ViewerDescriptor[] = [
     FALLBACK_VIEWER_DESCRIPTOR
 ];
 
-export { looksLikeHar, looksLikeNotebook, looksLikeJsonDocument, looksLikeJsonl, looksLikeHtml, looksLikeLatex, looksLikeOpenVinoIr, looksLikeProto, looksLikeXml, sniffTextViewer } from './sniff.js';
+export { looksLikeHar, looksLikeNotebook, looksLikeGeoJson, looksLikeJsonDocument, looksLikeJsonl, looksLikeHtml, looksLikeLatex, looksLikeOpenVinoIr, looksLikeProto, looksLikeXml, sniffTextViewer } from './sniff.js';
 export {
     CONTAINER_SNIFF_BYTES,
     OFFICE_CONTAINER_BY_EXT,
@@ -426,6 +444,7 @@ export function detectViewer(
     const magicMatches = (d: ViewerDescriptor): boolean => {
         // No sniff bytes → trust the extension (offline-friendly, stage-1).
         if (!sniffBytes) return true;
+        if (d.id === 'arrow') return looksLikeArrowIpc(sniffBytes);
         if (d.magicPrefix) {
             if (sniffBytes.byteLength < d.magicPrefix.length) return false;
             if (!d.magicPrefix.every((byte, i) => sniffBytes[i] === byte)) return false;
@@ -489,7 +508,7 @@ export function detectViewer(
     }
     if (sniffBytes) {
         const unambiguous = descriptors.find(d =>
-            ['avro', 'bag', 'stp', 'db3', 'blf', 'mf4', 'pcap', 'pcapng', 'shapefile', 'psd', 'gguf', 'tflite', 'pte'].includes(d.id) && servicesMet(d) && magicMatches(d)
+            ['arrow', 'avro', 'bag', 'stp', 'db3', 'blf', 'mf4', 'pcap', 'pcapng', 'shapefile', 'psd', 'font', 'gguf', 'tflite', 'pte'].includes(d.id) && servicesMet(d) && magicMatches(d)
         );
         if (unambiguous) return { viewerId: unambiguous.id, matchedBy: 'content' };
     }

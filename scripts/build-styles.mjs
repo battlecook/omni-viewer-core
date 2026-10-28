@@ -10,6 +10,7 @@ const dist = path.join(root, '..', 'dist');
 
 const entries = [
     ['viewers/csv/styles.js', 'csvViewerCss', 'csv.css'],
+    ['viewers/font/styles.js', 'fontViewerCss', 'font.css'],
     ['viewers/json/styles.js', 'jsonViewerCss', 'json.css'],
     ['viewers/toml/index.js', 'tomlViewerCss', 'toml.css'],
     ['viewers/jsonl/styles.js', 'jsonlViewerCss', 'jsonl.css'],
@@ -24,6 +25,7 @@ const entries = [
     ,['viewers/latex/styles.js', 'latexViewerCss', 'latex.css']
     ,['viewers/archive/styles.js', 'archiveViewerCss', 'archive.css']
     ,['viewers/parquet/styles.js', 'parquetViewerCss', 'parquet.css']
+    ,['viewers/arrow/styles.js', 'arrowViewerCss', 'arrow.css']
     ,['viewers/hwp/styles.js', 'hwpViewerCss', 'hwp.css']
     ,['viewers/word/styles.js', 'wordViewerCss', 'word.css']
     ,['viewers/ppt/styles.js', 'pptViewerCss', 'ppt.css']
@@ -49,6 +51,7 @@ const entries = [
     ,['viewers/mermaid/index.js', 'mermaidViewerCss', 'mermaid.css']
     ,['viewers/plantuml/index.js', 'plantumlViewerCss', 'plantuml.css']
     ,['viewers/shapefile/styles.js', 'shapefileViewerCss', 'shapefile.css']
+    ,['viewers/geojson/styles.js', 'geoJsonViewerCss', 'geojson.css']
     ,['viewers/psd/styles.js', 'psdViewerCss', 'psd.css']
 ];
 

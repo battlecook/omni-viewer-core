@@ -24,6 +24,8 @@ export type { JsonParseTree, ParseTreeOptions } from './parse.js';
 export interface JsonParseOptions extends ParseOptions {
     /** Nesting depth cap (default JSON_DEFAULT_MAX_DEPTH) — deep-nesting defense. */
     maxDepth?: number;
+    /** Optional cap on duplicate-key warnings; duplicate source nodes stay intact. */
+    maxDuplicateKeyDiagnostics?: number;
 }
 
 /** Input ownership: borrows the input; the caller keeps the bytes (DESIGN §3-①). */
@@ -91,9 +93,12 @@ export function parseJson(
 
     const tree = parseJsonDocument(text, {
         maxDepth: options.maxDepth ?? JSON_DEFAULT_MAX_DEPTH,
+        ...(options.maxDuplicateKeyDiagnostics !== undefined ? { maxDuplicateKeyDiagnostics: options.maxDuplicateKeyDiagnostics } : {}),
         onNode
     });
-    diagnostics.push(...tree.diagnostics);
+    // Large inputs can produce more diagnostics than an engine permits as
+    // function arguments. Copy iteratively so input cannot cause a RangeError.
+    for (const diagnostic of tree.diagnostics) diagnostics.push(diagnostic);
 
     // Cancellation is a failure regardless of how much parsed (parity with csv).
     if (tree.stopped && tree.stopReason === 'abort') {
@@ -107,6 +112,13 @@ export function parseJson(
     // Nothing recovered — the verbatim view falls back to the raw bytes (J20),
     // so the viewer still shows the source; the model result is `failed`.
     if (!tree.root) {
+        if (tree.stopped && tree.stopReason === 'limit') {
+            return finish({
+                status: 'failed',
+                failure: { code: 'limit-exceeded', retryable: false, messageKey: 'diag.limit-exceeded.nodes', args: { count: tracker.entryCount } },
+                diagnostics
+            });
+        }
         return finish({
             status: 'failed',
             failure: {

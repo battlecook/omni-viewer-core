@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GeoJSON viewer example</title>
+  <style>
+    body { margin: 0; background: #1e1e1e; color: #ddd; font: 14px/1.5 system-ui, sans-serif; }
+    header { display: flex; align-items: center; flex-wrap: wrap; gap: 16px; padding: 16px; border-bottom: 1px solid #444; }
+    h1 { margin: 0; font-size: 18px; }
+    input { max-width: 100%; }
+    #error { margin: 16px; color: #ffd98a; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>GeoJSON viewer example</h1>
+    <label>Open a file <input id="file" type="file" accept=".geojson,application/geo+json,application/json"></label>
+  </header>
+  <p id="error" role="alert" hidden></p>
+  <main id="viewer"></main>
+  <script type="module">
+    import { mountGeoJsonViewer } from '../../dist/viewers/geojson/index.js';
+    import { createCatalogI18n } from '../../dist/i18n/index.js';
+    const host = document.getElementById('viewer');
+    const error = document.getElementById('error');
+    const ctx = {
+      assets: { resolveAssetUrl: async path => path },
+      i18n: createCatalogI18n(navigator.language),
+      logger: { log() {} }
+    };
+    let handle, generation = 0;
+    async function show(fileName, read) {
+      const current = ++generation;
+      try {
+        const data = await read();
+        if (current !== generation) return;
+        const container = document.createElement('div');
+        const next = await mountGeoJsonViewer({ fileName, data }, container, ctx);
+        if (current !== generation) { next.dispose(); return; }
+        handle?.dispose(); handle = next; host.replaceChildren(container);
+        error.hidden = true;
+      } catch (reason) {
+        if (current !== generation) return;
+        error.hidden = false; error.textContent = reason instanceof Error ? reason.message : String(reason);
+      }
+    }
+    document.getElementById('file').addEventListener('change', event => {
+      const file = event.target.files[0];
+      if (file) show(file.name, async () => new Uint8Array(await file.arrayBuffer()));
+    });
+    show('map.geojson', async () => {
+      const response = await fetch('./map.geojson');
+      if (!response.ok) throw new Error('Could not load the sample map.');
+      return new Uint8Array(await response.arrayBuffer());
+    });
+    window.addEventListener('pagehide', event => {
+      // BFCache restores the existing document and does not rerun this module.
+      if (event.persisted) return;
+      generation++; handle?.dispose();
+    });
+  </script>
+</body>
+</html>

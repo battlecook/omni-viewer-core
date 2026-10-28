@@ -13,6 +13,8 @@ export type StopReason = 'abort' | 'limit';
 
 export interface ParseTreeOptions {
     maxDepth?: number;
+    /** Cap repeated duplicate-key warnings without dropping source nodes. */
+    maxDuplicateKeyDiagnostics?: number;
     /** Called once per node; return a stop reason to halt, or null to continue. */
     onNode?: () => StopReason | null;
 }
@@ -39,6 +41,7 @@ export function parseJsonDocument(
     const onNode = options.onNode;
     const len = text.length;
     const diagnostics: Diagnostic[] = [];
+    let duplicateKeyDiagnostics = 0;
 
     let pos = 0;
     let stopped = false;
@@ -194,13 +197,16 @@ export function parseJsonDocument(
                 const child = parseValue(keyStr, childPath, depth + 1);
                 if (!child) break;
                 if (seen.has(keyStr)) {
-                    diagnostics.push({
-                        severity: 'warning',
-                        code: 'json.duplicate-key',
-                        messageKey: 'diag.json.duplicate-key',
-                        args: { key: keyStr },
-                        location: childPath
-                    });
+                    if (duplicateKeyDiagnostics < (options.maxDuplicateKeyDiagnostics ?? Infinity)) {
+                        diagnostics.push({
+                            severity: 'warning',
+                            code: 'json.duplicate-key',
+                            messageKey: 'diag.json.duplicate-key',
+                            args: { key: keyStr },
+                            location: childPath
+                        });
+                        duplicateKeyDiagnostics++;
+                    }
                 } else {
                     seen.add(keyStr);
                 }

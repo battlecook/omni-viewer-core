@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.22.0] - 2026-10-29
+
+### Added
+
+- Font (`.ttf`, `.otf`, `.woff`) parser and viewer with local font rendering,
+  editable sample text, font size and variable axis controls, Unicode character
+  search and paginated glyph previews, metadata and license inspection.
+  Adds binary detection, bounded WOFF decompression, localized UI, and
+  `parsers/font`, `viewers/font`, and `styles/font.css` exports.
+
+- Arrow IPC / Feather V2 (`.arrow`, `.feather`) parser and viewer, supporting
+  IPC files/streams and LZ4/ZSTD compression, table search/sort/pagination,
+  schema/custom metadata, JSON preview, TSV/JSON copy, and JSON export.
+  Includes injected and self-loading entries, binary content detection,
+  localized messages, bounded previews, and PyArrow interoperability fixtures.
+
+- GeoJSON (`.geojson`) parser and offline SVG map viewer with all seven geometry
+  types, feature property inspection, pan/zoom, polygon holes, keyboard
+  navigation, and localized UI. Exported through `parsers/geojson`,
+  `viewers/geojson`, and `styles/geojson.css`. Extensionless GeoJSON is detected
+  before generic JSON. Parsing and property previews have resource limits.
+
 ## [0.21.0] - 2026-10-26
 
 ### Added

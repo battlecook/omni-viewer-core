@@ -1,6 +1,6 @@
 {
   "name": "omni-viewer-core",
-  "version": "0.21.0",
+  "version": "0.22.0",
   "description": "Shared parsing + rendering core for Omni Viewer (vscode / chrome / obsidian / web)",
   "type": "module",
   "license": "MIT",
@@ -30,6 +30,7 @@
     "latex",
     "tex",
     "shapefile",
+    "geojson",
     "onnx",
     "tflite",
     "litert",
@@ -59,6 +60,14 @@
     "THIRD_PARTY_NOTICES.md"
   ],
   "exports": {
+    "./parsers/font": {
+      "types": "./dist/parsers/font/index.d.ts",
+      "default": "./dist/parsers/font/index.js"
+    },
+    "./viewers/font": {
+      "types": "./dist/viewers/font/index.d.ts",
+      "default": "./dist/viewers/font/index.js"
+    },
     "./host": {
       "types": "./dist/host/index.d.ts",
       "default": "./dist/host/index.js"
@@ -123,6 +132,10 @@
       "types": "./dist/parsers/plantuml/index.d.ts",
       "default": "./dist/parsers/plantuml/index.js"
     },
+    "./parsers/geojson": {
+      "types": "./dist/parsers/geojson/index.d.ts",
+      "default": "./dist/parsers/geojson/index.js"
+    },
     "./parsers/shapefile": {
       "types": "./dist/parsers/shapefile/index.d.ts",
       "default": "./dist/parsers/shapefile/index.js"
@@ -182,6 +195,14 @@
     "./parsers/archive": {
       "types": "./dist/parsers/archive/index.d.ts",
       "default": "./dist/parsers/archive/index.js"
+    },
+    "./parsers/arrow": {
+      "types": "./dist/parsers/arrow/index.d.ts",
+      "default": "./dist/parsers/arrow/index.js"
+    },
+    "./parsers/arrow/self-loading": {
+      "types": "./dist/parsers/arrow/self-loading.d.ts",
+      "default": "./dist/parsers/arrow/self-loading.js"
     },
     "./parsers/parquet": {
       "types": "./dist/parsers/parquet/index.d.ts",
@@ -359,6 +380,10 @@
       "types": "./dist/viewers/plantuml/self-loading.d.ts",
       "default": "./dist/viewers/plantuml/self-loading.js"
     },
+    "./viewers/geojson": {
+      "types": "./dist/viewers/geojson/index.d.ts",
+      "default": "./dist/viewers/geojson/index.js"
+    },
     "./viewers/shapefile": {
       "types": "./dist/viewers/shapefile/index.d.ts",
       "default": "./dist/viewers/shapefile/index.js"
@@ -450,6 +475,14 @@
     "./viewers/archive": {
       "types": "./dist/viewers/archive/index.d.ts",
       "default": "./dist/viewers/archive/index.js"
+    },
+    "./viewers/arrow": {
+      "types": "./dist/viewers/arrow/index.d.ts",
+      "default": "./dist/viewers/arrow/index.js"
+    },
+    "./viewers/arrow/self-loading": {
+      "types": "./dist/viewers/arrow/self-loading.d.ts",
+      "default": "./dist/viewers/arrow/self-loading.js"
     },
     "./viewers/parquet": {
       "types": "./dist/viewers/parquet/index.d.ts",
@@ -560,12 +593,15 @@
   "devDependencies": {
     "@rhwp/core": "0.7.3",
     "@types/node": "^20.14.0",
+    "apache-arrow": "^21.2.0",
     "buffer": "^6.0.3",
     "dompurify": "^3.4.16",
+    "fzstd": "^0.1.1",
     "hyparquet": "^1.26.2",
     "hyparquet-compressors": "^1.1.1",
     "jsdom": "^24.1.0",
     "jszip": "^3.10.1",
+    "lz4js": "^0.2.0",
     "marked": "^16.4.2",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^4.10.38",
@@ -575,6 +611,9 @@
     "yaml": "2.8.3"
   },
   "peerDependencies": {
+    "apache-arrow": "^21.2.0",
+    "fzstd": "^0.1.1",
+    "lz4js": "^0.2.0",
     "ag-psd": "^30.1.0",
     "docx-preview": "~0.3.7",
     "dompurify": ">=3.4.12",
@@ -594,6 +633,9 @@
     "yaml": "2.8.3"
   },
   "peerDependenciesMeta": {
+    "apache-arrow": { "optional": true },
+    "fzstd": { "optional": true },
+    "lz4js": { "optional": true },
     "ag-psd": {
       "optional": true
     },

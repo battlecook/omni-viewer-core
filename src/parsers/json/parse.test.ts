@@ -52,6 +52,17 @@ describe('parseJson — value kinds', () => {
 });
 
 describe('parseJson — fidelity (J1)', () => {
+    it('handles more duplicate warnings than the function argument limit', () => {
+        const { result } = parseJson('{' + Array(150_000).fill('"a":0').join(',') + '}');
+        expect(result.status).toBe('ok');
+        expect(result.diagnostics).toHaveLength(149_999);
+    });
+
+    it('can cap duplicate warnings while preserving every source entry', () => {
+        const { result } = parseJson('{"a":1,"a":2,"a":3,"a":4}', { maxDuplicateKeyDiagnostics: 1 });
+        expect(result.diagnostics).toHaveLength(1);
+        if (result.status !== 'failed') expect(result.document.root.children).toHaveLength(4);
+    });
     it('preserves raw number text (no float64 rounding)', () => {
         const big = '12345678901234567890';
         const { document } = okDoc(`{"n":${big},"e":1e400}`) as {
@@ -131,6 +142,11 @@ describe('parseJson — failure and partial (J20)', () => {
 });
 
 describe('parseJson — limits and cancellation', () => {
+    it('reports a zero node budget as a resource limit rather than invalid input', () => {
+        expect(parseJson('{"a":1}', { limits: { maxEntries: 0 } }).result).toMatchObject({
+            status: 'failed', failure: { code: 'limit-exceeded' }
+        });
+    });
     it('fails with aborted when the signal is already aborted', () => {
         const controller = new AbortController();
         controller.abort();

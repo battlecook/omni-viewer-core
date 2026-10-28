@@ -16,16 +16,16 @@ models, viewers mount into a DOM element, and everything host-specific
   legacy PPT), HTML, Markdown, Jupyter Notebook (.ipynb), EPUB e-books (2 and 3),
   LaTeX (structure and math preview, not typesetting)
 - **Data & spreadsheets** — Excel, CSV/TSV, JSON, JSONL/NDJSON, YAML, TOML, XML,
-  Parquet, Avro, HDF5, MATLAB MAT, NumPy (NPY/NPZ), Safetensors, GGUF, ONNX, TFLite/LiteRT,
+  Parquet, Arrow IPC / Feather V2 (.arrow/.feather), Avro, HDF5, MATLAB MAT, NumPy (NPY/NPZ), Safetensors, GGUF, ONNX, TFLite/LiteRT,
   Keras (.keras and legacy .h5), Core ML (.mlmodel and .mlpackage),
   OpenVINO IR (.xml + .bin), PyTorch Export (.pt2), ExecuTorch (.pte), Protocol
   Buffers, ReqIF, SQLite
 - **Web & network** — HAR (HTTP Archive) request logs
 - **Media & graphics** — audio (waveform/spectrogram), video, images,
-  Photoshop PSD
+  Photoshop PSD, fonts (TTF/OTF/WOFF)
 - **Engineering & automotive** — CAN DBC, AUTOSAR ARXML, ASAM A2L, Vector
   ASC/BLF logs, ASAM MDF 4 (MF4), PCAP/PCAPNG, ROS bag, STEP (STP)
-- **Diagrams & GIS** — Mermaid, PlantUML, ESRI Shapefile
+- **Diagrams & GIS** — Mermaid, PlantUML, ESRI Shapefile, GeoJSON
 - **Archives** — ZIP-family listing and safe entry preview
 
 The HTML viewer handles `.html` and `.htm` files with preview and source tabs.
@@ -73,6 +73,65 @@ if (result.status !== 'failed') {
 Viewers follow the same pattern — a `mount*Viewer(input, container, ctx,
 deps)` entry per format, plus `self-loading` variants that dynamically import
 their own dependencies for hosts that don't want to wire them manually.
+
+### Fonts (TTF / OTF / WOFF)
+
+Preview local fonts with editable sample text, size and variable axis controls,
+searchable Unicode characters, paginated glyphs, and font metadata and licenses.
+No optional package is required. WOFF metadata uses the native
+`DecompressionStream` API. Rendering requires `FontFace` and `document.fonts`;
+hosts without these APIs can still inspect metadata. Fonts are removed from the
+document font set when the viewer is disposed. Hosts using a Content Security
+Policy must permit fonts loaded through the CSS Font Loading API.
+
+```ts
+import { mountFontViewer } from 'omni-viewer-core/viewers/font';
+import { parseFont } from 'omni-viewer-core/parsers/font';
+
+const { result } = await parseFont(bytes);
+const handle = await mountFontViewer({ fileName: 'sample.woff', data: bytes }, container, ctx);
+// handle.dispose() releases the font and viewer.
+```
+
+The parser reads sfnt/WOFF tables and cmap formats 0, 4, 6, 12, and 13 with input,
+decompression, parsing, and character preview limits. WOFF2 and font collections
+(TTC/OTC) are not supported. Scoped mounting uses `omni-viewer-core/styles/font.css`.
+Format references: [OpenType](https://learn.microsoft.com/en-us/typography/opentype/spec/otff)
+and [WOFF 1.0](https://www.w3.org/TR/WOFF/).
+
+### Arrow IPC / Feather V2
+
+Read Arrow IPC files and streams, including Feather V2 with LZ4 or ZSTD
+compression. Install the optional peers for the self-loading entry:
+
+```sh
+npm install apache-arrow@^21.2.0 lz4js fzstd
+```
+
+```ts
+import { mountSelfLoadingArrowViewer } from 'omni-viewer-core/viewers/arrow/self-loading';
+
+const handle = await mountSelfLoadingArrowViewer(
+    { fileName: 'data.feather', data: bytes }, container, ctx,
+    { parse: { previewRows: 10_000 } }
+);
+// On close: handle.dispose();
+```
+
+The base `parsers/arrow` and `viewers/arrow` entries import no runtime peers:
+inject `{ arrow: Arrow, decompressLz4?, decompressZstd? }` into `parseArrow`
+or `mountArrowViewer`. `parsers/arrow/self-loading` also exports
+`parseSelfLoadingArrow` and `loadArrowDeps`.
+
+The viewer offers a searchable, sortable, paginated table, schema and custom
+metadata, JSON preview, TSV/JSON copy, and JSON export. Search, copy, and export
+apply to retained preview rows, with explicit warnings when a limit is reached.
+Int64/Uint64 and scaled decimals are exported as strings; nested values remain
+structured. Defaults are 256 MiB input/decompressed buffers, 10,000 rows,
+1,024 schema fields, 1,000,000 values, and 16 MiB preview data. Parsing uses
+cooperative limits; a host Worker is needed for a hard CPU/memory boundary.
+Feather V1 is recognized and reports an unsupported-format message.
+See [the Arrow viewer specification](docs/viewers/arrow.md) for the API and limits.
 
 ### Safetensors large-file input
 
@@ -355,6 +414,37 @@ and unrecognized scalar types, value kinds, or instruction kinds.
 Routing is by the `.pte` extension, validated against the `ET12` identifier at
 offset 4; an extensionless program is detected from the same bytes. A `.ptd`
 data file (`FT01`) is not a program and is not claimed.
+
+### GeoJSON (.geojson)
+
+```ts
+import { mountGeoJsonViewer } from 'omni-viewer-core/viewers/geojson';
+
+const handle = await mountGeoJsonViewer(
+  { fileName: 'map.geojson', data: geoJsonBytes }, container, hostContext
+);
+handle.dispose();
+```
+
+The dependency-free SVG map works offline and supports all seven geometry
+types, Feature, and FeatureCollection. Zoom with the toolbar or mouse wheel,
+drag to pan, and select a feature on the map or in the feature selector to
+inspect its properties. Polygon holes, altitude values, nested properties,
+duplicate property names, and original numeric tokens are preserved. The map
+renders longitude/latitude directly, without basemap tiles or antimeridian
+wrapping; legacy CRS metadata produces a warning rather than reprojection.
+Scoped mounting uses `styles/geojson.css`.
+
+`parseGeoJson` is also exported from `parsers/geojson` and returns
+`ParseOutcome<GeoJsonDocument>`. Defaults: 128 MiB input, 10,000 features,
+200,000 vertices, 1,000,000 JSON nodes, and 64 nesting levels. Malformed
+features are skipped with diagnostics. Feature/vertex limits return a partial
+preview; invalid JSON and JSON parsing limits return typed failures. Property
+display is capped at 500 rows and a 64 KiB preview budget per selection.
+`.geojson` routes directly to the viewer; extensionless GeoJSON is detected
+before generic JSON. Explicit `.json` files keep the JSON tree viewer.
+See the [viewer specification](examples/geojson/SPEC.md) and
+[sample map](examples/geojson/map.geojson).
 
 ### Jupyter notebooks (.ipynb)
 

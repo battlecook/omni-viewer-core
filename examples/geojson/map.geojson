@@ -1,0 +1,277 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "id": "seoul",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          126.978,
+          37.5665,
+          38
+        ]
+      },
+      "properties": {
+        "name": "서울시청",
+        "category": "landmark",
+        "details": {
+          "city": "Seoul",
+          "country": "KR"
+        }
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "stops",
+      "geometry": {
+        "type": "MultiPoint",
+        "coordinates": [
+          [
+            126.965,
+            37.555
+          ],
+          [
+            126.985,
+            37.56
+          ],
+          [
+            127.005,
+            37.562
+          ]
+        ]
+      },
+      "properties": {
+        "name": "Sample stops",
+        "accessible": true
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "route",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            126.96,
+            37.54
+          ],
+          [
+            126.975,
+            37.545
+          ],
+          [
+            126.995,
+            37.54
+          ],
+          [
+            127.02,
+            37.55
+          ]
+        ]
+      },
+      "properties": {
+        "name": "Sample route",
+        "distance_km": 5.4
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "paths",
+      "geometry": {
+        "type": "MultiLineString",
+        "coordinates": [
+          [
+            [
+              126.968,
+              37.575
+            ],
+            [
+              126.98,
+              37.58
+            ],
+            [
+              126.99,
+              37.575
+            ]
+          ],
+          [
+            [
+              127.0,
+              37.57
+            ],
+            [
+              127.015,
+              37.575
+            ],
+            [
+              127.025,
+              37.57
+            ]
+          ]
+        ]
+      },
+      "properties": {
+        "name": "Walking paths"
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "park",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              126.995,
+              37.55
+            ],
+            [
+              127.01,
+              37.55
+            ],
+            [
+              127.01,
+              37.56
+            ],
+            [
+              126.995,
+              37.56
+            ],
+            [
+              126.995,
+              37.55
+            ]
+          ],
+          [
+            [
+              127.0,
+              37.553
+            ],
+            [
+              127.005,
+              37.553
+            ],
+            [
+              127.005,
+              37.557
+            ],
+            [
+              127.0,
+              37.557
+            ],
+            [
+              127.0,
+              37.553
+            ]
+          ]
+        ]
+      },
+      "properties": {
+        "name": "Park with a courtyard",
+        "area_m2": 120000
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "zones",
+      "geometry": {
+        "type": "MultiPolygon",
+        "coordinates": [
+          [
+            [
+              [
+                126.96,
+                37.56
+              ],
+              [
+                126.968,
+                37.56
+              ],
+              [
+                126.968,
+                37.567
+              ],
+              [
+                126.96,
+                37.567
+              ],
+              [
+                126.96,
+                37.56
+              ]
+            ]
+          ],
+          [
+            [
+              [
+                127.012,
+                37.558
+              ],
+              [
+                127.022,
+                37.558
+              ],
+              [
+                127.022,
+                37.565
+              ],
+              [
+                127.012,
+                37.565
+              ],
+              [
+                127.012,
+                37.558
+              ]
+            ]
+          ]
+        ]
+      },
+      "properties": {
+        "name": "Two sample zones"
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "collection",
+      "geometry": {
+        "type": "GeometryCollection",
+        "geometries": [
+          {
+            "type": "Point",
+            "coordinates": [
+              126.98,
+              37.55
+            ]
+          },
+          {
+            "type": "LineString",
+            "coordinates": [
+              [
+                126.98,
+                37.55
+              ],
+              [
+                126.98,
+                37.56
+              ]
+            ]
+          }
+        ]
+      },
+      "properties": {
+        "name": "Meeting point and approach"
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "metadata",
+      "geometry": null,
+      "properties": {
+        "name": "Non-spatial record",
+        "note": "Select this feature from the list to inspect properties."
+      }
+    }
+  ]
+}

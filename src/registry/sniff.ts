@@ -8,6 +8,7 @@
 import { parseJson } from '../parsers/json/index.js';
 import { asciiLower } from '../parsers/csv/index.js';
 import { looksLikeOpenVinoIr } from '../parsers/openvino/index.js';
+import { GEOJSON_GEOMETRY_TYPES } from '../parsers/geojson/index.js';
 
 export { looksLikeOpenVinoIr } from '../parsers/openvino/index.js';
 
@@ -19,6 +20,25 @@ export function looksLikeJsonDocument(text: string): boolean {
     if (result.status !== 'ok') return false;
     const kind = result.document.root.kind;
     return kind === 'object' || kind === 'array';
+}
+
+/** Inspect only top-level structure; a truncated coordinate array may count. */
+export function looksLikeGeoJson(text: string): boolean {
+    const sample = text.slice(0, 64 * 1024).replace(/^\uFEFF/, '').trim();
+    if (!sample.startsWith('{')) return false;
+    const { result } = parseJson(sample, { maxDepth: 64, limits: { maxEntries: 20_000 } });
+    if (result.status === 'failed' || result.document.root.kind !== 'object') return false;
+    const fields = result.document.root.children ?? [];
+    const type = fields.find(child => child.key === 'type');
+    if (type?.kind !== 'string') return false;
+    const field = (name: string) => fields.find(child => child.key === name);
+    if (type.value === 'FeatureCollection') return field('features')?.kind === 'array';
+    if (type.value === 'Feature') {
+        const shape = field('geometry'), properties = field('properties');
+        return !!shape && ['object', 'null'].includes(shape.kind) && !!properties && ['object', 'null'].includes(properties.kind);
+    }
+    if (type.value === 'GeometryCollection') return field('geometries')?.kind === 'array';
+    return GEOJSON_GEOMETRY_TYPES.includes(String(type.value)) && field('coordinates')?.kind === 'array';
 }
 
 /**
@@ -145,12 +165,13 @@ export function looksLikeXml(text: string): boolean {
  * multi-line object streams so a `{…}\n{…}` file is never mis-claimed as JSON;
  * if no jsonl viewer is registered the caller falls through to fallback.
  */
-export function sniffTextViewer(text: string): 'jsonl' | 'har' | 'notebook' | 'json' | 'html' | 'openvino' | 'xml' | 'proto' | 'latex' | null {
+export function sniffTextViewer(text: string): 'jsonl' | 'har' | 'notebook' | 'geojson' | 'json' | 'html' | 'openvino' | 'xml' | 'proto' | 'latex' | null {
     if (looksLikeJsonl(text)) return 'jsonl';
     // A HAR is a JSON object, so it has to be claimed before the generic JSON
     // tree would take it.
     if (looksLikeHar(text)) return 'har';
     if (looksLikeNotebook(text)) return 'notebook';
+    if (looksLikeGeoJson(text)) return 'geojson';
     if (looksLikeJsonDocument(text)) return 'json';
     if (looksLikeHtml(text)) return 'html';
     // An OpenVINO IR is `.xml`, an extension no viewer claims, so its `<net
