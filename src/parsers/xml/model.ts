@@ -88,6 +88,9 @@ export interface XmlDocument {
     stats: XmlStats;
     /** Offset of the first character of every line (`\n` separated). */
     lineStarts: readonly number[];
+    /** Every diagnostic code the scan reported, including those past the
+     *  diagnostic list's cap (XML_MAX_DIAGNOSTICS). */
+    diagnosticCodes?: readonly string[];
 }
 
 export const XML_NAMESPACE = 'http://www.w3.org/XML/1998/namespace';

@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>EML email — Omni Viewer</title>
+  <style>
+    *{box-sizing:border-box}body{margin:0;background:#f1f5f9;color:#1e293b;font:14px/1.5 system-ui,sans-serif}
+    header{padding:18px 24px;display:flex;align-items:center;flex-wrap:wrap;gap:12px;background:white;border-bottom:1px solid #dbe3ed}
+    header h1{font-size:18px;margin:0 auto 0 0}button,select,input{font:inherit}header button,header select{padding:6px 10px;background:white;border:1px solid #cbd5e1;border-radius:6px;cursor:pointer}
+    #viewer{height:calc(100vh - 80px);max-width:1100px;margin:auto;--omni-bg:#fff;--omni-fg:#243047;--omni-muted:#64748b;--omni-border:#dbe3ed;--omni-warning-fg:#a16207;--omni-accent:#2563eb}
+    #status{padding:0 24px;color:#b45309}label{display:flex;gap:8px;align-items:center}input{max-width:230px}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>EML email</h1>
+    <button type="button" data-sample="plain.eml">Plain text sample</button>
+    <button type="button" data-sample="multipart.eml">HTML + attachments</button>
+    <label>Open local email <input id="file" type="file" accept=".eml,message/rfc822"></label>
+    <select id="locale" aria-label="Language"><option value="en">English</option><option value="ko">한국어</option><option value="ja">日本語</option><option value="zh-CN">简体中文</option><option value="zh-TW">繁體中文</option></select>
+  </header>
+  <div id="status" role="status"></div>
+  <div id="viewer"></div>
+  <script type="module">
+    import { mountEmlViewer } from '../../dist/viewers/eml/index.js';
+    import { createCatalogI18n } from '../../dist/i18n/index.js';
+    const container = document.querySelector('#viewer');
+    const status = document.querySelector('#status');
+    const locale = document.querySelector('#locale');
+    let handle, current, sequence = 0;
+    const save = { async saveFile(name, data, mimeType) {
+      const url = URL.createObjectURL(new Blob([data], { type: mimeType }));
+      const link = document.createElement('a'); link.href = url; link.download = name;
+      document.body.append(link); link.click(); link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      return { status: 'saved' };
+    }};
+    async function render(input) {
+      handle?.dispose(); current = input;
+      handle = await mountEmlViewer(input, container, {
+        assets: { resolveAssetUrl: async path => path },
+        i18n: createCatalogI18n(locale.value), logger: { log: console.log }, save,
+        ...(navigator.clipboard ? { clipboard: { writeText: text => navigator.clipboard.writeText(text) } } : {})
+      });
+    }
+    async function load(fileName, read) {
+      const token = ++sequence; status.textContent = '';
+      try { const data = new Uint8Array(await read()); if (token === sequence) await render({ fileName, data }); }
+      catch (error) { if (token === sequence) status.textContent = String(error); }
+    }
+    for (const button of document.querySelectorAll('[data-sample]')) button.onclick = () => load(button.dataset.sample, async () => {
+      const response = await fetch(button.dataset.sample); if (!response.ok) throw new Error('Could not load sample');
+      return response.arrayBuffer();
+    });
+    document.querySelector('#file').onchange = event => { const file = event.target.files[0]; if (file) load(file.name, () => file.arrayBuffer()); };
+    locale.onchange = () => { if (current) void render(current); };
+    document.querySelector('[data-sample="multipart.eml"]').click();
+    window.addEventListener('pagehide', () => handle?.dispose(), { once: true });
+  </script>
+</body>
+</html>

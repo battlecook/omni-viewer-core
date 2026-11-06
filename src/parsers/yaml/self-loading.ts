@@ -11,9 +11,9 @@ export async function loadYamlParserDeps(): Promise<YamlParserDeps> {
    const common = { key, path, range: n.range, anchorId: n.anchor };
    if (n.type === 'ALIAS' || n.constructor?.name === 'Alias') { const name = String(n.source ?? ''); const target = anchors.get(name); if (target?.kind !== 'scalar') return { ...common, kind: 'alias', aliasOf: name, raw: `*${name}` }; return { ...common, kind: 'alias', aliasOf: name, value: target.value ?? null, raw: target.raw ?? `*${name}` }; }
    if (Array.isArray(n.items)) {
-    const pairs = n.items.every(item => item && typeof item === 'object' && 'key' in item);
+    const pairs = n.constructor?.name !== 'YAMLSeq' && n.type !== 'SEQ' && n.items.every(item => item && typeof item === 'object' && 'key' in item);
     const seen = new Map<string, number>();
-    return record({ ...common, kind: pairs ? 'map' : 'seq', children: n.items.map((item, i) => { const pair = item as { key?: { value?: unknown; source?: unknown }; value?: unknown }; const keyValue = typeof pair.key?.value === 'symbol' ? pair.key?.source ?? '<<' : pair.key?.value; const childKey = pairs ? String(keyValue ?? pair.key?.source ?? i) : String(i); const occurrence = (seen.get(childKey) ?? 0) + 1; seen.set(childKey, occurrence); return normalize(pairs ? pair.value : item, pairs ? `${path}.${childKey}${occurrence > 1 ? `#${occurrence}` : ''}` : `${path}[${i}]`, childKey); }) });
+    return record({ ...common, kind: pairs ? 'map' : 'seq', children: n.items.map((item, i) => { const pair = item as { key?: { value?: unknown; source?: unknown }; value?: unknown }; const keyValue = typeof pair.key?.value === 'symbol' ? pair.key?.source ?? '<<' : pair.key?.value; const childKey = pairs ? String(keyValue ?? pair.key?.source ?? i) : String(i); const occurrence = (seen.get(childKey) ?? 0) + 1; seen.set(childKey, occurrence); const child = normalize(pairs ? pair.value : item, pairs ? `${path}.${childKey}${occurrence > 1 ? `#${occurrence}` : ''}` : `${path}[${i}]`, childKey); return pairs && typeof pair.key?.value === 'symbol' ? { ...child, mergeKey: true } : child; }) });
    }
    const value = (n as { value?: unknown }).value ?? node;
    return record({ ...common, kind: 'scalar', value: value as string | boolean | number | null, raw: n.source === undefined ? String(value) : String(n.source) });

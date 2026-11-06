@@ -1,0 +1,15 @@
+From: =?UTF-8?B?7ZmN6ri464+Z?= <hong@example.com>
+To: Reader <reader@example.com>
+Subject: =?UTF-8?B?7JWI64WV?= — plain text email
+Date: Thu, 29 Oct 2026 10:00:00 +0900
+Message-ID: <plain-demo@example.com>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+안녕하세요!
+
+이 메일은 UTF-8 텍스트 본문과 인코딩된 한글 발신자·제목을 포함합니다.
+The EML viewer shows the original headers and source alongside this body.
+
+감사합니다.

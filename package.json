@@ -1,6 +1,6 @@
 {
   "name": "omni-viewer-core",
-  "version": "0.22.0",
+  "version": "0.23.0",
   "description": "Shared parsing + rendering core for Omni Viewer (vscode / chrome / obsidian / web)",
   "type": "module",
   "license": "MIT",
@@ -49,7 +49,11 @@
     "xpath",
     "mlmodel",
     "mlpackage",
-    "hdf5"
+    "hdf5",
+    "openapi",
+    "swagger",
+    "junit",
+    "test-report"
   ],
   "sideEffects": false,
   "engines": {
@@ -60,6 +64,30 @@
     "THIRD_PARTY_NOTICES.md"
   ],
   "exports": {
+    "./parsers/eml": {
+      "types": "./dist/parsers/eml/index.d.ts",
+      "default": "./dist/parsers/eml/index.js"
+    },
+    "./viewers/eml": {
+      "types": "./dist/viewers/eml/index.d.ts",
+      "default": "./dist/viewers/eml/index.js"
+    },
+    "./parsers/mcap": {
+      "types": "./dist/parsers/mcap/index.d.ts",
+      "default": "./dist/parsers/mcap/index.js"
+    },
+    "./parsers/mcap/self-loading": {
+      "types": "./dist/parsers/mcap/self-loading.d.ts",
+      "default": "./dist/parsers/mcap/self-loading.js"
+    },
+    "./viewers/mcap": {
+      "types": "./dist/viewers/mcap/index.d.ts",
+      "default": "./dist/viewers/mcap/index.js"
+    },
+    "./viewers/mcap/self-loading": {
+      "types": "./dist/viewers/mcap/self-loading.d.ts",
+      "default": "./dist/viewers/mcap/self-loading.js"
+    },
     "./parsers/font": {
       "types": "./dist/parsers/font/index.d.ts",
       "default": "./dist/parsers/font/index.js"
@@ -420,6 +448,14 @@
       "types": "./dist/viewers/yaml/index.d.ts",
       "default": "./dist/viewers/yaml/index.js"
     },
+    "./parsers/text": {
+      "types": "./dist/parsers/text/index.d.ts",
+      "default": "./dist/parsers/text/index.js"
+    },
+    "./viewers/text": {
+      "types": "./dist/viewers/text/index.d.ts",
+      "default": "./dist/viewers/text/index.js"
+    },
     "./viewers/fallback": {
       "types": "./dist/viewers/fallback/index.d.ts",
       "default": "./dist/viewers/fallback/index.js"
@@ -577,7 +613,51 @@
       "default": "./dist/viewers/pt2/index.js"
     },
     "./styles/*": "./dist/styles/*",
-    "./assets/*": "./dist/assets/*"
+    "./assets/*": "./dist/assets/*",
+    "./parsers/mesh": {
+      "types": "./dist/parsers/mesh/index.d.ts",
+      "default": "./dist/parsers/mesh/index.js"
+    },
+    "./viewers/mesh": {
+      "types": "./dist/viewers/mesh/index.d.ts",
+      "default": "./dist/viewers/mesh/index.js"
+    },
+    "./viewers/mesh/self-loading": {
+      "types": "./dist/viewers/mesh/self-loading.d.ts",
+      "default": "./dist/viewers/mesh/self-loading.js"
+    },
+    "./parsers/openapi": {
+      "types": "./dist/parsers/openapi/index.d.ts",
+      "default": "./dist/parsers/openapi/index.js"
+    },
+    "./parsers/openapi/self-loading": {
+      "types": "./dist/parsers/openapi/self-loading.d.ts",
+      "default": "./dist/parsers/openapi/self-loading.js"
+    },
+    "./viewers/openapi": {
+      "types": "./dist/viewers/openapi/index.d.ts",
+      "default": "./dist/viewers/openapi/index.js"
+    },
+    "./viewers/openapi/self-loading": {
+      "types": "./dist/viewers/openapi/self-loading.d.ts",
+      "default": "./dist/viewers/openapi/self-loading.js"
+    },
+    "./parsers/junit": {
+      "types": "./dist/parsers/junit/index.d.ts",
+      "default": "./dist/parsers/junit/index.js"
+    },
+    "./viewers/junit": {
+      "types": "./dist/viewers/junit/index.d.ts",
+      "default": "./dist/viewers/junit/index.js"
+    },
+    "./parsers/dicom": {
+      "types": "./dist/parsers/dicom/index.d.ts",
+      "default": "./dist/parsers/dicom/index.js"
+    },
+    "./viewers/dicom": {
+      "types": "./dist/viewers/dicom/index.d.ts",
+      "default": "./dist/viewers/dicom/index.js"
+    }
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json && node scripts/build-styles.mjs",
@@ -593,6 +673,7 @@
   "devDependencies": {
     "@rhwp/core": "0.7.3",
     "@types/node": "^20.14.0",
+    "@types/three": "^0.180.0",
     "apache-arrow": "^21.2.0",
     "buffer": "^6.0.3",
     "dompurify": "^3.4.16",
@@ -605,23 +686,24 @@
     "marked": "^16.4.2",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^4.10.38",
+    "three": "^0.180.0",
     "typescript": "^5.5.0",
     "vitest": "^4.1.10",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
     "yaml": "2.8.3"
   },
   "peerDependencies": {
-    "apache-arrow": "^21.2.0",
-    "fzstd": "^0.1.1",
-    "lz4js": "^0.2.0",
     "ag-psd": "^30.1.0",
+    "apache-arrow": "^21.2.0",
     "docx-preview": "~0.3.7",
     "dompurify": ">=3.4.12",
+    "fzstd": "^0.1.1",
     "highlight.js": "^11.11.1",
     "hyparquet": "^1.26.2",
     "hyparquet-compressors": "^1.1.1",
     "jszip": "^3.10.1",
     "katex": "^0.16.9",
+    "lz4js": "^0.2.0",
     "marked": "^16.4.2",
     "mermaid": "^11.15.0",
     "pdf-lib": "^1.17.1",
@@ -630,12 +712,20 @@
     "puml-canvas-js": ">=0.10.0",
     "wavesurfer.js": "^7.8.0",
     "xlsx": ">=0.20.2",
-    "yaml": "2.8.3"
+    "yaml": "2.8.3",
+    "three": "^0.180.0",
+    "@types/three": "^0.180.0"
   },
   "peerDependenciesMeta": {
-    "apache-arrow": { "optional": true },
-    "fzstd": { "optional": true },
-    "lz4js": { "optional": true },
+    "apache-arrow": {
+      "optional": true
+    },
+    "fzstd": {
+      "optional": true
+    },
+    "lz4js": {
+      "optional": true
+    },
     "ag-psd": {
       "optional": true
     },
@@ -685,6 +775,12 @@
       "optional": true
     },
     "proj4": {
+      "optional": true
+    },
+    "three": {
+      "optional": true
+    },
+    "@types/three": {
       "optional": true
     }
   }

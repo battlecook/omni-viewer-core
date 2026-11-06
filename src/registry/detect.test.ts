@@ -323,7 +323,7 @@ describe('detectViewer (stage 2 — content sniffing, J17)', () => {
     });
 
     it('detects Protocol Buffer schemas by content', () => {
-        expect(sniff('schema.txt', 'syntax = "proto3";\nmessage User { string id = 1; }').viewerId).toBe('proto');
+        expect(sniff('schema', 'syntax = "proto3";\nmessage User { string id = 1; }').viewerId).toBe('proto');
     });
 
     it('detects LaTeX documents by their \\documentclass', () => {
@@ -335,8 +335,8 @@ describe('detectViewer (stage 2 — content sniffing, J17)', () => {
         expect(sniff('commented', '% \\documentclass{article}\ntext\n').viewerId).not.toBe('latex');
     });
 
-    it('detects a mislabeled JSON file by content', () => {
-        expect(sniff('data.txt', '[1,2,3]').viewerId).toBe('json');
+    it('detects JSON with an unsupported extension by content', () => {
+        expect(sniff('data.unknown', '[1,2,3]').viewerId).toBe('json');
     });
 
     it('trusts the extension over content (§7 point 3)', () => {

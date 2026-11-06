@@ -1,0 +1,1063 @@
+{
+ "gradle-junit5.xml": [
+  {
+   "name": "aborted()",
+   "classname": "demo.CalcTest",
+   "file": "",
+   "line": null,
+   "time": 0.012,
+   "status": "skipped",
+   "synthetic": false,
+   "results": [
+    {
+     "kind": "skipped",
+     "message": "Assumption failed: assumption failed",
+     "type": "org.opentest4j.TestAbortedException",
+     "text": "org.opentest4j.TestAbortedException: Assumption failed: assumption failed\n\tat org.junit.jupiter.api.Assumptions.throwAssumptionFailed(Assumptions.java:316)\n\tat org.junit.jupiter.api.Assumptions.assumeTrue(Assumptions.java:115)\n\tat demo.CalcTest.aborted(CalcTest.java:12)\n\tat java.base/java.lang.reflect.Method.invoke(Method.java:569)\n\tat java.base/java.util.ArrayList.forEach(ArrayList.java:1511)\n\tat java.base/java.util.ArrayList.forEach(ArrayList.java:1511)"
+    }
+   ],
+   "systemOut": "",
+   "systemErr": ""
+  },
+  {
+   "name": "passes()",
+   "classname": "demo.CalcTest",
+   "file": "",
+   "line": null,
+   "time": 0.002,
+   "status": "passed",
+   "synthetic": false,
+   "results": [],
+   "systemOut": "",
+   "systemErr": ""
+  },
+  {
+   "name": "fails()",
+   "classname": "demo.CalcTest",
+   "file": "",
+   "line": null,
+   "time": 0.002,
+   "status": "failed",
+   "synthetic": false,
+   "results": [
+    {
+     "kind": "failure",
+     "message": "org.opentest4j.AssertionFailedError: strings differ ==> expected: <a> but was: <b>",
+     "type": "org.opentest4j.AssertionFailedError",
+     "text": "org.opentest4j.AssertionFailedError: strings differ ==> expected: <a> but was: <b>\n\tat app//org.junit.jupiter.api.AssertionFailureBuilder.build(AssertionFailureBuilder.java:151)\n\tat app//org.junit.jupiter.api.AssertionFailureBuilder.buildAndThrow(AssertionFailureBuilder.java:132)\n\tat app//org.junit.jupiter.api.AssertEquals.failNotEqual(AssertEquals.java:197)\n\tat app//org.junit.jupiter.api.AssertEquals.assertEquals(AssertEquals.java:182)\n\tat app//org.junit.jupiter.api.Assertions.assertEquals(Assertions.java:1156)\n\tat app//demo.CalcTest.fails(CalcTest.java:9)\n\tat java.base@17.0.18/java.lang.reflect.Method.invoke(Method.java:569)\n\tat java.base@17.0.18/java.util.ArrayList.forEach(ArrayList.java:1511)\n\tat java.base@17.0.18/java.util.ArrayList.forEach(ArrayList.java:1511)"
+    }
+   ],
+   "systemOut": "",
+   "systemErr": ""
+  },
+  {
+   "name": "[1] 1",
+   "classname": "demo.CalcTest",
+   "file": "",
+   "line": null,
+   "time": 0.008,
+   "status": "passed",
+   "synthetic": false,
+   "results": [],
+   "systemOut": "",
+   "systemErr": ""
+  },
+  {
+   "name": "[2] 2",
+   "classname": "demo.CalcTest",
+   "file": "",
+   "line": null,
+   "time": 0.002,
+   "status": "failed",
+   "synthetic": false,
+   "results": [
+    {
+     "kind": "failure",
+     "message": "org.opentest4j.AssertionFailedError: expected: <1> but was: <2>",
+     "type": "org.opentest4j.AssertionFailedError",
+     "text": "org.opentest4j.AssertionFailedError: expected: <1> but was: <2>\n\tat app//org.junit.jupiter.api.AssertionFailureBuilder.build(AssertionFailureBuilder.java:151)\n\tat app//org.junit.jupiter.api.AssertionFailureBuilder.buildAndThrow(AssertionFailureBuilder.java:132)\n\tat app//org.junit.jupiter.api.AssertEquals.failNotEqual(AssertEquals.java:197)\n\tat app//org.junit.jupiter.api.AssertEquals.assertEquals(AssertEquals.java:150)\n\tat app//org.junit.jupiter.api.AssertEquals.assertEquals(AssertEquals.java:145)\n\tat app//org.junit.jupiter.api.Assertions.assertEquals(Assertions.java:531)\n\tat app//demo.CalcTest.param(CalcTest.java:13)\n\tat java.base@17.0.18/java.lang.reflect.Method.invoke(Method.java:569)\n\tat java.base@17.0.18/java.util.stream.ForEachOps$ForEachOp$OfRef.accept(ForEachOps.java:183)\n\tat java.base@17.0.18/java.util.stream.ReferencePipeline$3$1.accept(ReferencePipeline.java:197)\n\tat java.base@17.0.18/java.util.stream.ReferencePipeline$2$1.accept(ReferencePipeline.java:179)\n\tat java.base@17.0.18/java.util.stream.ReferencePipeline$3$1.accept(ReferencePipeline.java:197)\n\tat java.base@17.0.18/java.util.stream.ForEachOps$ForEachOp$OfRef.accept(ForEachOps.java:183)\n\tat java.base@17.0.18/java.util.stream.ReferencePipeline$3$1.accept(ReferencePipeline.java:197)\n\tat java.base@17.0.18/java.util.stream.ReferencePipeline$3$1.accept(ReferencePipeline.java:197)\n\tat java.base@17.0.18/java.util.stream.ReferencePipeline$3$1.accept(ReferencePipeline.java:197)\n\tat java.base@17.0.18/java.util.stream.ForEachOps$ForEachOp$OfRef.accept(ForEachOps.java:183)\n\tat java.base@17.0.18/java.util.stream.ReferencePipeline$3$1.accept(ReferencePipeline.java:197)\n\tat java.base@17.0.18/java.util.Spliterators$ArraySpliterator.forEachRemaining(Spliterators.java:992)\n\tat java.base@17.0.18/java.util.stream.AbstractPipeline.copyInto(AbstractPipeline.java:509)\n\tat java.base@17.0.18/java.util.stream.AbstractPipeline.wrapAndCopyInto(AbstractPipeline.java:499)\n\tat java.base@17.0.18/java.util.stream.ForEachOps$ForEachOp.evaluateSequential(ForEachOps.java:150)\n\tat java.base@17.0.18/java.util.stream.ForEachOps$ForEachOp$OfRef.evaluateSequential(ForEachOps.java:173)\n\tat java.base@17.0.18/java.util.stream.AbstractPipeline.evaluate(AbstractPipeline.java:234)\n\tat java.base@17.0.18/java.util.stream.ReferencePipeline.forEach(ReferencePipeline.java:596)\n\tat java.base@17.0.18/java.util.stream.ReferencePipeline$7$1.accept(ReferencePipeline.java:276)\n\tat java.base@17.0.18/java.util.stream.ReferencePipeline$3$1.accept(ReferencePipeline.java:197)\n\tat java.base@17.0.18/java.util.stream.ReferencePipeline$3$1.accept(ReferencePipeline.java:197)\n\tat java.base@17.0.18/java.util.stream.ReferencePipeline$3$1.accept(ReferencePipeline.java:197)\n\tat java.base@17.0.18/java.util.ArrayList$ArrayListSpliterator.forEachRemaining(ArrayList.java:1625)\n\tat java.base@17.0.18/java.util.stream.AbstractPipeline.copyInto(AbstractPipeline.java:509)\n\tat java.base@17.0.18/java.util.stream.AbstractPipeline.wrapAndCopyInto(AbstractPipeline.java:499)\n\tat java.base@17.0.18/java.util.stream.ForEachOps$ForEachOp.evaluateSequential(ForEachOps.java:150)\n\tat java.base@17.0.18/java.util.stream.ForEachOps$ForEachOp$OfRef.evaluateSequential(ForEachOps.java:173)\n\tat java.base@17.0.18/java.util.stream.AbstractPipeline.evaluate(AbstractPipeline.java:234)\n\tat java.base@17.0.18/java.util.stream.ReferencePipeline.forEach(ReferencePipeline.java:596)\n\tat java.base@17.0.18/java.util.stream.ReferencePipeline$7$1.accept(ReferencePipeline.java:276)\n\tat java.base@17.0.18/java.util.ArrayList$ArrayListSpliterator.forEachRemaining(ArrayList.java:1625)\n\tat java.base@17.0.18/java.util.stream.AbstractPipeline.copyInto(AbstractPipeline.java:509)\n\tat java.base@17.0.18/java.util.stream.AbstractPipeline.wrapAndCopyInto(AbstractPipeline.java:499)\n\tat java.base@17.0.18/java.util.stream.ForEachOps$ForEachOp.evaluateSequential(ForEachOps.java:150)\n\tat java.base@17.0.18/java.util.stream.ForEachOps$ForEachOp$OfRef.evaluateSequential(ForEachOps.java:173)\n\tat java.base@17.0.18/java.util.stream.AbstractPipeline.evaluate(AbstractPipeline.java:234)\n\tat java.base@17.0.18/java.util.stream.ReferencePipeline.forEach(ReferencePipeline.java:596)\n\tat java.base@17.0.18/java.util.ArrayList.forEach(ArrayList.java:1511)\n\tat java.base@17.0.18/java.util.ArrayList.forEach(ArrayList.java:1511)"
+    }
+   ],
+   "systemOut": "",
+   "systemErr": ""
+  },
+  {
+   "name": "disabled()",
+   "classname": "demo.CalcTest",
+   "file": "",
+   "line": null,
+   "time": 0.0,
+   "status": "skipped",
+   "synthetic": false,
+   "results": [
+    {
+     "kind": "skipped",
+     "message": "",
+     "type": "",
+     "text": ""
+    }
+   ],
+   "systemOut": "",
+   "systemErr": ""
+  },
+  {
+   "name": "throwsError()",
+   "classname": "demo.CalcTest",
+   "file": "",
+   "line": null,
+   "time": 0.001,
+   "status": "failed",
+   "synthetic": false,
+   "results": [
+    {
+     "kind": "failure",
+     "message": "java.lang.IllegalStateException: unexpected state",
+     "type": "java.lang.IllegalStateException",
+     "text": "java.lang.IllegalStateException: unexpected state\n\tat demo.CalcTest.throwsError(CalcTest.java:10)\n\tat java.base/java.lang.reflect.Method.invoke(Method.java:569)\n\tat java.base/java.util.ArrayList.forEach(ArrayList.java:1511)\n\tat java.base/java.util.ArrayList.forEach(ArrayList.java:1511)"
+    }
+   ],
+   "systemOut": "",
+   "systemErr": ""
+  }
+ ],
+ "jenkins-nested-testsuites.xml": [
+  {
+   "name": "testPrefix",
+   "classname": "test.fs.FileSystemTest",
+   "file": "",
+   "line": null,
+   "time": 0.003,
+   "status": "passed",
+   "synthetic": false,
+   "results": [],
+   "systemOut": "",
+   "systemErr": ""
+  },
+  {
+   "name": "test.3rdlevel",
+   "classname": "test.3rdlevel",
+   "file": "",
+   "line": null,
+   "time": null,
+   "status": "error",
+   "synthetic": true,
+   "results": [
+    {
+     "kind": "error",
+     "message": "bla bla",
+     "type": "java.lang.IllegalStateException",
+     "text": "java.lang.IllegalStateException: bla bla\n            at test.Test(Test:35)"
+    }
+   ],
+   "systemOut": "",
+   "systemErr": ""
+  },
+  {
+   "name": "testTable",
+   "classname": "test.db.DatabaseTest",
+   "file": "",
+   "line": null,
+   "time": 0.003,
+   "status": "passed",
+   "synthetic": false,
+   "results": [],
+   "systemOut": "",
+   "systemErr": ""
+  }
+ ],
+ "jenkins-suite-error.xml": [
+  {
+   "name": "testHudsonReporting",
+   "classname": "some.package.somewhere.WhooHoo",
+   "file": "",
+   "line": null,
+   "time": 0.016,
+   "status": "error",
+   "synthetic": false,
+   "results": [
+    {
+     "kind": "error",
+     "message": "this normally has the string like, expected mullet, but got bream",
+     "type": "org.junit.ComparisonFailure",
+     "text": "\tat some.package.somewhere.WhooHoo.testHudsonReporting(WhooHoo.java:48)"
+    }
+   ],
+   "systemOut": "",
+   "systemErr": ""
+  }
+ ],
+ "pytest-junitparser-merged.xml": [
+  {
+   "name": "test_a",
+   "classname": "test_a",
+   "file": "test_a.py",
+   "line": 1,
+   "time": 0.0,
+   "status": "failed",
+   "synthetic": false,
+   "results": [
+    {
+     "kind": "failure",
+     "message": "assert 1 == 2",
+     "type": "",
+     "text": "def test_a():\n>       assert 1 == 2\nE       assert 1 == 2\n\ntest_a.py:2: AssertionError"
+    }
+   ],
+   "systemOut": "",
+   "systemErr": ""
+  },
+  {
+   "name": "test_b",
+   "classname": "test_b",
+   "file": "test_b.py",
+   "line": 2,
+   "time": 0.0,
+   "status": "failed",
+   "synthetic": false,
+   "results": [
+    {
+     "kind": "failure",
+     "message": "assert 0",
+     "type": "",
+     "text": "def test_b():\n>       assert 0\nE       assert 0\n\ntest_b.py:3: AssertionError"
+    }
+   ],
+   "systemOut": "",
+   "systemErr": ""
+  }
+ ],
+ "pytest-merged-collection-error.xml": [
+  {
+   "name": "test_one",
+   "classname": "a.test_ok",
+   "file": "a/test_ok.py",
+   "line": 1,
+   "time": 0.0,
+   "status": "failed",
+   "synthetic": false,
+   "results": [
+    {
+     "kind": "failure",
+     "message": "assert 1 == 2",
+     "type": "",
+     "text": "def test_one():\n>       assert 1 == 2\nE       assert 1 == 2\n\na/test_ok.py:2: AssertionError"
+    }
+   ],
+   "systemOut": "",
+   "systemErr": ""
+  },
+  {
+   "name": "b.test_broken",
+   "classname": "",
+   "file": "b/test_broken.py",
+   "line": null,
+   "time": 0.0,
+   "status": "error",
+   "synthetic": false,
+   "results": [
+    {
+     "kind": "error",
+     "message": "collection failure",
+     "type": "",
+     "text": "ImportError while importing test module 'b/test_broken.py'.\nHint: make sure your test modules/packages have valid Python names.\nTraceback:\n/opt/python/lib/python3.12/importlib/__init__.py:90: in import_module\n    return _bootstrap._gcd_import(name[level:], package, level)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nb/test_broken.py:1: in <module>\n    import nonexistent_module_xyz\nE   ModuleNotFoundError: No module named 'nonexistent_module_xyz'"
+    }
+   ],
+   "systemOut": "",
+   "systemErr": ""
+  }
+ ],
+ "pytest-merged-suite-name.xml": [
+  {
+   "name": "test_a",
+   "classname": "test_a",
+   "file": "test_a.py",
+   "line": 1,
+   "time": 0.0,
+   "status": "failed",
+   "synthetic": false,
+   "results": [
+    {
+     "kind": "failure",
+     "message": "assert 1 == 2",
+     "type": "",
+     "text": "def test_a():\n>       assert 1 == 2\nE       assert 1 == 2\n\ntest_a.py:2: AssertionError"
+    }
+   ],
+   "systemOut": "",
+   "systemErr": ""
+  },
+  {
+   "name": "test_b",
+   "classname": "test_b",
+   "file": "test_b.py",
+   "line": 2,
+   "time": 0.0,
+   "status": "failed",
+   "synthetic": false,
+   "results": [
+    {
+     "kind": "failure",
+     "message": "assert 0",
+     "type": "",
+     "text": "def test_b():\n>       assert 0\nE       assert 0\n\ntest_b.py:3: AssertionError"
+    }
+   ],
+   "systemOut": "",
+   "systemErr": ""
+  }
+ ],
+ "pytest-teardown-error.xml": [
+  {
+   "name": "test_a",
+   "classname": "test_td",
+   "file": "",
+   "line": null,
+   "time": 0.0,
+   "status": "error",
+   "synthetic": false,
+   "results": [
+    {
+     "kind": "failure",
+     "message": "assert 0",
+     "type": "",
+     "text": "res = 1\n\n    def test_a(res):\n>       assert 0\nE       assert 0\n\ntest_td.py:9: AssertionError"
+    },
+    {
+     "kind": "error",
+     "message": "failed on teardown with \"RuntimeError: teardown boom\"",
+     "type": "",
+     "text": "@pytest.fixture\n    def res():\n        yield 1\n>       raise RuntimeError(\"teardown boom\")\nE       RuntimeError: teardown boom\n\ntest_td.py:6: RuntimeError"
+    }
+   ],
+   "systemOut": "",
+   "systemErr": ""
+  },
+  {
+   "name": "test_b",
+   "classname": "test_td",
+   "file": "",
+   "line": null,
+   "time": 0.0,
+   "status": "passed",
+   "synthetic": false,
+   "results": [],
+   "systemOut": "",
+   "systemErr": ""
+  },
+  {
+   "name": "test_c",
+   "classname": "test_td",
+   "file": "",
+   "line": null,
+   "time": 0.0,
+   "status": "error",
+   "synthetic": false,
+   "results": [
+    {
+     "kind": "error",
+     "message": "failed on teardown with \"RuntimeError: teardown boom\"",
+     "type": "",
+     "text": "@pytest.fixture\n    def res():\n        yield 1\n>       raise RuntimeError(\"teardown boom\")\nE       RuntimeError: teardown boom\n\ntest_td.py:6: RuntimeError"
+    }
+   ],
+   "systemOut": "",
+   "systemErr": ""
+  }
+ ],
+ "pytest-xdist-each-pass.xml": [
+  {
+   "name": "test_a",
+   "classname": "test_e",
+   "file": "",
+   "line": null,
+   "time": 0.0,
+   "status": "passed",
+   "synthetic": false,
+   "results": [],
+   "systemOut": "",
+   "systemErr": ""
+  },
+  {
+   "name": "test_a",
+   "classname": "test_e",
+   "file": "",
+   "line": null,
+   "time": 1.014,
+   "status": "error",
+   "synthetic": false,
+   "results": [
+    {
+     "kind": "error",
+     "message": "failed on teardown with \"RuntimeError: teardown boom\"",
+     "type": "",
+     "text": "@pytest.fixture\n    def fx():\n        if GW1:\n            time.sleep(1)\n        yield\n        if GW1:\n>           raise RuntimeError(\"teardown boom\")\nE           RuntimeError: teardown boom\n\ntest_e.py:9: RuntimeError"
+    }
+   ],
+   "systemOut": "",
+   "systemErr": ""
+  }
+ ],
+ "pytest-xdist-each.xml": [
+  {
+   "name": "test_t",
+   "classname": "test_e",
+   "file": "",
+   "line": null,
+   "time": 0.0,
+   "status": "error",
+   "synthetic": false,
+   "results": [
+    {
+     "kind": "error",
+     "message": "failed on teardown with \"RuntimeError: teardown boom\"",
+     "type": "",
+     "text": "@pytest.fixture\n    def bad():\n        yield\n>       raise RuntimeError(\"teardown boom\")\nE       RuntimeError: teardown boom\n\ntest_e.py:5: RuntimeError"
+    }
+   ],
+   "systemOut": "",
+   "systemErr": ""
+  },
+  {
+   "name": "test_t",
+   "classname": "test_e",
+   "file": "",
+   "line": null,
+   "time": 0.0,
+   "status": "error",
+   "synthetic": false,
+   "results": [
+    {
+     "kind": "error",
+     "message": "failed on teardown with \"RuntimeError: teardown boom\"",
+     "type": "",
+     "text": "@pytest.fixture\n    def bad():\n        yield\n>       raise RuntimeError(\"teardown boom\")\nE       RuntimeError: teardown boom\n\ntest_e.py:5: RuntimeError"
+    }
+   ],
+   "systemOut": "",
+   "systemErr": ""
+  },
+  {
+   "name": "test_ok",
+   "classname": "test_e",
+   "file": "",
+   "line": null,
+   "time": 0.0,
+   "status": "passed",
+   "synthetic": false,
+   "results": [],
+   "systemOut": "",
+   "systemErr": ""
+  },
+  {
+   "name": "test_ok",
+   "classname": "test_e",
+   "file": "",
+   "line": null,
+   "time": 0.0,
+   "status": "passed",
+   "synthetic": false,
+   "results": [],
+   "systemOut": "",
+   "systemErr": ""
+  },
+  {
+   "name": "test_f",
+   "classname": "test_f",
+   "file": "",
+   "line": null,
+   "time": 0.0,
+   "status": "error",
+   "synthetic": false,
+   "results": [
+    {
+     "kind": "failure",
+     "message": "assert 0",
+     "type": "",
+     "text": "bad = None\n\n    def test_f(bad):\n>       assert 0\nE       assert 0\n\ntest_f.py:7: AssertionError"
+    },
+    {
+     "kind": "error",
+     "message": "failed on teardown with \"RuntimeError: teardown boom\"",
+     "type": "",
+     "text": "@pytest.fixture\n    def bad():\n        yield\n>       raise RuntimeError(\"teardown boom\")\nE       RuntimeError: teardown boom\n\ntest_f.py:5: RuntimeError"
+    }
+   ],
+   "systemOut": "",
+   "systemErr": ""
+  },
+  {
+   "name": "test_f",
+   "classname": "test_f",
+   "file": "",
+   "line": null,
+   "time": 0.0,
+   "status": "error",
+   "synthetic": false,
+   "results": [
+    {
+     "kind": "failure",
+     "message": "assert 0",
+     "type": "",
+     "text": "bad = None\n\n    def test_f(bad):\n>       assert 0\nE       assert 0\n\ntest_f.py:7: AssertionError"
+    },
+    {
+     "kind": "error",
+     "message": "failed on teardown with \"RuntimeError: teardown boom\"",
+     "type": "",
+     "text": "@pytest.fixture\n    def bad():\n        yield\n>       raise RuntimeError(\"teardown boom\")\nE       RuntimeError: teardown boom\n\ntest_f.py:5: RuntimeError"
+    }
+   ],
+   "systemOut": "",
+   "systemErr": ""
+  }
+ ],
+ "pytest-xdist-teardown.xml": [
+  {
+   "name": "test_c",
+   "classname": "test_x",
+   "file": "",
+   "line": null,
+   "time": 0.107,
+   "status": "passed",
+   "synthetic": false,
+   "results": [],
+   "systemOut": "",
+   "systemErr": ""
+  },
+  {
+   "name": "test_a",
+   "classname": "test_x",
+   "file": "",
+   "line": null,
+   "time": 0.31,
+   "status": "error",
+   "synthetic": false,
+   "results": [
+    {
+     "kind": "failure",
+     "message": "assert 0",
+     "type": "",
+     "text": "bad = None\n\n    def test_a(bad):\n>       assert 0\nE       assert 0\n\ntest_x.py:8: AssertionError"
+    },
+    {
+     "kind": "error",
+     "message": "failed on teardown with \"RuntimeError: teardown boom\"",
+     "type": "",
+     "text": "@pytest.fixture\n    def bad():\n        yield\n        time.sleep(0.3)\n>       raise RuntimeError(\"teardown boom\")\nE       RuntimeError: teardown boom\n\ntest_x.py:6: RuntimeError"
+    }
+   ],
+   "systemOut": "",
+   "systemErr": ""
+  },
+  {
+   "name": "test_d",
+   "classname": "test_x",
+   "file": "",
+   "line": null,
+   "time": 0.0,
+   "status": "passed",
+   "synthetic": false,
+   "results": [],
+   "systemOut": "",
+   "systemErr": ""
+  },
+  {
+   "name": "test_b",
+   "classname": "test_x",
+   "file": "",
+   "line": null,
+   "time": 0.11,
+   "status": "passed",
+   "synthetic": false,
+   "results": [],
+   "systemOut": "",
+   "systemErr": ""
+  }
+ ],
+ "pytest-xunit1.xml": [
+  {
+   "name": "test_pass",
+   "classname": "test_sample",
+   "file": "test_sample.py",
+   "line": 3,
+   "time": 0.0,
+   "status": "passed",
+   "synthetic": false,
+   "results": [],
+   "systemOut": "--------------------------------- Captured Log ---------------------------------\n\n--------------------------------- Captured Out ---------------------------------\nhello stdout\n\n",
+   "systemErr": "--------------------------------- Captured Err ---------------------------------\n\n"
+  },
+  {
+   "name": "test_fail",
+   "classname": "test_sample",
+   "file": "test_sample.py",
+   "line": 7,
+   "time": 0.0,
+   "status": "failed",
+   "synthetic": false,
+   "results": [
+    {
+     "kind": "failure",
+     "message": "AssertionError: dicts differ\nassert {'a': 1} == {'a': 2}\n  \n  Differing items:\n  {'a': 1} != {'a': 2}\n  Use -v to get more diff",
+     "type": "",
+     "text": "def test_fail():\n        print(\"before failure <tag> & ünïcode\")\n        sys.stderr.write(\"err line\\n\")\n>       assert {\"a\": 1} == {\"a\": 2}, \"dicts differ\"\nE       AssertionError: dicts differ\nE       assert {'a': 1} == {'a': 2}\nE         \nE         Differing items:\nE         {'a': 1} != {'a': 2}\nE         Use -v to get more diff\n\ntest_sample.py:10: AssertionError"
+    }
+   ],
+   "systemOut": "--------------------------------- Captured Log ---------------------------------\n\n--------------------------------- Captured Out ---------------------------------\nbefore failure <tag> & ünïcode\n\n",
+   "systemErr": "--------------------------------- Captured Err ---------------------------------\nerr line\n\n"
+  },
+  {
+   "name": "test_error",
+   "classname": "test_sample",
+   "file": "test_sample.py",
+   "line": 16,
+   "time": 0.0,
+   "status": "error",
+   "synthetic": false,
+   "results": [
+    {
+     "kind": "error",
+     "message": "failed on setup with \"RuntimeError: fixture exploded\"",
+     "type": "",
+     "text": "@pytest.fixture\n    def broken():\n>       raise RuntimeError(\"fixture exploded\")\nE       RuntimeError: fixture exploded\n\ntest_sample.py:14: RuntimeError"
+    }
+   ],
+   "systemOut": "--------------------------------- Captured Log ---------------------------------\n\n--------------------------------- Captured Out ---------------------------------\n\n",
+   "systemErr": "--------------------------------- Captured Err ---------------------------------\n\n"
+  },
+  {
+   "name": "test_skip",
+   "classname": "test_sample",
+   "file": "test_sample.py",
+   "line": 19,
+   "time": 0.0,
+   "status": "skipped",
+   "synthetic": false,
+   "results": [
+    {
+     "kind": "skipped",
+     "message": "not on this platform",
+     "type": "pytest.skip",
+     "text": "test_sample.py:19: not on this platform"
+    }
+   ],
+   "systemOut": "--------------------------------- Captured Log ---------------------------------\n\n--------------------------------- Captured Out ---------------------------------\n\n\n--------------------------------- Captured Log ---------------------------------\n\n--------------------------------- Captured Out ---------------------------------\n\n",
+   "systemErr": "--------------------------------- Captured Err ---------------------------------\n\n\n--------------------------------- Captured Err ---------------------------------\n\n"
+  },
+  {
+   "name": "test_xfail",
+   "classname": "test_sample",
+   "file": "test_sample.py",
+   "line": 23,
+   "time": 0.0,
+   "status": "skipped",
+   "synthetic": false,
+   "results": [
+    {
+     "kind": "skipped",
+     "message": "known bug",
+     "type": "pytest.xfail",
+     "text": ""
+    }
+   ],
+   "systemOut": "--------------------------------- Captured Log ---------------------------------\n\n--------------------------------- Captured Out ---------------------------------\n\n",
+   "systemErr": "--------------------------------- Captured Err ---------------------------------\n\n"
+  },
+  {
+   "name": "test_param[1]",
+   "classname": "test_sample",
+   "file": "test_sample.py",
+   "line": 27,
+   "time": 0.0,
+   "status": "passed",
+   "synthetic": false,
+   "results": [],
+   "systemOut": "--------------------------------- Captured Log ---------------------------------\n\n--------------------------------- Captured Out ---------------------------------\n\n",
+   "systemErr": "--------------------------------- Captured Err ---------------------------------\n\n"
+  },
+  {
+   "name": "test_param[2]",
+   "classname": "test_sample",
+   "file": "test_sample.py",
+   "line": 27,
+   "time": 0.0,
+   "status": "failed",
+   "synthetic": false,
+   "results": [
+    {
+     "kind": "failure",
+     "message": "assert 2 == 1",
+     "type": "",
+     "text": "n = 2\n\n    @pytest.mark.parametrize(\"n\", [1, 2])\n    def test_param(n):\n>       assert n == 1\nE       assert 2 == 1\n\ntest_sample.py:29: AssertionError"
+    }
+   ],
+   "systemOut": "--------------------------------- Captured Log ---------------------------------\n\n--------------------------------- Captured Out ---------------------------------\n\n",
+   "systemErr": "--------------------------------- Captured Err ---------------------------------\n\n"
+  },
+  {
+   "name": "test_method",
+   "classname": "test_sample.TestGroup",
+   "file": "test_sample.py",
+   "line": 32,
+   "time": 0.0,
+   "status": "passed",
+   "synthetic": false,
+   "results": [],
+   "systemOut": "--------------------------------- Captured Log ---------------------------------\n\n--------------------------------- Captured Out ---------------------------------\n\n",
+   "systemErr": "--------------------------------- Captured Err ---------------------------------\n\n"
+  }
+ ],
+ "pytest-xunit2.xml": [
+  {
+   "name": "test_pass",
+   "classname": "test_sample",
+   "file": "",
+   "line": null,
+   "time": 0.0,
+   "status": "passed",
+   "synthetic": false,
+   "results": [],
+   "systemOut": "--------------------------------- Captured Log ---------------------------------\n\n--------------------------------- Captured Out ---------------------------------\nhello stdout\n\n",
+   "systemErr": "--------------------------------- Captured Err ---------------------------------\n\n"
+  },
+  {
+   "name": "test_fail",
+   "classname": "test_sample",
+   "file": "",
+   "line": null,
+   "time": 0.0,
+   "status": "failed",
+   "synthetic": false,
+   "results": [
+    {
+     "kind": "failure",
+     "message": "AssertionError: dicts differ\nassert {'a': 1} == {'a': 2}\n  \n  Differing items:\n  {'a': 1} != {'a': 2}\n  Use -v to get more diff",
+     "type": "",
+     "text": "def test_fail():\n        print(\"before failure <tag> & ünïcode\")\n        sys.stderr.write(\"err line\\n\")\n>       assert {\"a\": 1} == {\"a\": 2}, \"dicts differ\"\nE       AssertionError: dicts differ\nE       assert {'a': 1} == {'a': 2}\nE         \nE         Differing items:\nE         {'a': 1} != {'a': 2}\nE         Use -v to get more diff\n\ntest_sample.py:10: AssertionError"
+    }
+   ],
+   "systemOut": "--------------------------------- Captured Log ---------------------------------\n\n--------------------------------- Captured Out ---------------------------------\nbefore failure <tag> & ünïcode\n\n",
+   "systemErr": "--------------------------------- Captured Err ---------------------------------\nerr line\n\n"
+  },
+  {
+   "name": "test_error",
+   "classname": "test_sample",
+   "file": "",
+   "line": null,
+   "time": 0.0,
+   "status": "error",
+   "synthetic": false,
+   "results": [
+    {
+     "kind": "error",
+     "message": "failed on setup with \"RuntimeError: fixture exploded\"",
+     "type": "",
+     "text": "@pytest.fixture\n    def broken():\n>       raise RuntimeError(\"fixture exploded\")\nE       RuntimeError: fixture exploded\n\ntest_sample.py:14: RuntimeError"
+    }
+   ],
+   "systemOut": "--------------------------------- Captured Log ---------------------------------\n\n--------------------------------- Captured Out ---------------------------------\n\n",
+   "systemErr": "--------------------------------- Captured Err ---------------------------------\n\n"
+  },
+  {
+   "name": "test_skip",
+   "classname": "test_sample",
+   "file": "",
+   "line": null,
+   "time": 0.0,
+   "status": "skipped",
+   "synthetic": false,
+   "results": [
+    {
+     "kind": "skipped",
+     "message": "not on this platform",
+     "type": "pytest.skip",
+     "text": "test_sample.py:19: not on this platform"
+    }
+   ],
+   "systemOut": "--------------------------------- Captured Log ---------------------------------\n\n--------------------------------- Captured Out ---------------------------------\n\n\n--------------------------------- Captured Log ---------------------------------\n\n--------------------------------- Captured Out ---------------------------------\n\n",
+   "systemErr": "--------------------------------- Captured Err ---------------------------------\n\n\n--------------------------------- Captured Err ---------------------------------\n\n"
+  },
+  {
+   "name": "test_xfail",
+   "classname": "test_sample",
+   "file": "",
+   "line": null,
+   "time": 0.0,
+   "status": "skipped",
+   "synthetic": false,
+   "results": [
+    {
+     "kind": "skipped",
+     "message": "known bug",
+     "type": "pytest.xfail",
+     "text": ""
+    }
+   ],
+   "systemOut": "--------------------------------- Captured Log ---------------------------------\n\n--------------------------------- Captured Out ---------------------------------\n\n",
+   "systemErr": "--------------------------------- Captured Err ---------------------------------\n\n"
+  },
+  {
+   "name": "test_param[1]",
+   "classname": "test_sample",
+   "file": "",
+   "line": null,
+   "time": 0.0,
+   "status": "passed",
+   "synthetic": false,
+   "results": [],
+   "systemOut": "--------------------------------- Captured Log ---------------------------------\n\n--------------------------------- Captured Out ---------------------------------\n\n",
+   "systemErr": "--------------------------------- Captured Err ---------------------------------\n\n"
+  },
+  {
+   "name": "test_param[2]",
+   "classname": "test_sample",
+   "file": "",
+   "line": null,
+   "time": 0.0,
+   "status": "failed",
+   "synthetic": false,
+   "results": [
+    {
+     "kind": "failure",
+     "message": "assert 2 == 1",
+     "type": "",
+     "text": "n = 2\n\n    @pytest.mark.parametrize(\"n\", [1, 2])\n    def test_param(n):\n>       assert n == 1\nE       assert 2 == 1\n\ntest_sample.py:29: AssertionError"
+    }
+   ],
+   "systemOut": "--------------------------------- Captured Log ---------------------------------\n\n--------------------------------- Captured Out ---------------------------------\n\n",
+   "systemErr": "--------------------------------- Captured Err ---------------------------------\n\n"
+  },
+  {
+   "name": "test_method",
+   "classname": "test_sample.TestGroup",
+   "file": "",
+   "line": null,
+   "time": 0.0,
+   "status": "passed",
+   "synthetic": false,
+   "results": [],
+   "systemOut": "--------------------------------- Captured Log ---------------------------------\n\n--------------------------------- Captured Out ---------------------------------\n\n",
+   "systemErr": "--------------------------------- Captured Err ---------------------------------\n\n"
+  }
+ ],
+ "pytest7-module-skip.xml": [
+  {
+   "name": "tests.test_a_gpu",
+   "classname": "",
+   "file": "tests/test_a_gpu.py",
+   "line": null,
+   "time": 0.0,
+   "status": "skipped",
+   "synthetic": false,
+   "results": [
+    {
+     "kind": "skipped",
+     "message": "collection skipped",
+     "type": "",
+     "text": "('tests/test_a_gpu.py', 2, 'Skipped: no gpu')"
+    }
+   ],
+   "systemOut": "",
+   "systemErr": ""
+  },
+  {
+   "name": "test_ok",
+   "classname": "tests.test_b",
+   "file": "tests/test_b.py",
+   "line": 3,
+   "time": 0.0,
+   "status": "passed",
+   "synthetic": false,
+   "results": [],
+   "systemOut": "",
+   "systemErr": ""
+  },
+  {
+   "name": "test_bad",
+   "classname": "tests.test_b",
+   "file": "tests/test_b.py",
+   "line": 7,
+   "time": 0.0,
+   "status": "failed",
+   "synthetic": false,
+   "results": [
+    {
+     "kind": "failure",
+     "message": "assert 1 == 2",
+     "type": "",
+     "text": "def test_bad():\n>       assert 1 == 2\nE       assert 1 == 2\n\ntests/test_b.py:8: AssertionError"
+    }
+   ],
+   "systemOut": "",
+   "systemErr": ""
+  }
+ ],
+ "pytest7-suite-name.xml": [
+  {
+   "name": "test_ok",
+   "classname": "test_z",
+   "file": "test_z.py",
+   "line": 1,
+   "time": 0.0,
+   "status": "passed",
+   "synthetic": false,
+   "results": [],
+   "systemOut": "",
+   "systemErr": ""
+  },
+  {
+   "name": "test_bad",
+   "classname": "test_z",
+   "file": "test_z.py",
+   "line": 5,
+   "time": 0.0,
+   "status": "failed",
+   "synthetic": false,
+   "results": [
+    {
+     "kind": "failure",
+     "message": "assert 1 == 2",
+     "type": "",
+     "text": "def test_bad():\n>       assert 1 == 2\nE       assert 1 == 2\n\ntest_z.py:6: AssertionError"
+    }
+   ],
+   "systemOut": "",
+   "systemErr": ""
+  }
+ ],
+ "pytest7-xunit1.xml": [
+  {
+   "name": "test_ok",
+   "classname": "test_y",
+   "file": "test_y.py",
+   "line": 3,
+   "time": 0.0,
+   "status": "passed",
+   "synthetic": false,
+   "results": [],
+   "systemOut": "",
+   "systemErr": ""
+  },
+  {
+   "name": "test_bad",
+   "classname": "test_y",
+   "file": "test_y.py",
+   "line": 7,
+   "time": 0.0,
+   "status": "failed",
+   "synthetic": false,
+   "results": [
+    {
+     "kind": "failure",
+     "message": "assert 1 == 2",
+     "type": "",
+     "text": "def test_bad():\n>       assert 1 == 2\nE       assert 1 == 2\n\ntest_y.py:8: AssertionError"
+    }
+   ],
+   "systemOut": "",
+   "systemErr": ""
+  }
+ ],
+ "vitest.xml": [
+  {
+   "name": "math > adds",
+   "classname": "sample.test.ts",
+   "file": "",
+   "line": null,
+   "time": 0.001303125,
+   "status": "passed",
+   "synthetic": false,
+   "results": [],
+   "systemOut": "\nlog line <x>\n\n            ",
+   "systemErr": ""
+  },
+  {
+   "name": "math > fails",
+   "classname": "sample.test.ts",
+   "file": "",
+   "line": null,
+   "time": 0.003707333,
+   "status": "failed",
+   "synthetic": false,
+   "results": [
+    {
+     "kind": "failure",
+     "message": "expected { a: 1 } to deeply equal { a: 2 }",
+     "type": "AssertionError",
+     "text": "AssertionError: expected { a: 1 } to deeply equal { a: 2 }\n\n- Expected\n+ Received\n\n  {\n-   \"a\": 2,\n+   \"a\": 1,\n  }\n\n ❯ sample.test.ts:4:40"
+    }
+   ],
+   "systemOut": "",
+   "systemErr": ""
+  },
+  {
+   "name": "math > skipped one",
+   "classname": "sample.test.ts",
+   "file": "",
+   "line": null,
+   "time": 0.0,
+   "status": "skipped",
+   "synthetic": false,
+   "results": [
+    {
+     "kind": "skipped",
+     "message": "",
+     "type": "",
+     "text": ""
+    }
+   ],
+   "systemOut": "",
+   "systemErr": ""
+  },
+  {
+   "name": "math > todo one",
+   "classname": "sample.test.ts",
+   "file": "",
+   "line": null,
+   "time": 0.0,
+   "status": "skipped",
+   "synthetic": false,
+   "results": [
+    {
+     "kind": "skipped",
+     "message": "",
+     "type": "",
+     "text": ""
+    }
+   ],
+   "systemOut": "",
+   "systemErr": ""
+  },
+  {
+   "name": "math > nested > throws",
+   "classname": "sample.test.ts",
+   "file": "",
+   "line": null,
+   "time": 0.000409667,
+   "status": "failed",
+   "synthetic": false,
+   "results": [
+    {
+     "kind": "failure",
+     "message": "boom",
+     "type": "TypeError",
+     "text": "TypeError: boom\n ❯ sample.test.ts:7:57"
+    }
+   ],
+   "systemOut": "",
+   "systemErr": ""
+  },
+  {
+   "name": "top level",
+   "classname": "sample.test.ts",
+   "file": "",
+   "line": null,
+   "time": 6.0542e-05,
+   "status": "passed",
+   "synthetic": false,
+   "results": [],
+   "systemOut": "",
+   "systemErr": ""
+  }
+ ]
+}

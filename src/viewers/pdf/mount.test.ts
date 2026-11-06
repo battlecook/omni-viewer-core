@@ -389,7 +389,7 @@ describe('mountPdfViewer host contracts', () => {
 
     it('shows a markup toolbar on selection and lists markups in the sidebar', async () => {
         const getContext = vi.mocked(HTMLCanvasElement.prototype.getContext);
-        getContext.mockReturnValue({} as unknown as CanvasRenderingContext2D);
+        getContext.mockReturnValue({} as unknown as ReturnType<HTMLCanvasElement['getContext']>);
         try {
             const writeText = vi.fn().mockResolvedValue(undefined);
             const container = document.createElement('div');
@@ -719,7 +719,7 @@ describe('mountPdfViewer host contracts', () => {
 
     it('renders text/signature overlays and keeps undo/redo wired through mount', async () => {
         const getContext = vi.mocked(HTMLCanvasElement.prototype.getContext);
-        getContext.mockReturnValue({} as CanvasRenderingContext2D);
+        getContext.mockReturnValue({} as ReturnType<HTMLCanvasElement['getContext']>);
         try {
             const container = document.createElement('div');
             const handle = await mountPdfViewer(
@@ -763,7 +763,7 @@ describe('mountPdfViewer host contracts', () => {
             measureText: () => ({ width: 40 }),
             scale: vi.fn(),
             fillText: vi.fn()
-        } as unknown as CanvasRenderingContext2D);
+        } as unknown as ReturnType<HTMLCanvasElement['getContext']>);
         try {
             const container = document.createElement('div');
             const handle = await mountPdfViewer(
@@ -803,7 +803,7 @@ describe('mountPdfViewer host contracts', () => {
         const toDataUrl = vi.spyOn(HTMLCanvasElement.prototype, 'toDataURL').mockReturnValue('data:image/png;base64,AAAA');
         getContext.mockReturnValue({
             measureText: (text: string) => ({ width: text.length * 8 }), scale: vi.fn(), fillText: vi.fn()
-        } as unknown as CanvasRenderingContext2D);
+        } as unknown as ReturnType<HTMLCanvasElement['getContext']>);
         try {
             const container = document.createElement('div');
             const handle = await mountPdfViewer({ fileName: 'sample.pdf', data: new Uint8Array([1]) }, container, ctx(), deps);
@@ -837,7 +837,7 @@ describe('mountPdfViewer host contracts', () => {
 
     it('opens text annotation editing with Enter, Space, and F2', async () => {
         const getContext = vi.mocked(HTMLCanvasElement.prototype.getContext);
-        getContext.mockReturnValue({} as unknown as CanvasRenderingContext2D);
+        getContext.mockReturnValue({} as unknown as ReturnType<HTMLCanvasElement['getContext']>);
         try {
             const container = document.createElement('div');
             const handle = await mountPdfViewer(
@@ -984,7 +984,7 @@ describe('mountPdfViewer host contracts', () => {
 
     it('cancels page and thumbnail render tasks on dispose', async () => {
         const getContext = vi.mocked(HTMLCanvasElement.prototype.getContext);
-        getContext.mockReturnValue({} as CanvasRenderingContext2D);
+        getContext.mockReturnValue({} as ReturnType<HTMLCanvasElement['getContext']>);
         const cancels: Array<ReturnType<typeof vi.fn>> = [];
         const never = new Promise<void>(() => undefined);
         const pdfjs = fakePdfjs(2);

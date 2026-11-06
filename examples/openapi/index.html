@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OpenAPI / Swagger viewer</title>
+  <style>
+    body{margin:0;background:#1e1e1e;color:#ddd;font:14px/1.5 system-ui,sans-serif}
+    .demo-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:12px;padding:12px 20px;border-bottom:1px solid #444}
+    select,input{font:inherit;color:inherit;background:#252526;border:1px solid #555;border-radius:4px;padding:6px}
+    #route{color:#aaa}#viewer{min-height:calc(100vh - 65px)}
+  </style>
+  <script type="importmap">{"imports":{"yaml":"../../node_modules/yaml/browser/index.js"}}</script>
+</head>
+<body>
+  <div class="demo-toolbar">
+    <label>Sample <select id="sample"><option value="petstore.json">OpenAPI JSON</option><option value="petstore.yaml">OpenAPI YAML</option><option value="swagger.yaml">Swagger 2.0 YAML</option><option value="generic.json">Ordinary JSON</option><option value="generic.yaml">Ordinary YAML</option></select></label>
+    <label>Local file <input id="file" type="file" accept=".json,.yaml,.yml"></label>
+    <span id="route" role="status"></span>
+  </div>
+  <main id="viewer"></main>
+  <script type="module">
+    import { detectViewer } from '../../dist/registry/index.js';
+    import { loadOpenApiYamlDeps } from '../../dist/parsers/openapi/self-loading.js';
+    import { mountOpenApiViewer } from '../../dist/viewers/openapi/index.js';
+    import { mountJsonViewer } from '../../dist/viewers/json/index.js';
+    import { mountYamlViewer } from '../../dist/viewers/yaml/index.js';
+    import { createCatalogI18n } from '../../dist/i18n/index.js';
+    const viewer = document.querySelector('#viewer');
+    const route = document.querySelector('#route');
+    const yamlDeps = await loadOpenApiYamlDeps();
+    const ctx = { assets: { resolveAssetUrl: async path => path }, i18n: createCatalogI18n(navigator.language), logger: { log: (level, text) => console[level](text) },
+      ...(navigator.clipboard ? { clipboard: { writeText: text => navigator.clipboard.writeText(text) } } : {}) };
+    let current, abort, generation = 0;
+    async function open(name, data) {
+      const version = ++generation;
+      abort?.abort(); abort = new AbortController();
+      current?.dispose();
+      const text = new TextDecoder().decode(data);
+      const detection = detectViewer(name, undefined, undefined, undefined, text, { yamlDeps });
+      route.textContent = `${name} → ${detection.viewerId}`;
+      const input = { fileName: name, data }, options = { signal: abort.signal };
+      const handle = detection.viewerId === 'openapi' ? await mountOpenApiViewer(input, viewer, ctx, { ...options, yamlDeps })
+        : detection.viewerId === 'json' ? await mountJsonViewer(input, viewer, ctx, options)
+        : await mountYamlViewer(input, viewer, ctx, { ...options, deps: yamlDeps });
+      if (version !== generation) handle.dispose(); else current = handle;
+    }
+    async function sample() {
+      const name = document.querySelector('#sample').value;
+      const response = await fetch(`./${name}`);
+      if (!response.ok) throw new Error(`Could not read sample: ${name}`);
+      await open(name, new Uint8Array(await response.arrayBuffer()));
+    }
+    const showError = error => { if (error.name !== 'MountAbortedError') route.textContent = error.message; };
+    document.querySelector('#sample').addEventListener('change', () => sample().catch(showError));
+    document.querySelector('#file').addEventListener('change', async event => {
+      const file = event.target.files?.[0]; if (file) try { await open(file.name, new Uint8Array(await file.arrayBuffer())); } catch(error) { showError(error); }
+    });
+    await sample();
+  </script>
+</body>
+</html>

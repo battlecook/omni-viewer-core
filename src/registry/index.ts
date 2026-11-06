@@ -7,7 +7,7 @@
 import type { ServiceId } from '../host/index.js';
 import { asciiLower } from '../parsers/csv/index.js';
 import { looksLikeArrowIpc } from '../parsers/arrow/sniff.js';
-import { looksLikeOpenVinoIr, sniffTextViewer } from './sniff.js';
+import { looksLikeOpenVinoIr, looksLikeJUnit, looksLikeOpenApi, looksLikeJsonDocument, sniffTextViewer, type OpenApiSniffOptions } from './sniff.js';
 import {
     CONTAINER_SNIFF_BYTES,
     OFFICE_CONTAINER_BY_EXT,
@@ -58,11 +58,23 @@ export const IMAGE_MAGIC_SIGNATURES: readonly MagicSignature[] = [
     ]
 ];
 
+/** PS3.10 prefix follows the 128-byte preamble. Raw datasets route by extension. */
+export const DICOM_MAGIC_SIGNATURES: readonly MagicSignature[] = [[
+    { offset: 128, bytes: [0x44, 0x49, 0x43, 0x4d] }
+]];
+export const DICOM_VIEWER_DESCRIPTOR: ViewerDescriptor = {
+    id: 'dicom', displayNameKey: 'dicom.title', extensions: ['dcm', 'dicom'], priority: 20,
+    requiredServices: [], optionalServices: []
+};
+
 export const AVRO_MAGIC_SIGNATURES: readonly MagicSignature[] = [[
     { offset: 0, bytes: [0x4f, 0x62, 0x6a, 0x01] }
 ]];
 export const BAG_MAGIC_SIGNATURES: readonly MagicSignature[] = [[
     { offset: 0, bytes: [0x23, 0x52, 0x4f, 0x53, 0x42, 0x41, 0x47, 0x20, 0x56, 0x32, 0x2e] }
+]];
+export const MCAP_MAGIC_SIGNATURES: readonly MagicSignature[] = [[
+    { offset: 0, bytes: [0x89, 0x4d, 0x43, 0x41, 0x50, 0x30, 0x0d, 0x0a] }
 ]];
 export const STP_MAGIC_SIGNATURES: readonly MagicSignature[] = [[
     { offset: 0, bytes: [0x49, 0x53, 0x4f, 0x2d, 0x31, 0x30, 0x33, 0x30, 0x33, 0x2d, 0x32, 0x31, 0x3b] }
@@ -99,7 +111,8 @@ const signatureReach = (sigs: readonly MagicSignature[]): number =>
     Math.max(0, ...sigs.flat().map((run) => run.offset + run.bytes.length));
 
 /**
- * How many leading bytes an adapter should sniff for detection — the longest of
+ * How many leading bytes an adapter should sniff for detection — including
+ * the DICOM prefix (132B), and the longest of
  * the longest magicPrefix (PDF, 5B), the container signatures (OLE, 8B), and the
  * image signatures (WebP, 12B). Stage-1 uses only these; container probing
  * (stage 2) needs the whole file to read the central directory / CFB
@@ -109,8 +122,10 @@ export const REQUIRED_SNIFF_BYTES = Math.max(
     5,
     CONTAINER_SNIFF_BYTES,
     signatureReach(IMAGE_MAGIC_SIGNATURES),
+    signatureReach(DICOM_MAGIC_SIGNATURES),
     signatureReach(AVRO_MAGIC_SIGNATURES),
     signatureReach(BAG_MAGIC_SIGNATURES),
+    signatureReach(MCAP_MAGIC_SIGNATURES),
     signatureReach(STP_MAGIC_SIGNATURES),
     signatureReach(DB3_MAGIC_SIGNATURES),
     signatureReach(GGUF_MAGIC_SIGNATURES)
@@ -126,6 +141,15 @@ export const CSV_VIEWER_DESCRIPTOR: ViewerDescriptor = {
     priority: 10,
     requiredServices: [],
     optionalServices: ['clipboard', 'save', 'writeback']
+};
+
+export const TEXT_VIEWER_DESCRIPTOR: ViewerDescriptor = {
+    id: 'text',
+    displayNameKey: 'text.title',
+    extensions: ['txt'],
+    priority: 10,
+    requiredServices: [],
+    optionalServices: []
 };
 
 export const FALLBACK_VIEWER_DESCRIPTOR: ViewerDescriptor = {
@@ -152,6 +176,7 @@ export const PARQUET_MAGIC_SIGNATURES: readonly MagicSignature[] = [[{ offset: 0
 export const PARQUET_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'parquet',displayNameKey:'parquet.title',extensions:['parquet'],priority:20,magicSignatures:PARQUET_MAGIC_SIGNATURES,requiredServices:[],optionalServices:['clipboard','save']};
 export const AVRO_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'avro',displayNameKey:'avro.title',extensions:['avro'],priority:20,magicSignatures:AVRO_MAGIC_SIGNATURES,requiredServices:[],optionalServices:['clipboard']};
 export const BAG_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'bag',displayNameKey:'bag.title',extensions:['bag'],priority:20,magicSignatures:BAG_MAGIC_SIGNATURES,requiredServices:[],optionalServices:['clipboard']};
+export const MCAP_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'mcap',displayNameKey:'mcap.title',extensions:['mcap'],priority:20,magicSignatures:MCAP_MAGIC_SIGNATURES,requiredServices:[],optionalServices:['clipboard']};
 export const STP_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'stp',displayNameKey:'stp.title',extensions:['stp','step'],priority:20,magicSignatures:STP_MAGIC_SIGNATURES,requiredServices:[],optionalServices:['clipboard']};
 export const DB3_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'db3',displayNameKey:'db3.title',extensions:['db3'],priority:20,magicSignatures:DB3_MAGIC_SIGNATURES,requiredServices:[],optionalServices:['clipboard']};
 export const REQIF_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'reqif',displayNameKey:'reqif.title',extensions:['reqif'],priority:20,requiredServices:[],optionalServices:['clipboard']};
@@ -216,6 +241,14 @@ export const PCAPNG_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'pcapng',displayNa
 // probeContainer, which reads its stored `mimetype` member.
 export const EPUB_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'epub',displayNameKey:'epub.title',extensions:['epub'],priority:20,requiredServices:[],optionalServices:['navigation']};
 export const HAR_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'har',displayNameKey:'har.title',extensions:['har'],priority:20,requiredServices:[],optionalServices:['clipboard']};
+// Only content refinement selects OpenAPI; generic JSON/YAML keep ownership
+// of their extensions, regardless of registry priority.
+export const OPENAPI_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'openapi',displayNameKey:'openapi.title',extensions:[],priority:20,requiredServices:[],optionalServices:['clipboard']};
+// A JUnit report is an ordinary `.xml` (Gradle's TEST-*.xml, pytest's
+// --junitxml, …); like OpenVINO IR, only its root routes it, and the generic XML
+// viewer keeps the extension.
+export const JUNIT_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'junit',displayNameKey:'junit.title',extensions:[],priority:20,requiredServices:[],optionalServices:['clipboard']};
+export const EML_VIEWER_DESCRIPTOR: ViewerDescriptor = {id:'eml',displayNameKey:'eml.title',extensions:['eml'],priority:20,requiredServices:[],optionalServices:['clipboard','save']};
 
 export const NOTEBOOK_VIEWER_DESCRIPTOR: ViewerDescriptor = {
     id: 'notebook', displayNameKey: 'notebook.title', extensions: ['ipynb'], priority: 20,
@@ -337,7 +370,14 @@ export const ARCHIVE_VIEWER_DESCRIPTOR: ViewerDescriptor = {
     priority: 5, magicSignatures: ARCHIVE_MAGIC_SIGNATURES, requiredServices: [], optionalServices: ['save']
 };
 
+export const MESH_VIEWER_DESCRIPTOR: ViewerDescriptor = {
+    id: 'mesh', displayNameKey: 'mesh.title', extensions: ['glb', 'gltf', 'stl', 'obj'], priority: 20,
+    requiredServices: [], optionalServices: ['documentAssets']
+};
+
 export const CORE_VIEWER_DESCRIPTORS: readonly ViewerDescriptor[] = [
+    MESH_VIEWER_DESCRIPTOR,
+    DICOM_VIEWER_DESCRIPTOR,
     PDF_VIEWER_DESCRIPTOR,
     AUDIO_VIEWER_DESCRIPTOR,
     VIDEO_VIEWER_DESCRIPTOR,
@@ -350,6 +390,9 @@ export const CORE_VIEWER_DESCRIPTORS: readonly ViewerDescriptor[] = [
     PCAP_VIEWER_DESCRIPTOR,
     PCAPNG_VIEWER_DESCRIPTOR,
     HAR_VIEWER_DESCRIPTOR,
+    OPENAPI_VIEWER_DESCRIPTOR,
+    JUNIT_VIEWER_DESCRIPTOR,
+    EML_VIEWER_DESCRIPTOR,
     EPUB_VIEWER_DESCRIPTOR,
     MERMAID_VIEWER_DESCRIPTOR,
     PLANTUML_VIEWER_DESCRIPTOR,
@@ -361,6 +404,7 @@ export const CORE_VIEWER_DESCRIPTORS: readonly ViewerDescriptor[] = [
     ARROW_VIEWER_DESCRIPTOR,
     AVRO_VIEWER_DESCRIPTOR,
     BAG_VIEWER_DESCRIPTOR,
+    MCAP_VIEWER_DESCRIPTOR,
     STP_VIEWER_DESCRIPTOR,
     DB3_VIEWER_DESCRIPTOR,
     REQIF_VIEWER_DESCRIPTOR,
@@ -383,6 +427,7 @@ export const CORE_VIEWER_DESCRIPTORS: readonly ViewerDescriptor[] = [
     IMAGE_VIEWER_DESCRIPTOR,
     MARKDOWN_VIEWER_DESCRIPTOR,
     HTML_VIEWER_DESCRIPTOR,
+    TEXT_VIEWER_DESCRIPTOR,
     NOTEBOOK_VIEWER_DESCRIPTOR,
     ARCHIVE_VIEWER_DESCRIPTOR,
     CSV_VIEWER_DESCRIPTOR,
@@ -396,7 +441,9 @@ export const CORE_VIEWER_DESCRIPTORS: readonly ViewerDescriptor[] = [
     FALLBACK_VIEWER_DESCRIPTOR
 ];
 
-export { looksLikeHar, looksLikeNotebook, looksLikeGeoJson, looksLikeJsonDocument, looksLikeJsonl, looksLikeHtml, looksLikeLatex, looksLikeOpenVinoIr, looksLikeProto, looksLikeXml, sniffTextViewer } from './sniff.js';
+export { looksLikeEml, looksLikeHar, looksLikeNotebook, looksLikeGeoJson, looksLikeJsonDocument, looksLikeJsonl, looksLikeHtml, looksLikeLatex, looksLikeOpenVinoIr, looksLikeProto, looksLikeXml, sniffTextViewer } from './sniff.js';
+export { looksLikeOpenApi, type OpenApiSniffOptions } from './sniff.js';
+export { looksLikeJUnit } from './sniff.js';
 export {
     CONTAINER_SNIFF_BYTES,
     OFFICE_CONTAINER_BY_EXT,
@@ -424,7 +471,8 @@ export interface DetectionResult {
  * Detection (DESIGN.md §7): ASCII-lowercased extension matching with priority
  * tie-breaking (stage 1). When no extension matches and a text sample is
  * provided, content sniffing (J17, 부록 B-6) classifies signature-less text
- * formats — the extension is always trusted first (§7 point 3).
+ * formats. Generic XML and JSON/YAML may be refined by specific document
+ * signatures (OpenVINO, JUnit and OpenAPI) when text is supplied.
  *
  * Container-format viewers (excel; later word/ppt/hwpx) share zip/ole
  * signatures, so stage-1 verifies a trusted office extension against the actual
@@ -438,7 +486,8 @@ export function detectViewer(
     availableServices: ReadonlySet<ServiceId> = new Set(),
     descriptors: readonly ViewerDescriptor[] = CORE_VIEWER_DESCRIPTORS,
     sniffBytes?: Uint8Array,
-    sniffText?: string
+    sniffText?: string,
+    textOptions: OpenApiSniffOptions = {}
 ): DetectionResult {
     const lower = asciiLower(fileName);
     const magicMatches = (d: ViewerDescriptor): boolean => {
@@ -487,12 +536,33 @@ export function detectViewer(
             const openvino = descriptors.find((d) => d.id === 'openvino');
             if (openvino && servicesMet(openvino)) return { viewerId: 'openvino', matchedBy: 'content' };
         }
+        if (winner.d.id === 'xml' && winner.ext === 'xml' && sniffText !== undefined && looksLikeJUnit(sniffText)) {
+            const junit = descriptors.find((d) => d.id === 'junit');
+            if (junit && servicesMet(junit)) return { viewerId: 'junit', matchedBy: 'content' };
+        }
+        if (['json', 'yaml'].includes(winner.d.id) && sniffText !== undefined) {
+            const openapi = descriptors.find(d => d.id === 'openapi');
+            const sniffOptions = winner.d.id === 'json' ? { ...textOptions, format: 'json' as const } : textOptions;
+            if (openapi && servicesMet(openapi) && looksLikeOpenApi(sniffText, sniffOptions)) return { viewerId: 'openapi', matchedBy: 'content' };
+        }
         return { viewerId: winner.d.id, matchedBy: 'extension' };
     }
 
-    // No extension match. Container bytes are ambiguous → probe decides.
+    // PS3.10 permits arbitrary preamble bytes, including another format's
+    // leading signature. The offset-128 DICOM marker takes precedence when
+    // an extension has not already selected a viewer.
+    if (sniffBytes && DICOM_MAGIC_SIGNATURES.some(sig => sig.every(run =>
+        run.bytes.every((byte, i) => sniffBytes[run.offset + i] === byte)))) {
+        const dicom = descriptors.find(d => d.id === 'dicom');
+        if (dicom && servicesMet(dicom)) return { viewerId: 'dicom', matchedBy: 'content' };
+    }
+    // No specific content match. Container bytes are ambiguous → probe decides.
     if (container) {
         return { viewerId: 'fallback', matchedBy: 'ambiguous-container', container };
+    }
+    if (sniffBytes && [0x67, 0x6c, 0x54, 0x46].every((byte, i) => sniffBytes[i] === byte)) {
+        const mesh = descriptors.find(d => d.id === 'mesh');
+        if (mesh && servicesMet(mesh)) return { viewerId: 'mesh', matchedBy: 'content' };
     }
     if (sniffBytes && HDF5_MAGIC_PREFIX.every((byte, index) => sniffBytes[index] === byte)) {
         const hdf5 = descriptors.find(d => d.id === 'hdf5');
@@ -508,7 +578,7 @@ export function detectViewer(
     }
     if (sniffBytes) {
         const unambiguous = descriptors.find(d =>
-            ['arrow', 'avro', 'bag', 'stp', 'db3', 'blf', 'mf4', 'pcap', 'pcapng', 'shapefile', 'psd', 'font', 'gguf', 'tflite', 'pte'].includes(d.id) && servicesMet(d) && magicMatches(d)
+            ['arrow', 'avro', 'bag', 'mcap', 'stp', 'db3', 'blf', 'mf4', 'pcap', 'pcapng', 'shapefile', 'psd', 'font', 'gguf', 'tflite', 'pte'].includes(d.id) && servicesMet(d) && magicMatches(d)
         );
         if (unambiguous) return { viewerId: unambiguous.id, matchedBy: 'content' };
     }
@@ -521,10 +591,20 @@ export function detectViewer(
 
     // Stage 2 (text content sniffing) — only when the extension gave no match.
     if (sniffText !== undefined) {
-        const sniffedId = sniffTextViewer(sniffText);
+        const sniffedId = sniffTextViewer(sniffText, textOptions);
         if (sniffedId) {
             const d = descriptors.find((x) => x.id === sniffedId);
             if (d && servicesMet(d)) return { viewerId: d.id, matchedBy: 'content' };
+            // A disabled dialect viewer leaves its document to the generic tree.
+            if (sniffedId === 'junit') {
+                const xml = descriptors.find(x => x.id === 'xml');
+                if (xml && servicesMet(xml)) return { viewerId: 'xml', matchedBy: 'content' };
+            }
+            if (sniffedId === 'openapi') {
+                const genericId = looksLikeJsonDocument(sniffText) ? 'json' : 'yaml';
+                const generic = descriptors.find(x => x.id === genericId);
+                if (generic && servicesMet(generic)) return { viewerId: genericId, matchedBy: 'content' };
+            }
         }
     }
 

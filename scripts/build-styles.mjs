@@ -9,6 +9,12 @@ const root = path.dirname(fileURLToPath(import.meta.url));
 const dist = path.join(root, '..', 'dist');
 
 const entries = [
+    ['viewers/dicom/styles.js', 'dicomViewerCss', 'dicom.css'],
+    ['viewers/openapi/styles.js', 'openApiViewerCss', 'openapi.css'],
+    ['viewers/junit/styles.js', 'junitViewerCss', 'junit.css'],
+    ['viewers/eml/styles.js', 'emlViewerCss', 'eml.css'],
+    ['viewers/mcap/styles.js', 'mcapViewerCss', 'mcap.css'],
+    ['viewers/mesh/styles.js', 'meshViewerCss', 'mesh.css'],
     ['viewers/csv/styles.js', 'csvViewerCss', 'csv.css'],
     ['viewers/font/styles.js', 'fontViewerCss', 'font.css'],
     ['viewers/json/styles.js', 'jsonViewerCss', 'json.css'],
@@ -16,6 +22,7 @@ const entries = [
     ['viewers/jsonl/styles.js', 'jsonlViewerCss', 'jsonl.css'],
     ['viewers/yaml/index.js', 'yamlViewerCss', 'yaml.css'],
     ['viewers/fallback/styles.js', 'fallbackViewerCss', 'fallback.css'],
+    ['viewers/text/styles.js', 'textViewerCss', 'text.css'],
     ['viewers/html/styles.js', 'htmlViewerCss', 'html.css'],
     ['viewers/pdf/styles.js', 'pdfViewerCss', 'pdf.css'],
     ['viewers/excel/styles.js', 'excelViewerCss', 'excel.css'],

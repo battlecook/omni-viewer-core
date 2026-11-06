@@ -1,0 +1,28 @@
+# YAML API definition
+---
+openapi: 3.1.0
+info:
+  title: Pet API
+  version: '1.2.0'
+  description: |
+    A multiline description.
+    openapi: this is nested text
+paths:
+  /pets:
+    get:
+      summary: List pets
+      tags: [pets]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Pet'
+components:
+  schemas:
+    Pet:
+      type: object
+      properties:
+        name:
+          type: string

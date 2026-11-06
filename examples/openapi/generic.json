@@ -1,0 +1,6 @@
+{
+  "name": "Ordinary JSON",
+  "description": "This file uses the existing JSON viewer.",
+  "settings": { "openapi": "a nested setting, not an API definition" },
+  "items": [1, 2, 3]
+}

@@ -1,0 +1,14 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites tests="2" failures="1" errors="1" skipped="0" time="0.0"><testsuite name="myproj" errors="0" failures="1" skipped="0" tests="1" time="0.0" timestamp="2026-10-31T06:09:02.106391+09:00" hostname="build-host.local"><testcase classname="a.test_ok" name="test_one" file="a/test_ok.py" line="0" time="0.000"><failure message="assert 1 == 2">def test_one():
+&gt;       assert 1 == 2
+E       assert 1 == 2
+
+a/test_ok.py:2: AssertionError</failure></testcase></testsuite><testsuite name="myproj" errors="1" failures="0" skipped="0" tests="1" time="0.0" timestamp="2026-10-31T06:09:02.249983+09:00" hostname="build-host.local"><testcase classname="" name="b.test_broken" file="b/test_broken.py" time="0.000"><error message="collection failure">ImportError while importing test module 'b/test_broken.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+/opt/python/lib/python3.12/importlib/__init__.py:90: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+b/test_broken.py:1: in &lt;module&gt;
+    import nonexistent_module_xyz
+E   ModuleNotFoundError: No module named 'nonexistent_module_xyz'</error></testcase></testsuite></testsuites>

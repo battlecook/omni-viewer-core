@@ -12,7 +12,7 @@ models, viewers mount into a DOM element, and everything host-specific
 
 ## Supported formats
 
-- **Documents** — PDF, Word (DOCX and legacy DOC), HWP, PowerPoint (PPTX and
+- **Documents** — Plain text (.txt), PDF, Word (DOCX and legacy DOC), HWP, PowerPoint (PPTX and
   legacy PPT), HTML, Markdown, Jupyter Notebook (.ipynb), EPUB e-books (2 and 3),
   LaTeX (structure and math preview, not typesetting)
 - **Data & spreadsheets** — Excel, CSV/TSV, JSON, JSONL/NDJSON, YAML, TOML, XML,
@@ -20,11 +20,16 @@ models, viewers mount into a DOM element, and everything host-specific
   Keras (.keras and legacy .h5), Core ML (.mlmodel and .mlpackage),
   OpenVINO IR (.xml + .bin), PyTorch Export (.pt2), ExecuTorch (.pte), Protocol
   Buffers, ReqIF, SQLite
-- **Web & network** — HAR (HTTP Archive) request logs
+- **Email, web & network** — EML email messages, HAR (HTTP Archive) request logs,
+  OpenAPI / Swagger API documents (JSON/YAML)
+- **Developer tooling** — JUnit XML test reports (Gradle, Maven Surefire,
+  pytest, vitest/Jest, Jenkins and other JUnit-format writers)
+- **Medical imaging** — DICOM (.dcm/.dicom), native grayscale/RGB image preview,
+  multi-frame navigation, windowing and metadata inspection
 - **Media & graphics** — audio (waveform/spectrogram), video, images,
-  Photoshop PSD, fonts (TTF/OTF/WOFF)
+  Photoshop PSD, fonts (TTF/OTF/WOFF), 3D meshes (GLB/glTF/STL/OBJ)
 - **Engineering & automotive** — CAN DBC, AUTOSAR ARXML, ASAM A2L, Vector
-  ASC/BLF logs, ASAM MDF 4 (MF4), PCAP/PCAPNG, ROS bag, STEP (STP)
+  ASC/BLF logs, ASAM MDF 4 (MF4), PCAP/PCAPNG, ROS bag, MCAP (.mcap), STEP (STP)
 - **Diagrams & GIS** — Mermaid, PlantUML, ESRI Shapefile, GeoJSON
 - **Archives** — ZIP-family listing and safe entry preview
 
@@ -33,6 +38,50 @@ The preview runs in a sandboxed iframe with scripts, external resources, and
 navigation removed or blocked; inline styles and embedded data images remain.
 Files over 8 MiB show a bounded source preview. Very dense markup opens in
 source view to keep parsing responsive.
+
+### Plain text (.txt)
+
+`omni-viewer-core/viewers/text` provides a dependency-free, read-only text
+viewer. Whitespace, tabs and line endings are preserved; HTML and Markdown
+remain literal text. Soft line wrapping can be toggled without changing the
+content. UTF-8 is the default; UTF-8 and UTF-16 LE/BE BOMs are recognized.
+For BOM-less UTF-16, pass `parse: { encoding: 'utf-16le' }` (or `'utf-16be'`).
+Legacy encodings such as CP949 are not automatically detected. Malformed
+Unicode bytes are displayed as replacement characters with a visible warning;
+UTF-32 BOMs are rejected.
+
+```ts
+import { mountTextViewer } from 'omni-viewer-core/viewers/text';
+
+const handle = await mountTextViewer(
+  { fileName: 'notes.txt', data: bytes }, container, hostContext
+);
+// On file switch or tab close:
+handle.dispose();
+```
+
+The DOM-free parser is available at `omni-viewer-core/parsers/text` as
+`parseText(bytes, options)`. The default input limit is 256 MiB and the decoded
+preview budget is 8 MiB (excluding the BOM); larger previews are visibly marked
+as partial. Override them through `limits.maxInputBytes` / `maxPreviewBytes`
+(under `parse.limits` for the viewer). Incomplete characters at a preview
+boundary are omitted without an encoding warning. Decoding limits are
+cooperative; hosts still own file loading and hard CPU/memory bounds.
+Scoped hosts load `omni-viewer-core/styles/text.css`; shadow mode injects it.
+
+The registry returns `viewerId: 'text'` for `.txt` (including uppercase `.TXT`).
+Hosts must register that extension and explicitly map `text` to
+`mountTextViewer`; the registry does not load viewers. Other extensions and
+extensionless text retain their existing detection behavior.
+
+### DICOM (.dcm/.dicom)
+
+`omni-viewer-core/viewers/dicom` provides a dependency-free native 8/16-bit DICOM
+preview with frame navigation, window center/width, inversion, zoom, and a
+searchable metadata table. Implicit/explicit VR little endian and explicit VR
+big endian are supported. Compressed images keep metadata available and report
+that preview is unavailable. See [DICOM support and limits](examples/dicom/SUPPORT.md)
+and the [offline synthetic example](examples/dicom/README.md).
 
 ## Install
 
@@ -73,6 +122,122 @@ if (result.status !== 'failed') {
 Viewers follow the same pattern — a `mount*Viewer(input, container, ctx,
 deps)` entry per format, plus `self-loading` variants that dynamically import
 their own dependencies for hosts that don't want to wire them manually.
+
+### OpenAPI / Swagger (JSON / YAML)
+
+Open Swagger 2.0 and OpenAPI 3.0–3.2 specifications with searchable API
+documentation, HTTP method/tag filters, parameter and request/response schemas,
+examples, authentication definitions and an original-source tab.
+
+```ts
+import { mountSelfLoadingOpenApiViewer } from 'omni-viewer-core/viewers/openapi/self-loading';
+
+const handle = await mountSelfLoadingOpenApiViewer(
+  { fileName: 'openapi.yaml', data: bytes }, container, hostContext
+);
+handle.dispose();
+```
+
+JSON needs no external library. YAML uses the optional `yaml` 2.8.3 peer;
+base parser/viewer entries accept injected `yamlDeps`, and the opt-in
+`/self-loading` entries load it for YAML. The registry refines generic
+JSON/YAML to OpenAPI when file content matches; ordinary files retain their
+existing viewers. Pass complete text plus `{ yamlDeps }` as `detectViewer`'s
+sixth argument for strict YAML detection. Without it, conservative block YAML
+signatures are recognized and validated when mounted.
+
+Local references, Swagger definitions and parameter inheritance are supported.
+The viewer runs offline and renders descriptions as text. Exports include
+`parsers/openapi`, `viewers/openapi`, their `/self-loading` entries and
+`styles/openapi.css`. See the [viewer contract](docs/viewers/openapi.md) and
+[runnable examples](examples/openapi/README.md) for integration and limits.
+
+### 3D meshes (GLB / glTF / STL / OBJ)
+
+Install `three` (`^0.180.0`) and, for TypeScript projects, `@types/three`
+(`^0.180.0`). The viewer provides orbit/pan/zoom, fit to view, wireframe,
+grid/axes, mesh statistics, glTF materials and animation playback.
+
+```ts
+import { mountSelfLoadingMeshViewer } from 'omni-viewer-core/viewers/mesh/self-loading';
+
+const handle = await mountSelfLoadingMeshViewer(
+    { fileName: 'model.glb', data: bytes }, container, hostContext
+);
+// On file switch or tab close:
+handle.dispose();
+```
+
+For injected runtimes, use `mountMeshViewer(input, container, ctx, deps, options)`
+from `viewers/mesh`; `loadMeshViewerDeps()` supplies the standard Three.js deps.
+`parsers/mesh` offers DOM-free `parseMesh(bytes, { fileName, limits })`
+preflight without loading Three.js. It validates structure, coordinates, resource
+paths and budgets; scene decoding happens when mounted.
+
+Self-contained GLB and embedded glTF need no asset service. For `.gltf` with
+external `.bin` or textures, provide `ctx.documentAssets.resolve(relativePath)`;
+each returned asset's `dispose()` is called when the viewer closes. Input URLs,
+absolute paths and parent traversal are rejected; the core never resolves them
+against the page URL. Hosts must cap external asset sizes as well as the main
+input. OBJ geometry, UVs and normals are supported; MTL libraries use default
+materials with a warning. OBJ line and point primitives are omitted with a
+warning. Compressed glTF requires host-provided decoders via
+`deps.configureGltfLoader`; the core never downloads them. Rendering requires
+WebGL 2. Scoped hosts should load `styles/mesh.css`; shadow mode injects it.
+
+glTF preflight also budgets generated accessors, animation arrays, skeletons,
+instancing and morph storage. Generated GPU storage uses conservative estimates
+to cover device-dependent padding before rendering.
+
+Run `npm run build`, serve the repo root, and open `examples/mesh/` for a
+standalone example with sample files in all four formats and local file loading.
+
+### MCAP (.mcap)
+
+Inspect topics/channels, schemas, sampled messages, metadata, attachments and
+chunks in MCAP v0 recordings. The viewer includes topic filtering, search,
+pagination, text/hex payload inspection and JSON copy. JSON payloads are
+formatted when complete; CDR, Protobuf and other binary payloads are shown as
+raw bytes. Attachments are listed without extracting or executing their data.
+
+```ts
+import { mountSelfLoadingMcapViewer } from 'omni-viewer-core/viewers/mcap/self-loading';
+
+const handle = await mountSelfLoadingMcapViewer(
+    { fileName: 'robot.mcap', data: bytes }, container, ctx,
+    { parse: { previewMessages: 5_000 } }
+);
+// On close: handle.dispose();
+```
+
+Install the existing optional peers `lz4js` and `fzstd` to read compressed
+chunks with the self-loading entry. Uncompressed recordings need no peers.
+The base `parsers/mcap` and `viewers/mcap` entries import no runtime peers:
+`parseMcap(bytes, { decompressLz4?, decompressZstd? }, parseOptions)` and
+`mountMcapViewer(input, container, ctx, deps?, mountOptions?)` accept injected
+bounded decoders (the optional third argument limits decoder history bytes).
+Injected decoders may throw `McapDecompressionLimitError` to report resource
+limits separately from malformed input.
+`parsers/mcap/self-loading` exports `parseSelfLoadingMcap`
+and `loadMcapDeps`. Missing/unknown codecs leave a partial document with any
+available summary statistics and schemas. Incomplete scans display lower-bound
+counts when exact summary counts are unavailable.
+
+Defaults: 256 MiB input and cumulative chunk bytes, 1,000,000 records/map entries,
+5,000 retained messages, 4 KiB per payload/schema preview and an 8 MiB cumulative
+preview budget. Structural encoding identifiers are read independently of the
+preview budget (up to 16 KiB). Zstd frame content sizes and history windows are
+checked before decoding; history uses the configured chunk byte limit.
+Search/copy operate on retained samples; totals include every
+scanned message. Uint64 values remain decimal strings and timestamps display
+exact seconds relative to the recording's epoch. Chunk, data-section and summary
+CRCs are checked when present; attachment payload CRCs are not checked. Limits
+are cooperative; hosts can use a Worker for hard CPU/memory bounds. The viewer
+supports shadow/scoped isolation and `styles/mcap.css`. Detection recognizes
+the `.mcap` extension and binary magic, including extensionless recordings.
+Host adapters must add `mcap` to their explicit viewer import maps.
+
+The binary reader follows the [MCAP format specification](https://mcap.dev/spec).
 
 ### Fonts (TTF / OTF / WOFF)
 
@@ -489,6 +654,46 @@ returns `partial` with diagnostics. Invalid JSON and unsupported major versions
 return typed failures. See [viewer details](examples/notebook/README.md) and the
 [sample notebook](examples/notebook/analysis.ipynb).
 
+### EML email (.eml)
+
+The EML viewer displays decoded subjects, sender/recipient fields, dates,
+plain-text and HTML bodies, all message headers, a bounded raw-source preview,
+and attachments. It handles nested MIME messages, Base64/quoted-printable,
+encoded header words, legacy body charsets, and extended attachment filenames.
+Attached messages remain downloadable `.eml` files rather than becoming the
+parent message's body. Extensionless messages are detected conservatively.
+
+```ts
+import { mountEmlViewer } from 'omni-viewer-core/viewers/eml';
+import { createCatalogI18n } from 'omni-viewer-core/i18n';
+
+const handle = await mountEmlViewer(
+  { fileName: file.name, data: new Uint8Array(await file.arrayBuffer()) },
+  container,
+  {
+    assets: { resolveAssetUrl: async path => path },
+    i18n: createCatalogI18n('ko'),
+    logger: { log: (level, message) => console.log(level, message) },
+    // Optional: save: { saveFile: async (name, bytes, mimeType) => … },
+    // Optional: clipboard: { writeText: text => navigator.clipboard.writeText(text) }
+  }
+);
+// On file change / unmount:
+handle.dispose();
+```
+
+HTML runs in an opaque sandbox with scripts, navigation, forms, and remote
+resources blocked. Embedded `cid:` raster images render locally. Attachment
+filenames are sanitized; saving goes through the optional host `save` service.
+Copy/save controls are disabled when their host service is absent. No MIME
+dependency is required. Default parsing limits are 32 MiB input/decoded data,
+1,000 MIME parts, 32 nesting levels, and 4 MiB per body preview. Limits can be
+configured through `parseEml(bytes, options)` from `parsers/eml`.
+
+The default mount uses Shadow DOM. Scoped mounting requires
+`omni-viewer-core/styles/eml.css`. Run `npm run build`, serve the repository
+root, and open `examples/eml/` for sample messages and a local file picker.
+
 ### HAR network logs (.har)
 
 A `.har` file is the HTTP Archive a browser's network panel (or curl, Charles,
@@ -534,6 +739,46 @@ reported, with `-1` shown as not applicable). Page load timings and archive
 metadata get their own tabs. Routing is by the `.har` extension; an
 extensionless archive is recognized by content — a `log` object holding an
 `entries` array — and claimed before the generic JSON viewer.
+
+### JUnit XML test reports
+
+A JUnit XML report is what nearly every test runner writes for CI: Gradle's
+`build/test-results/**/TEST-*.xml`, Maven Surefire, `pytest --junitxml`,
+vitest/Jest JUnit reporters, Go and Android tooling. It is an ordinary `.xml`,
+so the generic XML viewer keeps the extension and `detectViewer` routes a file
+to `junit` only when the supplied text sample has a `<testsuites>` root, or a
+`<testsuite>` root carrying counts or a JUnit child element:
+
+```ts
+import { detectViewer } from 'omni-viewer-core/registry';
+import { mountJUnitViewer } from 'omni-viewer-core/viewers/junit';
+
+const { viewerId } = detectViewer(file.name, undefined, undefined, undefined, text);
+if (viewerId === 'junit') await mountJUnitViewer({ fileName: file.name, data: bytes }, container, { ...ctx, clipboard });
+```
+
+`parseJUnit` is a contract parser (`ParseOutcome<JUnitDocument>`) built on the
+core XML scanner, so it has no DOM dependency, never loads external entities,
+and recovers a truncated report as `partial`. It reads nested suites, test cases
+with their `failure`/`error`/`skipped` results (and Surefire's flaky/rerun
+attempts), properties, and suite or case `system-out`/`system-err`. Writers
+disagree about the declared totals, so every count is recomputed from the
+cases; declared totals that differ are reported, not trusted. A `failure` or
+`error` placed directly in a suite becomes a synthetic case so a setup error
+shows in the list.
+
+The viewer opens on the first failing test with a pass/fail verdict, an
+outcome bar and summary figures (tests, passed, failed, errors, skipped, pass
+rate, duration). The test list is filterable by status, suite subtree, and free
+text over names, classes, and messages, with an opt-in toggle that extends the
+search to stack traces and captured output. It is sortable by status severity,
+name, suite, and time. The detail pane shows each result's message, type, and
+trace, the captured output, and properties, and **Copy failure details** puts a
+plain-text report on the clipboard. A suites tab lists nested suites with
+rolled-up counts, and the source tab shows the report text. Defaults are 64 MiB
+input, 100,000 cases, 64 KiB per trace or output block, and 16 MiB of captured
+output in total. See the [viewer contract](docs/viewers/junit.md) and
+[examples](examples/junit/README.md).
 
 ### EPUB e-books (.epub)
 
@@ -607,7 +852,8 @@ XPath (positions appear only where names repeat), the value, or the node's XML.
 Both panes are virtualized, and long single-line sources are split into
 display segments. Defaults are 64 MiB input, 500,000 nodes, and depth 1,000.
 ARXML and ReqIF keep their dedicated viewers by extension. An `.xml` whose root
-is an OpenVINO IR goes to the OpenVINO viewer when a text sample is provided.
+is an OpenVINO IR or a JUnit test report goes to the OpenVINO or JUnit viewer
+when a text sample is provided.
 
 ### Archive host integration
 

@@ -7,7 +7,7 @@ const context = { assets: { resolveAssetUrl: async (path: string) => path }, i18
 
 describe('mountHwpViewer', () => {
     it('renders every WASM page as SVG and frees the document', async () => {
-        vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ font: '', measureText: () => ({ width: 10 }) } as unknown as CanvasRenderingContext2D);
+        vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ font: '', measureText: () => ({ width: 10 }) } as unknown as ReturnType<HTMLCanvasElement['getContext']>);
         const free = vi.fn();
         class Document implements RhwpDocument { pageCount() { return 2; } renderPageSvg(index: number) { return `<svg xmlns="http://www.w3.org/2000/svg" width="100" height="120"><text>${index + 1}</text></svg>`; } free = free; }
         const container = document.createElement('div');

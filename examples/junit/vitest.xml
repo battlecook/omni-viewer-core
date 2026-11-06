@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<testsuites name="vitest tests" tests="6" failures="2" errors="0" time="0.006380125">
+    <testsuite name="sample.test.ts" timestamp="2026-10-30T10:43:30.347Z" hostname="build-host.local" tests="6" failures="2" errors="0" skipped="2" time="0.006380125">
+        <testcase classname="sample.test.ts" name="math &gt; adds" time="0.001303125">
+            <system-out>
+log line &lt;x&gt;
+
+            </system-out>
+        </testcase>
+        <testcase classname="sample.test.ts" name="math &gt; fails" time="0.003707333">
+            <failure message="expected { a: 1 } to deeply equal { a: 2 }" type="AssertionError">
+AssertionError: expected { a: 1 } to deeply equal { a: 2 }
+
+- Expected
++ Received
+
+  {
+-   &quot;a&quot;: 2,
++   &quot;a&quot;: 1,
+  }
+
+ ❯ sample.test.ts:4:40
+            </failure>
+        </testcase>
+        <testcase classname="sample.test.ts" name="math &gt; skipped one" time="0">
+            <skipped/>
+        </testcase>
+        <testcase classname="sample.test.ts" name="math &gt; todo one" time="0">
+            <skipped/>
+        </testcase>
+        <testcase classname="sample.test.ts" name="math &gt; nested &gt; throws" time="0.000409667">
+            <failure message="boom" type="TypeError">
+TypeError: boom
+ ❯ sample.test.ts:7:57
+            </failure>
+        </testcase>
+        <testcase classname="sample.test.ts" name="top level" time="0.000060542">
+        </testcase>
+    </testsuite>
+</testsuites>

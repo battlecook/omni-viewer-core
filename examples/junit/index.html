@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>JUnit XML viewer</title>
+  <style>
+    body{margin:0;background:#1e1e1e;color:#ddd;font:14px/1.5 system-ui,sans-serif}
+    .demo-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:12px;padding:12px 20px;border-bottom:1px solid #444}
+    select,input{font:inherit;color:inherit;background:#252526;border:1px solid #555;border-radius:4px;padding:6px}
+    #route{color:#aaa}#viewer{height:calc(100vh - 65px)}
+  </style>
+</head>
+<body>
+  <div class="demo-toolbar">
+    <label>Sample <select id="sample">
+      <option value="gradle-junit5.xml">Gradle / JUnit 5</option>
+      <option value="pytest-xunit2.xml">pytest (xunit2)</option>
+      <option value="pytest-xunit1.xml">pytest (xunit1)</option>
+      <option value="pytest-teardown-error.xml">pytest (teardown errors)</option>
+      <option value="pytest-xdist-teardown.xml">pytest-xdist (teardown errors)</option>
+      <option value="pytest-xdist-each.xml">pytest-xdist (--dist each)</option>
+      <option value="pytest-xdist-each-pass.xml">pytest-xdist (--dist each, pass + teardown error)</option>
+      <option value="pytest-junitparser-merged.xml">pytest (junitparser merge)</option>
+      <option value="pytest-merged-suite-name.xml">pytest (merged, custom suite name)</option>
+      <option value="pytest-merged-collection-error.xml">pytest (merged, collection error shard)</option>
+      <option value="pytest7-xunit1.xml">pytest 7 (xunit1)</option>
+      <option value="pytest7-suite-name.xml">pytest 7 (custom suite name)</option>
+      <option value="pytest7-module-skip.xml">pytest 7 (module skip first)</option>
+      <option value="vitest.xml">vitest</option>
+      <option value="jenkins-nested-testsuites.xml">Jenkins nested suites</option>
+      <option value="jenkins-suite-error.xml">Jenkins suite error</option>
+    </select></label>
+    <label>Local file <input id="file" type="file" accept=".xml"></label>
+    <span id="route" role="status"></span>
+  </div>
+  <main id="viewer"></main>
+  <script type="module">
+    import { detectViewer } from '../../dist/registry/index.js';
+    import { mountJUnitViewer } from '../../dist/viewers/junit/index.js';
+    import { mountXmlViewer } from '../../dist/viewers/xml/index.js';
+    import { createCatalogI18n } from '../../dist/i18n/index.js';
+    const viewer = document.querySelector('#viewer');
+    const route = document.querySelector('#route');
+    const ctx = { assets: { resolveAssetUrl: async path => path }, i18n: createCatalogI18n(navigator.language), logger: { log: (level, text) => console[level](text) },
+      ...(navigator.clipboard ? { clipboard: { writeText: text => navigator.clipboard.writeText(text) } } : {}) };
+    let current, abort, generation = 0;
+    async function open(name, data) {
+      const version = ++generation;
+      abort?.abort(); abort = new AbortController();
+      current?.dispose();
+      // A 64 KiB sample is all detection needs to see the root.
+      const sample = new TextDecoder().decode(data.subarray(0, 64 * 1024));
+      const detection = detectViewer(name, undefined, undefined, undefined, sample);
+      route.textContent = `${name} → ${detection.viewerId}`;
+      const input = { fileName: name, data }, options = { signal: abort.signal };
+      const handle = detection.viewerId === 'junit' ? await mountJUnitViewer(input, viewer, ctx, options) : await mountXmlViewer(input, viewer, ctx, options);
+      if (version !== generation) handle.dispose(); else current = handle;
+    }
+    async function sample() {
+      const name = document.querySelector('#sample').value;
+      const response = await fetch(`./${name}`);
+      if (!response.ok) throw new Error(`Could not read sample: ${name}`);
+      await open(name, new Uint8Array(await response.arrayBuffer()));
+    }
+    const showError = error => { if (error.name !== 'MountAbortedError') route.textContent = error.message; };
+    document.querySelector('#sample').addEventListener('change', () => sample().catch(showError));
+    document.querySelector('#file').addEventListener('change', async event => {
+      const file = event.target.files?.[0]; if (file) try { await open(file.name, new Uint8Array(await file.arrayBuffer())); } catch(error) { showError(error); }
+    });
+    // ?sample=<file> opens a given sample directly.
+    const requested = new URLSearchParams(location.search).get('sample');
+    if (requested && [...document.querySelector('#sample').options].some(option => option.value === requested)) document.querySelector('#sample').value = requested;
+    await sample();
+  </script>
+</body>
+</html>

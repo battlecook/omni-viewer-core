@@ -9,8 +9,13 @@ import { parseJson } from '../parsers/json/index.js';
 import { asciiLower } from '../parsers/csv/index.js';
 import { looksLikeOpenVinoIr } from '../parsers/openvino/index.js';
 import { GEOJSON_GEOMETRY_TYPES } from '../parsers/geojson/index.js';
+import { looksLikeOpenApi, type OpenApiSniffOptions } from '../parsers/openapi/sniff.js';
+import { looksLikeJUnit } from '../parsers/junit/sniff.js';
 
 export { looksLikeOpenVinoIr } from '../parsers/openvino/index.js';
+export { looksLikeOpenApi } from '../parsers/openapi/sniff.js';
+export { looksLikeJUnit } from '../parsers/junit/sniff.js';
+export type { OpenApiSniffOptions } from '../parsers/openapi/sniff.js';
 
 /** True if `text` parses cleanly as a single JSON object or array. */
 export function looksLikeJsonDocument(text: string): boolean {
@@ -165,18 +170,35 @@ export function looksLikeXml(text: string): boolean {
  * multi-line object streams so a `{…}\n{…}` file is never mis-claimed as JSON;
  * if no jsonl viewer is registered the caller falls through to fallback.
  */
-export function sniffTextViewer(text: string): 'jsonl' | 'har' | 'notebook' | 'geojson' | 'json' | 'html' | 'openvino' | 'xml' | 'proto' | 'latex' | null {
+export function looksLikeEml(text: string): boolean {
+    const head = text.slice(0, 64 * 1024).replace(/^\uFEFF/, '').replace(/^From [^\r\n]*\r?\n/, '').split(/\r?\n\r?\n/, 1)[0]!;
+    const names = new Set<string>();
+    for (const line of head.split(/\r?\n/)) {
+        if (/^[\t ]/.test(line)) continue;
+        const match = /^([a-z][\w-]*):/.exec(line.toLowerCase());
+        if (!match) return false;
+        names.add(match[1]!);
+    }
+    return names.has('from') && (names.has('to') || names.has('date')) &&
+        (names.has('subject') || names.has('message-id') || names.has('mime-version'));
+}
+
+export function sniffTextViewer(text: string, options: OpenApiSniffOptions = {}): 'eml' | 'jsonl' | 'har' | 'notebook' | 'geojson' | 'openapi' | 'json' | 'html' | 'openvino' | 'junit' | 'xml' | 'proto' | 'latex' | null {
+    if (looksLikeEml(text)) return 'eml';
     if (looksLikeJsonl(text)) return 'jsonl';
     // A HAR is a JSON object, so it has to be claimed before the generic JSON
     // tree would take it.
     if (looksLikeHar(text)) return 'har';
     if (looksLikeNotebook(text)) return 'notebook';
     if (looksLikeGeoJson(text)) return 'geojson';
+    if (looksLikeOpenApi(text, options)) return 'openapi';
     if (looksLikeJsonDocument(text)) return 'json';
     if (looksLikeHtml(text)) return 'html';
     // An OpenVINO IR is `.xml`, an extension no viewer claims, so its `<net
     // version><layers>` root is the only route to the viewer.
     if (looksLikeOpenVinoIr(text)) return 'openvino';
+    // Same for a JUnit report: `<testsuites>` / `<testsuite>` at the root.
+    if (looksLikeJUnit(text)) return 'junit';
     if (looksLikeXml(text)) return 'xml';
     if (looksLikeProto(text)) return 'proto';
     if (looksLikeLatex(text)) return 'latex';

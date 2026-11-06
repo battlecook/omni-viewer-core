@@ -5,6 +5,67 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.23.0] - 2026-11-06
+
+### Added
+
+- Read-only `.txt` parser and viewer (`parsers/text`, `viewers/text`,
+  `styles/text.css`) with explicit registry routing, literal whitespace-preserving
+  rendering, soft wrapping, UTF-8 / BOM-aware UTF-16 decoding, bounded previews,
+  encoding/truncation warnings and five UI locales. Host adapters register
+  `.txt` and map the new `text` viewer explicitly.
+
+- DICOM `.dcm`/`.dicom` parser and viewer (`parsers/dicom`, `viewers/dicom`,
+  `styles/dicom.css`) with extensionless Part 10 detection, bounded nested
+  metadata parsing, native implicit/explicit VR little-endian and explicit VR
+  big-endian 8/16-bit grayscale, 8-bit RGB/YBR_FULL, signed pixel/rescale handling,
+  multi-frame navigation, windowing, inversion, zoom, and searchable metadata.
+  Compressed/unsupported image encodings retain metadata with a localized
+  preview limitation message. Includes five UI locales and synthetic examples.
+
+- JUnit XML test report parser and viewer (`parsers/junit`, `viewers/junit`,
+  `styles/junit.css`). `.xml` files and extensionless text with a JUnit
+  `<testsuites>`/`<testsuite>` root route to `junit`; other XML keeps the
+  generic viewer, and so does a report when the `junit` descriptor is disabled.
+  Reads nested suites, failure/error/skipped results, Surefire flaky/rerun
+  attempts, GoogleTest not-run cases, properties and captured output, recomputes counts from the cases
+  and flags declared totals that disagree. The viewer opens on the first
+  failure and adds a verdict, an outcome summary, status/suite/text filters,
+  severity and time sorting, trace and output detail, failure-report copy, a
+  nested suite table and the report source. Checked against real Gradle,
+  pytest (incl. pytest-xdist and junitparser-merged reports), vitest and
+  Jenkins output. `XmlDocument` gains an optional `diagnosticCodes` listing
+  every code the scan reported, past the diagnostic list's cap.
+
+- OpenAPI / Swagger JSON/YAML parser and viewer for Swagger 2.0 and OpenAPI
+  3.0–3.2, with content-based refinement of generic JSON/YAML routing,
+  method/tag/search filters, paginated operations and schemas, inherited
+  parameters, local references, requests/responses/examples, authentication
+  details and original-source inspection. Includes bounded parsing and previews,
+  injected/self-loading YAML, localized UI, offline examples, package subpaths
+  and `styles/openapi.css`.
+
+- EML email parser and viewer with decoded headers, text/HTML body switching,
+  nested MIME, Base64/quoted-printable, legacy charsets, inline CID images,
+  safe attachment saving, clipboard support, and raw source/header inspection.
+  Includes conservative extensionless detection, bounded parsing and previews,
+  sandboxed offline HTML rendering, localized UI, samples, and exports through
+  `parsers/eml`, `viewers/eml`, and `styles/eml.css`.
+
+- MCAP v0 (`.mcap`) parser and viewer with binary detection, topics/channels,
+  schemas, message samples, metadata, attachment listing and chunk inspection.
+  Includes LZ4/Zstd injected/self-loading decoding, CRC validation, exact uint64
+  timestamps/counts, bounded previews, topic/search filters, pagination,
+  text/hex payload inspection, JSON copy, localized UI and cancellation cleanup.
+  Adds `parsers/mcap`, `viewers/mcap`, their `/self-loading` entries and
+  `styles/mcap.css`.
+
+- 3D mesh viewer for GLB/glTF 2.0, ASCII/binary STL and OBJ with orbit/pan/zoom,
+  fit, wireframe, grid/axes, geometry statistics and glTF animation playback.
+  Includes bounded DOM-free preflight, optional injected/self-loading Three.js,
+  host-resolved glTF resources, localized controls, cancellation and GPU cleanup,
+  `parsers/mesh`, `viewers/mesh`, `viewers/mesh/self-loading` and `styles/mesh.css`.
+
 ## [0.22.0] - 2026-10-29
 
 ### Added

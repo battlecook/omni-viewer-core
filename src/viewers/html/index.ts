@@ -121,7 +121,7 @@ export function decodeHtmlText(data: Uint8Array): string {
     catch { return new TextDecoder('utf-8').decode(data); }
 }
 
-export function htmlPreviewDocument(source: string): string {
+export function htmlPreviewDocument(source: string, embeddedImages?: ReadonlyMap<string, string>): string {
     // Template contents are inert and do not load resources while being parsed.
     // Strip navigation and resource attributes too: frame self-navigation is
     // possible in some engines even with an empty sandbox and navigate-to CSP.
@@ -135,12 +135,14 @@ export function htmlPreviewDocument(source: string): string {
     template.content.querySelectorAll('*').forEach(node => {
         for (const attribute of [...node.attributes]) {
             const name = attribute.name.toLowerCase();
-            const value = attribute.value.trim();
+            let value = attribute.value.trim();
             if (name.startsWith('on') || ['srcdoc', 'srcset', 'ping', 'action', 'formaction', 'poster', 'background'].includes(name)) {
                 node.removeAttributeNode(attribute);
             } else if (name === 'href' || name === 'xlink:href') {
                 if (!value.startsWith('#')) node.removeAttributeNode(attribute);
             } else if (name === 'src') {
+                const embedded = node.localName === 'img' ? embeddedImages?.get(value) : undefined;
+                if (embedded !== undefined) { node.setAttribute('src', embedded); value = embedded; }
                 if (node.localName !== 'img' || !/^data:image\/(?:png|jpeg|gif|webp|svg\+xml)(?:;[^,]*)?,/i.test(value)) node.removeAttributeNode(attribute);
             }
         }

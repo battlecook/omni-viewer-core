@@ -79,6 +79,7 @@ export function parseXmlText(text: string, encoding: string, limits: XmlTextLimi
     const stats: XmlStats = { elements: 0, attributes: 0, text: 0, cdata: 0, comments: 0, processingInstructions: 0, maxDepth: 0 };
     const diagnostics: Diagnostic[] = [];
     const reported = new Set<string>();
+    const codes = new Set<string>();
     let overflow = 0;
     // Cast, not annotated: these are assigned inside the scanning closures,
     // which control-flow narrowing of a `null` initializer does not see.
@@ -113,6 +114,9 @@ export function parseXmlText(text: string, encoding: string, limits: XmlTextLimi
             if (reported.has(once)) return;
             reported.add(once);
         }
+        // Recorded before the cap: a consumer judging what the scan lost must
+        // not depend on which diagnostics happened to fit in the list.
+        codes.add(`xml-${code.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`);
         if (diagnostics.length >= XML_MAX_DIAGNOSTICS) {
             overflow++;
             return;
@@ -632,7 +636,7 @@ export function parseXmlText(text: string, encoding: string, limits: XmlTextLimi
     }
 
     return {
-        document: { text, encoding, declaration, doctype, root, topLevel, nodes, namespaces, stats, lineStarts },
+        document: { text, encoding, declaration, doctype, root, topLevel, nodes, namespaces, stats, lineStarts, diagnosticCodes: [...codes] },
         diagnostics,
         stopped
     };

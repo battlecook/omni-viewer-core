@@ -1,0 +1,5 @@
+name: Ordinary YAML
+description: This file uses the existing YAML viewer.
+settings:
+  openapi: a nested setting, not an API definition
+items: [1, 2, 3]

@@ -1,5 +1,5 @@
 export type YamlNodeKind = 'map' | 'seq' | 'scalar' | 'alias';
-export interface YamlNode { kind: YamlNodeKind; key: string; path: string; value?: string | boolean | number | null; raw?: string; range?: readonly number[] | undefined; anchorId?: string | undefined; aliasOf?: string; children?: YamlNode[]; }
+export interface YamlNode { kind: YamlNodeKind; key: string; path: string; value?: string | boolean | number | null; raw?: string; range?: readonly number[] | undefined; anchorId?: string | undefined; aliasOf?: string; /** True only for a tagged/plain YAML merge key; quoted '<<' is an ordinary key. */ mergeKey?: boolean; children?: YamlNode[]; }
 export interface YamlDocument { text: string; documents: YamlNode[]; }
 export interface YamlParserDeps {
     /** Must parse with YAML 1.2 core schema and return YAML AST documents. */

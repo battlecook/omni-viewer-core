@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="1" failures="2" skipped="2" tests="8" time="0.023" timestamp="2026-10-30T19:43:21.748190+09:00" hostname="build-host.local"><testcase classname="test_sample" name="test_pass" file="test_sample.py" line="2" time="0.000"><system-out>--------------------------------- Captured Log ---------------------------------
+
+--------------------------------- Captured Out ---------------------------------
+hello stdout
+
+</system-out><system-err>--------------------------------- Captured Err ---------------------------------
+
+</system-err></testcase><testcase classname="test_sample" name="test_fail" file="test_sample.py" line="6" time="0.000"><failure message="AssertionError: dicts differ&#10;assert {'a': 1} == {'a': 2}&#10;  &#10;  Differing items:&#10;  {'a': 1} != {'a': 2}&#10;  Use -v to get more diff">def test_fail():
+        print("before failure &lt;tag&gt; &amp; ünïcode")
+        sys.stderr.write("err line\n")
+&gt;       assert {"a": 1} == {"a": 2}, "dicts differ"
+E       AssertionError: dicts differ
+E       assert {'a': 1} == {'a': 2}
+E         
+E         Differing items:
+E         {'a': 1} != {'a': 2}
+E         Use -v to get more diff
+
+test_sample.py:10: AssertionError</failure><system-out>--------------------------------- Captured Log ---------------------------------
+
+--------------------------------- Captured Out ---------------------------------
+before failure &lt;tag&gt; &amp; ünïcode
+
+</system-out><system-err>--------------------------------- Captured Err ---------------------------------
+err line
+
+</system-err></testcase><testcase classname="test_sample" name="test_error" file="test_sample.py" line="15" time="0.000"><error message="failed on setup with &quot;RuntimeError: fixture exploded&quot;">@pytest.fixture
+    def broken():
+&gt;       raise RuntimeError("fixture exploded")
+E       RuntimeError: fixture exploded
+
+test_sample.py:14: RuntimeError</error><system-out>--------------------------------- Captured Log ---------------------------------
+
+--------------------------------- Captured Out ---------------------------------
+
+</system-out><system-err>--------------------------------- Captured Err ---------------------------------
+
+</system-err></testcase><testcase classname="test_sample" name="test_skip" file="test_sample.py" line="18" time="0.000"><skipped type="pytest.skip" message="not on this platform">test_sample.py:19: not on this platform</skipped><system-out>--------------------------------- Captured Log ---------------------------------
+
+--------------------------------- Captured Out ---------------------------------
+
+</system-out><system-err>--------------------------------- Captured Err ---------------------------------
+
+</system-err><system-out>--------------------------------- Captured Log ---------------------------------
+
+--------------------------------- Captured Out ---------------------------------
+
+</system-out><system-err>--------------------------------- Captured Err ---------------------------------
+
+</system-err></testcase><testcase classname="test_sample" name="test_xfail" file="test_sample.py" line="22" time="0.000"><skipped type="pytest.xfail" message="known bug" /><system-out>--------------------------------- Captured Log ---------------------------------
+
+--------------------------------- Captured Out ---------------------------------
+
+</system-out><system-err>--------------------------------- Captured Err ---------------------------------
+
+</system-err></testcase><testcase classname="test_sample" name="test_param[1]" file="test_sample.py" line="26" time="0.000"><system-out>--------------------------------- Captured Log ---------------------------------
+
+--------------------------------- Captured Out ---------------------------------
+
+</system-out><system-err>--------------------------------- Captured Err ---------------------------------
+
+</system-err></testcase><testcase classname="test_sample" name="test_param[2]" file="test_sample.py" line="26" time="0.000"><failure message="assert 2 == 1">n = 2
+
+    @pytest.mark.parametrize("n", [1, 2])
+    def test_param(n):
+&gt;       assert n == 1
+E       assert 2 == 1
+
+test_sample.py:29: AssertionError</failure><system-out>--------------------------------- Captured Log ---------------------------------
+
+--------------------------------- Captured Out ---------------------------------
+
+</system-out><system-err>--------------------------------- Captured Err ---------------------------------
+
+</system-err></testcase><testcase classname="test_sample.TestGroup" name="test_method" file="test_sample.py" line="31" time="0.000"><system-out>--------------------------------- Captured Log ---------------------------------
+
+--------------------------------- Captured Out ---------------------------------
+
+</system-out><system-err>--------------------------------- Captured Err ---------------------------------
+
+</system-err></testcase></testsuite></testsuites>

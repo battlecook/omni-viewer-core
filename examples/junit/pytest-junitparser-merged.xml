@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites tests="2" failures="2" errors="0" skipped="0" time="0.0"><testsuite name="pytest" errors="0" failures="1" skipped="0" tests="1" time="0.0" timestamp="2026-10-31T05:54:49.656852+09:00" hostname="build-host.local"><testcase classname="test_a" name="test_a" file="test_a.py" line="0" time="0.000"><failure message="assert 1 == 2">def test_a():
+&gt;       assert 1 == 2
+E       assert 1 == 2
+
+test_a.py:2: AssertionError</failure></testcase></testsuite><testsuite name="pytest" errors="0" failures="1" skipped="0" tests="1" time="0.0" timestamp="2026-10-31T05:54:49.803799+09:00" hostname="build-host.local"><testcase classname="test_b" name="test_b" file="test_b.py" line="1" time="0.000"><failure message="assert 0">def test_b():
+&gt;       assert 0
+E       assert 0
+
+test_b.py:3: AssertionError</failure></testcase></testsuite></testsuites>

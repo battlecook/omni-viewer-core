@@ -2,6 +2,17 @@
 
 This distribution includes the following third-party software.
 
+## Three.js (optional peer)
+
+- Project: Three.js (`three`)
+- Copyright: 2010-2025 three.js authors
+- License: MIT
+- Use: 3D mesh rendering, GLB/glTF/STL/OBJ loaders and orbit controls
+- Source: https://github.com/mrdoob/three.js
+
+Three.js is supplied by the consuming host; the core does not redistribute its
+runtime. Retain the upstream MIT license when bundling it in an application.
+
 ## Hugging Face GGUF parser
 
 - Project: `@huggingface/gguf` and `@huggingface/tasks`
@@ -55,3 +66,15 @@ rhwp project, used only for tests and never published to the npm package.
 - License: MIT
 - Source: https://github.com/edwardkim/rhwp (`rhwp-studio/public/samples/`,
   `samples/valign_fixtures/`)
+
+## JUnit example reports
+
+`examples/junit/jenkins-nested-testsuites.xml` and
+`examples/junit/jenkins-suite-error.xml` are unmodified test fixtures from the
+Jenkins JUnit plugin, used for examples and tests and never published to the
+npm package.
+
+- Project: jenkinsci/junit-plugin (commit `04461ad56caf19b05bc16015f23675883df83d43`)
+- Copyright: (c) 2004-2009, Sun Microsystems, Inc., Kohsuke Kawaguchi
+- License: MIT
+- Source: https://github.com/jenkinsci/junit-plugin/tree/04461ad56caf19b05bc16015f23675883df83d43/src/test/resources/hudson/tasks/junit

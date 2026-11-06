@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites><testsuite name="myproj" errors="0" failures="1" skipped="1" tests="3" time="0.016" timestamp="2026-10-30T22:38:14.291805" hostname="build-host.local"><testcase classname="" name="tests.test_a_gpu" file="tests/test_a_gpu.py" time="0.000"><skipped message="collection skipped">('tests/test_a_gpu.py', 2, 'Skipped: no gpu')</skipped></testcase><testcase classname="tests.test_b" name="test_ok" file="tests/test_b.py" line="2" time="0.000" /><testcase classname="tests.test_b" name="test_bad" file="tests/test_b.py" line="6" time="0.000"><failure message="assert 1 == 2">def test_bad():
+&gt;       assert 1 == 2
+E       assert 1 == 2
+
+tests/test_b.py:8: AssertionError</failure></testcase></testsuite></testsuites>

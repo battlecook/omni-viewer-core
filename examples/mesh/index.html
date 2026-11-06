@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>3D Mesh viewer example</title>
+  <style>
+    body { margin: 0; color: #ddd; background: #1e1e1e; font: 14px/1.5 system-ui, sans-serif; }
+    header { padding: 16px; display: flex; flex-wrap: wrap; gap: 16px; align-items: center; border-bottom: 1px solid #444; }
+    h1 { font-size: 18px; margin: 0; } select, input { font: inherit; max-width: 100%; }
+    #error { margin: 16px; color: #ffd98a; white-space: pre-wrap; } .help { margin: 8px 16px; color: #aaa; }
+  </style>
+  <script type="importmap">
+    { "imports": { "three": "../../node_modules/three/build/three.module.js", "three/addons/": "../../node_modules/three/examples/jsm/" } }
+  </script>
+</head>
+<body>
+  <header>
+    <h1>3D Mesh viewer</h1>
+    <label>Sample <select id="sample"><option value="glb">GLB</option><option value="gltf">glTF</option><option value="stl">STL</option><option value="obj">OBJ</option></select></label>
+    <label>Local files <input id="files" type="file" multiple></label>
+    <label>Local folder <input id="folder" type="file" webkitdirectory multiple></label>
+    <label>Model <select id="models" disabled></select></label>
+  </header>
+  <p class="help">For external glTF buffers and textures, select the model folder or all related files together.</p>
+  <p id="error" role="alert" hidden></p>
+  <main id="viewer"></main>
+  <script type="module">
+    import { mountSelfLoadingMeshViewer } from '../../dist/viewers/mesh/self-loading.js';
+    import { createCatalogI18n } from '../../dist/i18n/index.js';
+    const host = document.getElementById('viewer'), error = document.getElementById('error'), models = document.getElementById('models');
+    const baseContext = { assets: { resolveAssetUrl: async path => path }, i18n: createCatalogI18n(navigator.language), logger: { log: console.warn } };
+    let handle, controller, generation = 0, localFiles = new Map();
+    async function show(fileName, read, context = baseContext) {
+      const current = ++generation; controller?.abort(); controller = new AbortController();
+      const signal = controller.signal;
+      try {
+        const data = await read(); if (current !== generation) return;
+        const container = document.createElement('div');
+        const next = await mountSelfLoadingMeshViewer({ fileName, data }, container, context, { signal });
+        if (current !== generation) { next.dispose(); return; }
+        handle?.dispose(); handle = next; host.replaceChildren(container); error.hidden = true;
+      } catch (reason) {
+        if (current !== generation) return;
+        error.hidden = false; error.textContent = reason instanceof Error ? reason.message : String(reason);
+      }
+    }
+    function sample() {
+      const name = `sample.${document.getElementById('sample').value}`;
+      show(name, async () => { const response = await fetch(name); if (!response.ok) throw new Error('Could not load the sample.'); return new Uint8Array(await response.arrayBuffer()); });
+    }
+    function local() {
+      const path = models.value, file = localFiles.get(path); if (!file) return;
+      const directory = path.slice(0, path.lastIndexOf('/') + 1);
+      show(file.name, async () => new Uint8Array(await file.arrayBuffer()), { ...baseContext, documentAssets: {
+        async resolve(relative) {
+          const asset = localFiles.get(directory + decodeURIComponent(relative).replace(/^\.\//, ''));
+          if (!asset || asset.size > 128 * 1024 * 1024) return null;
+          const url = URL.createObjectURL(asset); return { url, dispose: () => URL.revokeObjectURL(url) };
+        }
+      } });
+    }
+    function selectFiles(event) {
+      localFiles = new Map([...event.target.files].map(file => [file.webkitRelativePath || file.name, file]));
+      models.replaceChildren();
+      for (const [path] of localFiles) if (/\.(glb|gltf|stl|obj)$/i.test(path)) {
+        const option = document.createElement('option'); option.value = option.textContent = path; models.append(option);
+      }
+      models.disabled = !models.options.length; local();
+    }
+    document.getElementById('sample').addEventListener('change', sample);
+    document.getElementById('files').addEventListener('change', selectFiles);
+    document.getElementById('folder').addEventListener('change', selectFiles);
+    models.addEventListener('change', local);
+    window.addEventListener('pagehide', event => { if (event.persisted) return; generation++; controller?.abort(); handle?.dispose(); });
+    sample();
+  </script>
+</body>
+</html>
