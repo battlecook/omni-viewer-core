@@ -1,7 +1,7 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
     computeSpectrogram,
-    hopForColumns,
     windowCoefficients,
     type FrequencyScale,
     type WindowFunction
@@ -127,7 +127,7 @@ describe('spectrogram', () => {
         const window = tone(1000, 1 << 16);
         const columns = computeSpectrogram(window, SAMPLE_RATE, {
             fftSize: 1024,
-            hopSize: hopForColumns(window.length, 2000, 1024)
+            hopSize: Math.floor(window.length / 2000)
         }).columns;
         expect(columns).toBeGreaterThan(1500);
         expect(columns).toBeLessThanOrEqual(2100);
@@ -220,18 +220,11 @@ describe('logarithmic scale', () => {
     });
 });
 
-describe('hop for a target column count', () => {
-    it('spreads the window over roughly the requested columns', () => {
-        expect(hopForColumns(1_000_000, 2000, 1024)).toBe(500);
-        expect(hopForColumns(2_000_000, 2000, 1024)).toBe(1000);
-    });
-
-    it('never exceeds the FFT size, so windows keep overlapping the signal', () => {
-        expect(hopForColumns(100_000_000, 2000, 1024)).toBe(1024);
-    });
-
-    it('never drops below one sample', () => {
-        expect(hopForColumns(10, 2000, 1024)).toBe(1);
-        expect(hopForColumns(1000, 0, 1024)).toBe(1024);
+// The build ships the compiled module as the spectrogram worker's kernel, and a
+// worker served from a blob URL cannot resolve a sibling import.
+describe('worker kernel', () => {
+    it('stays free of imports', () => {
+        const source = readFileSync(new URL('./spectrogram.ts', import.meta.url), 'utf8');
+        expect(source).not.toMatch(/^\s*import\s/m);
     });
 });

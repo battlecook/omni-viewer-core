@@ -5,6 +5,89 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.24.0] - 2026-11-14
+
+### Added
+
+- Seven read-only file previews, each with a parser and a viewer exported
+  through `parsers/<id>` and `viewers/<id>`, sharing `styles/file-preview.css`,
+  bounded parsing that reports omitted records, and five UI locales:
+  - `sarif` — SARIF 2.1.0 reports (`.sarif`, `.sarif.json`) with result
+    severity, rule, tool and source locations.
+  - `gps` — GPX, KML and KMZ on an offline map (no basemap tiles; KML network
+    links and overlays are skipped) with GPX distance, elapsed-time and
+    elevation statistics. Also uses `styles/geojson.css`.
+  - `trace` — Chrome Trace Event JSON (`.trace.json`, `.chrome-trace`) as a
+    timeline with search and zoom for complete, begin/end and instant events.
+  - `sbom` — CycloneDX JSON SBOMs (`.cdx.json`, `.cyclonedx.json`) with
+    components, licenses, package URLs and direct dependencies.
+  - `msg` — Outlook `.msg` messages with headers, text/HTML bodies and file
+    attachments (saved through the optional `save` service). Embedded messages
+    and RTF-only bodies are reported as diagnostics.
+  - `drawio` — compressed or plain draw.io diagrams (`.drawio`, `.dio`) with
+    basic shapes, connectors, layers and pages; advanced styles are
+    approximated.
+  - `opendocument` — ODT text structure and basic ODP slide layout.
+
+  Deflated KMZ, OpenDocument and draw.io content uses the runtime's raw
+  deflate `DecompressionStream` or a bounded `inflate` supplied by the host.
+  With a text sample, `detectViewer` routes `.json` and extensionless SARIF,
+  CycloneDX and Trace Event JSON to `sarif`, `sbom` and `trace`, and `.xml` and
+  extensionless namespaced GPX/KML and draw.io XML to `gps` and `drawio`.
+  `probeContainer` recognizes extensionless KMZ, ODT/ODP and Outlook MSG. A
+  `.msg` must be an OLE compound file, so plain-text `.msg` files (ROS
+  messages, Tcl catalogs) keep their previous routing.
+
+- `mountGeoJsonDocument` in `viewers/geojson` mounts an already normalized
+  `GeoJsonDocument`, so geometry from other formats can use the GeoJSON map.
+
+- The audio spectrogram FFT runs in a Worker. `viewers/audio` exports
+  `createSpectrogramComputer` and the asset keys
+  `SPECTROGRAM_WORKER_ASSET_KEY` (`audio-engine/spectrogram_worker.mjs`) and
+  `SPECTROGRAM_KERNEL_ASSET_KEY` (`audio-engine/spectrogram_kernel.mjs`); the
+  build copies both into `dist/assets/audio-engine/`. A host that does not
+  serve them, or whose CSP refuses the worker, gets the same picture computed
+  in place in time slices. The waveform engine adapter accepts optional
+  `getScroll`, `getWidth` and `getWrapper` so the spectrogram reads the visible
+  range directly.
+
+### Changed
+
+- `.gpx`, `.kml` and `.kmz` open in the `gps` map instead of the generic XML
+  viewer. A GPX/KML root without its namespace stays on the XML viewer, as does
+  any of them when the `gps` descriptor is disabled.
+
+- `probeContainer` returns `opendocument` for ODT/ODP instead of `null`, matches
+  the ODF `mimetype` exactly, and treats `xl/`, `word/` and `ppt/` member
+  prefixes as OOXML only when `[Content_Types].xml` is present. The OLE probe
+  inspects root streams only, so an attachment or embedded Office object no
+  longer decides the format of its enclosing file.
+
+- ZIP and compound-file reading is shared. `probeContainer`, EPUB and the new
+  previews use one ZIP central-directory reader. It ranks EOCD candidates,
+  accepts a trailing directory digital signature, and rejects a directory the
+  declared entry count does not walk. The legacy `.doc` parser and the OLE
+  probe use one CFB reader with DIFAT and mini-stream support.
+
+- Audio zoom no longer reapplies the waveform density when only volume or view
+  mode changes, avoiding a full waveform redraw.
+
+### Fixed
+
+- The audio spectrogram now stays aligned with the waveform after zooming. It
+  previously kept the last scroll range, because the waveform engine fires no
+  scroll event on zoom alone.
+- After scrolling, the spectrogram no longer squeezes its off-screen padding
+  into the visible pane; the canvas is positioned over the time it covers.
+- "Fit" zoom fits tracks longer than the pane is wide in seconds (about 22
+  minutes and up); the density was floored at 1 px/s.
+- Spectrogram cost is bound to the viewport: one column per pixel with sparse
+  reads and cached FFT tables instead of transforming the whole track on the
+  main thread. A 60-minute WAV fit view drops from an 11 s freeze to 0.6 s, and
+  a 2-hour MP3 no longer produces a canvas too wide for the browser to draw.
+- Zoomed-out MP3 spectrograms reuse one decoder for the life of the viewer
+  instead of creating one per window.
+
 ## [0.23.0] - 2026-11-06
 
 ### Added

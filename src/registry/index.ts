@@ -4,6 +4,10 @@
 // viewer metadata exports; the build-time codegen replaces this when more
 // viewers land (ADR 37).
 
+import { SARIF_VIEWER_DESCRIPTOR, GPS_VIEWER_DESCRIPTOR, TRACE_VIEWER_DESCRIPTOR, SBOM_VIEWER_DESCRIPTOR, MSG_VIEWER_DESCRIPTOR, DRAWIO_VIEWER_DESCRIPTOR, OPENDOCUMENT_VIEWER_DESCRIPTOR } from './file-previews.js';
+import { sniffJsonPreview, sniffXmlPreview } from './file-preview-sniff.js';
+export { SARIF_VIEWER_DESCRIPTOR, GPS_VIEWER_DESCRIPTOR, TRACE_VIEWER_DESCRIPTOR, SBOM_VIEWER_DESCRIPTOR, MSG_VIEWER_DESCRIPTOR, DRAWIO_VIEWER_DESCRIPTOR, OPENDOCUMENT_VIEWER_DESCRIPTOR } from './file-previews.js';
+
 import type { ServiceId } from '../host/index.js';
 import { asciiLower } from '../parsers/csv/index.js';
 import { looksLikeArrowIpc } from '../parsers/arrow/sniff.js';
@@ -376,6 +380,13 @@ export const MESH_VIEWER_DESCRIPTOR: ViewerDescriptor = {
 };
 
 export const CORE_VIEWER_DESCRIPTORS: readonly ViewerDescriptor[] = [
+    SARIF_VIEWER_DESCRIPTOR,
+    GPS_VIEWER_DESCRIPTOR,
+    TRACE_VIEWER_DESCRIPTOR,
+    SBOM_VIEWER_DESCRIPTOR,
+    MSG_VIEWER_DESCRIPTOR,
+    DRAWIO_VIEWER_DESCRIPTOR,
+    OPENDOCUMENT_VIEWER_DESCRIPTOR,
     MESH_VIEWER_DESCRIPTOR,
     DICOM_VIEWER_DESCRIPTOR,
     PDF_VIEWER_DESCRIPTOR,
@@ -491,8 +502,8 @@ export function detectViewer(
 ): DetectionResult {
     const lower = asciiLower(fileName);
     const magicMatches = (d: ViewerDescriptor): boolean => {
-        // No sniff bytes → trust the extension (offline-friendly, stage-1).
-        if (!sniffBytes) return true;
+        // Trust the extension without bytes, except when a .msg has a text sample.
+        if (!sniffBytes) return d.id !== 'msg' || sniffText === undefined;
         if (d.id === 'arrow') return looksLikeArrowIpc(sniffBytes);
         if (d.magicPrefix) {
             if (sniffBytes.byteLength < d.magicPrefix.length) return false;
@@ -539,6 +550,11 @@ export function detectViewer(
         if (winner.d.id === 'xml' && winner.ext === 'xml' && sniffText !== undefined && looksLikeJUnit(sniffText)) {
             const junit = descriptors.find((d) => d.id === 'junit');
             if (junit && servicesMet(junit)) return { viewerId: 'junit', matchedBy: 'content' };
+        }
+        if (sniffText !== undefined && (winner.d.id === 'json' || (winner.d.id === 'xml' && winner.ext === 'xml'))) {
+            const previewId = winner.d.id === 'json' ? sniffJsonPreview(sniffText) : sniffXmlPreview(sniffText);
+            const preview = descriptors.find(d => d.id === previewId);
+            if (preview && servicesMet(preview)) return { viewerId: preview.id, matchedBy: 'content' };
         }
         if (['json', 'yaml'].includes(winner.d.id) && sniffText !== undefined) {
             const openapi = descriptors.find(d => d.id === 'openapi');
@@ -591,6 +607,9 @@ export function detectViewer(
 
     // Stage 2 (text content sniffing) — only when the extension gave no match.
     if (sniffText !== undefined) {
+        const previewId = sniffJsonPreview(sniffText) ?? sniffXmlPreview(sniffText);
+        const preview = descriptors.find(d => d.id === previewId);
+        if (preview && servicesMet(preview)) return { viewerId: preview.id, matchedBy: 'content' };
         const sniffedId = sniffTextViewer(sniffText, textOptions);
         if (sniffedId) {
             const d = descriptors.find((x) => x.id === sniffedId);

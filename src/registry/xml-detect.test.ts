@@ -15,11 +15,14 @@ describe('detectViewer (generic XML)', () => {
         expect(descriptor?.optionalServices).toEqual(XML_VIEWER_META.optionalServices);
     });
 
-    it('routes every XML extension, in any case', () => {
+    it('keeps generic XML available for every XML extension, in any case', () => {
+        const descriptors = CORE_VIEWER_DESCRIPTORS.filter(d => d.id !== 'gps');
         for (const ext of XML_VIEWER_META.extensions) {
-            expect(detectViewer(`file.${ext}`).viewerId, ext).toBe('xml');
-            expect(detectViewer(`FILE.${ext.toUpperCase()}`).viewerId, ext).toBe('xml');
+            expect(detectViewer(`file.${ext}`, undefined, descriptors).viewerId, ext).toBe('xml');
+            expect(detectViewer(`FILE.${ext.toUpperCase()}`, undefined, descriptors).viewerId, ext).toBe('xml');
         }
+        expect(detectViewer('route.GPX').viewerId).toBe('gps');
+        expect(detectViewer('map.KML').viewerId).toBe('gps');
     });
 
     it('leaves dialects with their own extension, SVG, and HTML to their viewers', () => {

@@ -15,6 +15,7 @@ const EOCD_SIG = 0x06054b50;
 const EOCD64_LOCATOR_SIG = 0x07064b50;
 const EOCD64_SIG = 0x06064b50;
 const CDFH_SIG = 0x02014b50;
+const CDF_DIGITAL_SIGNATURE = 0x05054b50;
 const LFH_SIG = 0x04034b50;
 const ZIP64_EXTRA_ID = 0x0001;
 /** General-purpose flag bit 0: the member is encrypted (traditional PKWARE / AES). */
@@ -50,7 +51,7 @@ export type EpubReadErrorCode =
 
 export class EpubReadError extends Error {
     override readonly name = 'EpubReadError';
-    constructor(readonly code: EpubReadErrorCode, readonly path: string) {
+    constructor(readonly code: EpubReadErrorCode, readonly path: string, readonly outputBytes?: number) {
         super(`${code}: ${path}`);
     }
 }
@@ -68,50 +69,47 @@ export interface EpubZipDirectory {
 export function readZipDirectory(data: Uint8Array, maxEntries: number): EpubZipDirectory | null {
     if (data.byteLength < 22) return null;
     const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
-    let eocd = -1;
-    let fallback = -1;
+    const candidates: { directory: ZipDirectoryLocation; rank: number; eocd: number }[] = [];
     for (let p = data.byteLength - 22; p >= Math.max(0, data.byteLength - (22 + 0xffff)); p--) {
         if (view.getUint32(p, true) !== EOCD_SIG) continue;
-        // A signature-like run inside the archive comment is not the EOCD; the
-        // real record's comment ends exactly at the end of the input.
-        if (p + 22 + view.getUint16(p + 20, true) === data.byteLength) {
-            eocd = p;
-            break;
-        }
-        // Tolerate trailing bytes after the record (a stray newline appended in
-        // transit) when its directory offset really points at a directory.
-        if (fallback < 0) {
-            const count = view.getUint16(p + 10, true);
-            const offset = view.getUint32(p + 16, true);
-            if (count === 0 || (offset + 4 <= p && view.getUint32(offset, true) === CDFH_SIG)) fallback = p;
-        }
+        const end = p + 22 + view.getUint16(p + 20, true);
+        if (end > data.byteLength) continue;
+        const directory = zipDirectoryAt(view, p);
+        if (!directory) continue;
+        const rank = (directory.count ? 4 : 0) + (directory.adjacent ? 2 : 0) + (end === data.byteLength ? 1 : 0);
+        candidates.push({ directory, rank, eocd: p });
     }
-    if (eocd < 0) eocd = fallback;
-    if (eocd < 0) return null;
-    let declared = view.getUint16(eocd + 10, true);
-    let position = view.getUint32(eocd + 16, true);
-    if (declared === 0xffff || position === 0xffffffff) {
-        const locator = eocd - 20;
-        if (locator < 0 || view.getUint32(locator, true) !== EOCD64_LOCATOR_SIG) return null;
-        const eocd64 = readUint64(view, locator + 8);
-        if (eocd64 === null || eocd64 + 56 > data.byteLength || view.getUint32(eocd64, true) !== EOCD64_SIG) return null;
-        const count = readUint64(view, eocd64 + 32);
-        const offset = readUint64(view, eocd64 + 48);
-        if (count === null || offset === null) return null;
-        declared = count;
-        position = offset;
-    }
+    // Prefer the earlier EOCD on a tie. A later marker may be inside its comment.
+    candidates.sort((a, b) => b.rank - a.rank || a.eocd - b.eocd);
+    const validateEntries = Math.max(0xffff, maxEntries);
+    let remainingChecks = validateEntries * 2;
+    const directory = candidates.find(({ directory }) => {
+        const count = Math.min(directory.count, validateEntries);
+        let at = directory.offset;
+        for (let index = 0; index < count; index++) {
+            if (remainingChecks-- <= 0) return false;
+            at = nextDirectoryEntry(view, at, directory.end);
+            if (at < 0) return false;
+        }
+        // Larger ZIP64 archives still get a bounded probe. For a complete walk,
+        // the declared count must consume the directory, optionally with its signature.
+        return count < directory.count || at === directory.end ||
+            (at + 6 <= directory.end && view.getUint32(at, true) === CDF_DIGITAL_SIGNATURE &&
+                at + 6 + view.getUint16(at + 4, true) === directory.end);
+    })?.directory;
+    if (!directory) return null;
+    const declared = directory.count;
+    let position = directory.offset;
 
     const decoder = new TextDecoder('utf-8', { fatal: false });
     const entries: EpubZipEntry[] = [];
     const count = Math.min(declared, maxEntries);
     for (let index = 0; index < count; index++) {
-        if (position + 46 > data.byteLength || view.getUint32(position, true) !== CDFH_SIG) break;
+        const next = nextDirectoryEntry(view, position, directory.end);
+        if (next < 0) return null;
         const nameLength = view.getUint16(position + 28, true);
         const extraLength = view.getUint16(position + 30, true);
-        const commentLength = view.getUint16(position + 32, true);
         const nameStart = position + 46;
-        if (nameStart + nameLength + extraLength > data.byteLength) break;
         const entry: EpubZipEntry = {
             name: decoder.decode(data.subarray(nameStart, nameStart + nameLength)),
             method: view.getUint16(position + 10, true),
@@ -122,10 +120,50 @@ export function readZipDirectory(data: Uint8Array, maxEntries: number): EpubZipD
         };
         applyZip64Extra(view, nameStart + nameLength, extraLength, entry);
         entries.push(entry);
-        position = nameStart + nameLength + extraLength + commentLength;
+        position = next;
     }
     if (entries.length === 0 && declared > 0) return null;
     return { entries, truncated: declared > count };
+}
+
+function nextDirectoryEntry(view: DataView, offset: number, end: number): number {
+    if (offset + 46 > end || view.getUint32(offset, true) !== CDFH_SIG) return -1;
+    const next = offset + 46 + view.getUint16(offset + 28, true) +
+        view.getUint16(offset + 30, true) + view.getUint16(offset + 32, true);
+    return next <= end ? next : -1;
+}
+
+interface ZipDirectoryLocation {
+    count: number;
+    offset: number;
+    end: number;
+    adjacent: boolean;
+}
+
+function zipDirectoryAt(view: DataView, eocd: number): ZipDirectoryLocation | undefined {
+    let count = view.getUint16(eocd + 10, true);
+    let size = view.getUint32(eocd + 12, true);
+    let offset = view.getUint32(eocd + 16, true);
+    let end = eocd;
+    const locator = eocd - 20;
+    const hasZip64Locator = locator >= 0 && view.getUint32(locator, true) === EOCD64_LOCATOR_SIG;
+    // Exactly 65,535 entries can also be represented by a classic ZIP.
+    if (size === 0xffffffff || offset === 0xffffffff || (count === 0xffff && hasZip64Locator)) {
+        if (!hasZip64Locator) return;
+        const eocd64 = readUint64(view, locator + 8);
+        if (eocd64 === null || eocd64 + 56 > locator || view.getUint32(eocd64, true) !== EOCD64_SIG) return;
+        const count64 = readUint64(view, eocd64 + 32);
+        const size64 = readUint64(view, eocd64 + 40);
+        const offset64 = readUint64(view, eocd64 + 48);
+        if (count64 === null || size64 === null || offset64 === null) return;
+        count = count64;
+        size = size64;
+        offset = offset64;
+        end = eocd64;
+    }
+    if (offset + size > end) return;
+    if (count ? offset + 4 > end || view.getUint32(offset, true) !== CDFH_SIG : offset + size !== end) return;
+    return { count, offset, end: offset + size, adjacent: offset + size === end };
 }
 
 function applyZip64Extra(view: DataView, start: number, length: number, entry: EpubZipEntry): void {
@@ -173,7 +211,14 @@ export function memberPayload(data: Uint8Array, entry: EpubZipEntry): Uint8Array
 
 /** True when this environment can inflate without an injected inflater. */
 export function hasPlatformInflate(): boolean {
-    return typeof DecompressionStream === 'function';
+    if (typeof DecompressionStream !== 'function') return false;
+    try {
+        // Some runtimes implement gzip and zlib streams only.
+        new DecompressionStream('deflate-raw');
+        return true;
+    } catch {
+        return false;
+    }
 }
 
 /**
@@ -203,7 +248,7 @@ export const platformInflate: EpubInflate = async (compressed, maxBytes, signal)
     } catch (error) {
         void reader.cancel().catch(() => undefined);
         if (error instanceof EpubReadError) throw error;
-        throw new EpubReadError('corrupted', '');
+        throw new EpubReadError('corrupted', '', total);
     }
     if (chunks.length === 1) return chunks[0]!;
     const out = new Uint8Array(total);

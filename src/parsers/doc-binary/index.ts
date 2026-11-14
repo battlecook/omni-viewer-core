@@ -1,11 +1,8 @@
+import { CFB_MAGIC, parseCfb, type CfbReader } from '../cfb.js';
 import type { Diagnostic, ParseOptions, ParseOutcome, ParseResult } from '../types.js';
 import { DocBinaryParser, type DocBinaryRuntimeDeps } from './vscode-parser.js';
 export { DocBinaryParser } from './vscode-parser.js';
 export type { DocBinaryRuntimeDeps } from './vscode-parser.js';
-
-const FREESECT = 0xffffffff;
-const ENDOFCHAIN = 0xfffffffe;
-const OLE_MAGIC = [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1] as const;
 
 export interface DocTextRun { text: string; bold?: boolean; italic?: boolean; underline?: boolean }
 export interface DocParagraph { kind: 'paragraph'; text: string; runs: DocTextRun[]; pageBreakBefore?: boolean }
@@ -24,15 +21,11 @@ export interface DocBinaryDocument { sections: DocSection[]; text: string }
  */
 export interface DocBinaryHtmlDocument { html: string }
 
-interface CfbEntry { name: string; type: number; startSector: number; size: number }
-interface CfbReader { getStream(name: string): Uint8Array | null; listStreams(): CfbEntry[] }
 interface FibInfo { tableStreamName: '0Table' | '1Table'; ccpText: number; ccpHdd: number; fcClx: number; lcbClx: number }
 interface Piece { cpStart: number; cpEnd: number; byteOffset: number; compressed: boolean }
 
 const u16 = (data: Uint8Array, offset: number): number => new DataView(data.buffer, data.byteOffset, data.byteLength).getUint16(offset, true);
-const i32 = (data: Uint8Array, offset: number): number => new DataView(data.buffer, data.byteOffset, data.byteLength).getInt32(offset, true);
 const u32 = (data: Uint8Array, offset: number): number => new DataView(data.buffer, data.byteOffset, data.byteLength).getUint32(offset, true);
-const concat = (chunks: Uint8Array[]): Uint8Array => { const size = chunks.reduce((n, c) => n + c.length, 0); const out = new Uint8Array(size); let offset = 0; for (const chunk of chunks) { out.set(chunk, offset); offset += chunk.length; } return out; };
 
 function outcome(result: ParseResult<DocBinaryDocument>): ParseOutcome<DocBinaryDocument> {
     return { result, execution: { workerUsed: false, hardLimitEnforced: false, elapsedMillis: 0 } };
@@ -174,7 +167,7 @@ export async function parseDocBinaryHtml(
     } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
         const passwordRequired = /password|encrypted|encryption/i.test(detail);
-        const corrupted = OLE_MAGIC.every((byte, index) => input[index] === byte) &&
+        const corrupted = CFB_MAGIC.every((byte, index) => input[index] === byte) &&
             /corrupt|invalid.*(?:cfb|ole)|missing .*stream|sector|fat|chain/i.test(detail);
         const code = passwordRequired ? 'password-required' : corrupted ? 'corrupted' : 'invalid-format';
         const messageKey = passwordRequired
@@ -356,21 +349,3 @@ function extractImages(cfb: CfbReader): DocImage[] {
     return images;
 }
 function indexOf(data: Uint8Array, needle: number[], from = 0): number { outer: for (let i = from; i <= data.length - needle.length; i++) { for (let j = 0; j < needle.length; j++) if (data[i + j] !== needle[j]) continue outer; return i; } return -1; }
-
-function parseCfb(file: Uint8Array): CfbReader {
-    if (file.length < 512 || !OLE_MAGIC.every((byte, index) => file[index] === byte)) throw new Error('invalid CFB');
-    const sectorSize = 1 << u16(file, 30), miniSectorSize = 1 << u16(file, 32);
-    if (![512, 4096].includes(sectorSize) || miniSectorSize !== 64) throw new Error('unsupported CFB');
-    const numFat = u32(file, 44), firstDir = i32(file, 48), miniCutoff = u32(file, 56), firstMiniFat = i32(file, 60), numMiniFat = u32(file, 64), firstDifat = i32(file, 68), numDifat = u32(file, 72);
-    const sector = (sid: number): Uint8Array => { const start = (sid + 1) * sectorSize; return sid >= 0 && start + sectorSize <= file.length ? file.subarray(start, start + sectorSize) : new Uint8Array(); };
-    const difat: number[] = []; for (let i = 0; i < 109; i++) { const sid = i32(file, 76 + i * 4); if (sid >= 0) difat.push(sid); }
-    let difatSid = firstDifat; for (let n = 0; n < numDifat && difatSid >= 0; n++) { const data = sector(difatSid); if (!data.length) break; for (let i = 0; i < sectorSize / 4 - 1; i++) { const sid = i32(data, i * 4); if (sid >= 0) difat.push(sid); } difatSid = i32(data, sectorSize - 4); }
-    const fat: number[] = []; for (const sid of difat.slice(0, numFat)) { const data = sector(sid); for (let i = 0; i + 4 <= data.length; i += 4) fat.push(u32(data, i)); }
-    const chain = (start: number): Uint8Array => { const chunks: Uint8Array[] = [], seen = new Set<number>(); let sid = start; while (sid >= 0 && sid !== ENDOFCHAIN && sid !== FREESECT && !seen.has(sid) && sid < fat.length) { seen.add(sid); const data = sector(sid); if (!data.length) break; chunks.push(data); sid = fat[sid] ?? ENDOFCHAIN; } return concat(chunks); };
-    const dir = chain(firstDir), entries: CfbEntry[] = [];
-    for (let offset = 0; offset + 128 <= dir.length; offset += 128) { const nameLength = u16(dir, offset + 64); const name = decodeUtf16(dir.subarray(offset, offset + Math.max(0, nameLength - 2))).replace(/\0/g, ''); const type = dir[offset + 66] ?? 0; const startSector = i32(dir, offset + 116); const size = u32(dir, offset + 120); entries.push({ name, type, startSector, size }); }
-    const root = entries.find((entry) => entry.type === 5); const miniStream = root ? chain(root.startSector).subarray(0, root.size) : new Uint8Array(); const miniFatBytes = chain(firstMiniFat); const miniFat: number[] = []; for (let i = 0; i + 4 <= miniFatBytes.length && i / 4 < numMiniFat * sectorSize / 4; i += 4) miniFat.push(u32(miniFatBytes, i));
-    const miniChain = (start: number, size: number): Uint8Array => { const chunks: Uint8Array[] = [], seen = new Set<number>(); let sid = start; while (sid >= 0 && sid !== ENDOFCHAIN && sid !== FREESECT && !seen.has(sid) && sid < miniFat.length) { seen.add(sid); const offset = sid * miniSectorSize; if (offset + miniSectorSize > miniStream.length) break; chunks.push(miniStream.subarray(offset, offset + miniSectorSize)); sid = miniFat[sid] ?? ENDOFCHAIN; } return concat(chunks).subarray(0, size); };
-    const streams = entries.filter((entry) => entry.type === 2 && entry.name);
-    return { getStream(name) { const entry = streams.find((item) => item.name === name); if (!entry) return null; return entry.size < miniCutoff ? miniChain(entry.startSector, entry.size) : chain(entry.startSector).subarray(0, entry.size); }, listStreams() { return streams.slice(); } };
-}

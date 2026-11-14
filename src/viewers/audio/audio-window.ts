@@ -10,7 +10,12 @@
 
 import { readMp3Info, iterateMp3Frames, type Mp3Info } from './mp3-demux.js';
 import { readWavHeader, streamWavFrames, type AudioByteSource } from './wav-stream.js';
-import { globalWebCodecs, type WebCodecsEnvironment } from './webcodecs-decoder.js';
+import {
+    globalWebCodecs,
+    type AudioDataLike,
+    type AudioDecoderLike,
+    type WebCodecsEnvironment
+} from './webcodecs-decoder.js';
 
 export interface AudioWindow {
     /** Mono samples covering the requested range — the downmix, always present
@@ -174,23 +179,80 @@ export async function decodeMp3Window(
     frameCount: number,
     options: WindowOptions = {}
 ): Promise<AudioWindow> {
-    const environment = options.environment ?? globalWebCodecs();
-    if (!environment) throw new Error('audio window: WebCodecs is not available in this environment');
-    const info = readMp3Info(bytes);
-    const plan = planMp3Window(bytes, info, fromFrame, frameCount);
-    const samples = new Float32Array(Math.max(0, plan.count));
-    if (plan.packets.length === 0 || plan.count === 0) {
-        return { samples, sampleRate: info.sampleRate, startFrame: plan.start };
+    const reader = createMp3WindowReader(bytes, options.environment);
+    try {
+        return await reader.read(fromFrame, frameCount, options);
+    } finally {
+        reader.close();
     }
+}
 
-    // Samples arrive from the pre-roll onwards; skip forward to the request.
-    let skip = plan.start - plan.decodeStart;
-    let written = 0;
+export interface Mp3WindowReader {
+    read(fromFrame: number, frameCount: number, options?: WindowOptions): Promise<AudioWindow>;
+    close(): void;
+}
+
+/**
+ * mp3 windows from one long-lived decoder.
+ *
+ * A zoomed-out spectrogram reads thousands of short windows, and building a
+ * decoder for each costs far more than the few frames it then decodes. Flushing
+ * between windows resets the stream just as well and keeps the decoder.
+ *
+ * Reads run one at a time, in call order: a decoder has a single output
+ * stream, and two windows feeding it at once could not tell their samples
+ * apart.
+ */
+export function createMp3WindowReader(
+    bytes: Uint8Array,
+    environment: WebCodecsEnvironment | undefined = globalWebCodecs()
+): Mp3WindowReader {
+    let info: Mp3Info | undefined;
+    let decoder: AudioDecoderLike | undefined;
+    let sink: ((data: AudioDataLike) => void) | undefined;
     let failure: Error | undefined;
-    let channels: Float32Array[] | undefined;
+    let closed = false;
+    let queue: Promise<unknown> = Promise.resolve();
 
-    const decoder = new environment.AudioDecoder({
-        output(data) {
+    const drop = (): void => {
+        try { decoder?.close(); } catch { /* already closed after an error */ }
+        decoder = undefined;
+        sink = undefined;
+    };
+
+    const window = async (
+        fromFrame: number,
+        frameCount: number,
+        options: WindowOptions
+    ): Promise<AudioWindow> => {
+        if (!environment) throw new Error('audio window: WebCodecs is not available in this environment');
+        if (closed) throw new Error('audio window: reader is closed');
+        throwIfAborted(options.signal);
+        info ??= readMp3Info(bytes);
+        const stream = info;
+        const plan = planMp3Window(bytes, stream, fromFrame, frameCount);
+        const samples = new Float32Array(Math.max(0, plan.count));
+        if (plan.packets.length === 0 || plan.count === 0) {
+            return { samples, sampleRate: stream.sampleRate, startFrame: plan.start };
+        }
+
+        // Samples arrive from the pre-roll onwards; skip forward to the request.
+        let skip = plan.start - plan.decodeStart;
+        let written = 0;
+        let channels: Float32Array[] | undefined;
+        failure = undefined;
+
+        if (!decoder) {
+            decoder = new environment.AudioDecoder({
+                output(data) {
+                    if (sink) sink(data);
+                    else data.close();
+                },
+                error(error) { failure ??= error; }
+            });
+            decoder.configure({ codec: 'mp3', sampleRate: stream.sampleRate, numberOfChannels: stream.channels });
+        }
+        sink = (data): void => {
             try {
                 const channelCount = data.numberOfChannels;
                 const frames = data.numberOfFrames;
@@ -218,31 +280,88 @@ export async function decodeMp3Window(
             } finally {
                 data.close();
             }
-        },
-        error(error) { failure ??= error; }
-    });
+        };
 
-    try {
-        decoder.configure({ codec: 'mp3', sampleRate: info.sampleRate, numberOfChannels: info.channels });
-        let timestamp = 0;
-        for (const packet of plan.packets) {
-            if (failure || written >= plan.count) break;
-            throwIfAborted(options.signal);
-            const duration = Math.round((packet.samples / info.sampleRate) * 1e6);
-            decoder.decode(new environment.EncodedAudioChunk({
-                type: 'key',
-                timestamp,
-                duration,
-                data: bytes.subarray(packet.offset, packet.offset + packet.length)
-            }));
-            timestamp += duration;
+        try {
+            let timestamp = 0;
+            for (const packet of plan.packets) {
+                if (failure || written >= plan.count) break;
+                throwIfAborted(options.signal);
+                const duration = Math.round((packet.samples / stream.sampleRate) * 1e6);
+                decoder.decode(new environment.EncodedAudioChunk({
+                    type: 'key',
+                    timestamp,
+                    duration,
+                    data: bytes.subarray(packet.offset, packet.offset + packet.length)
+                }));
+                timestamp += duration;
+            }
+            // Drains this window's output and resets the stream for the next.
+            await decoder.flush();
+        } catch (error) {
+            // Mid-window state cannot be trusted for the next read.
+            drop();
+            throw failure ?? error;
         }
-        await decoder.flush();
-    } finally {
-        try { decoder.close(); } catch { /* already closed after an error */ }
+        sink = undefined;
+        if (failure) {
+            const error = failure;
+            drop();
+            throw error;
+        }
+        return {
+            samples,
+            sampleRate: stream.sampleRate,
+            startFrame: plan.start,
+            ...(channels ? { channels } : {})
+        };
+    };
+
+    return {
+        read(fromFrame, frameCount, options = {}) {
+            const result = queue.then(() => window(fromFrame, frameCount, options));
+            queue = result.catch(() => undefined);
+            return result;
+        },
+        close(): void {
+            closed = true;
+            drop();
+        }
+    };
+}
+
+interface IndexedMp3Frame { offset: number; length: number; samples: number; at: number }
+
+/** Frame table per file. Walking the headers of a two-hour mp3 is ~276k
+ *  frames, and a zoomed-out spectrogram asks for a few thousand windows. */
+const mp3Indexes = new WeakMap<Uint8Array, { frames: IndexedMp3Frame[]; total: number }>();
+
+function mp3FrameIndex(bytes: Uint8Array, info: Mp3Info): { frames: IndexedMp3Frame[]; total: number } {
+    let index = mp3Indexes.get(bytes);
+    if (!index) {
+        const frames: IndexedMp3Frame[] = [];
+        let cursor = 0;
+        for (const frame of iterateMp3Frames(bytes, info)) {
+            frames.push({ ...frame, at: cursor });
+            cursor += frame.samples;
+        }
+        index = { frames, total: cursor };
+        mp3Indexes.set(bytes, index);
     }
-    if (failure) throw failure;
-    return { samples, sampleRate: info.sampleRate, startFrame: plan.start, ...(channels ? { channels } : {}) };
+    return index;
+}
+
+/** Index of the first frame for which `test` holds; frames are ordered, so the
+ *  predicate flips exactly once. Returns -1 when it never holds. */
+function firstFrame(frames: IndexedMp3Frame[], test: (frame: IndexedMp3Frame) => boolean): number {
+    let low = 0;
+    let high = frames.length;
+    while (low < high) {
+        const middle = (low + high) >>> 1;
+        if (test(frames[middle]!)) high = middle;
+        else low = middle + 1;
+    }
+    return low < frames.length ? low : -1;
 }
 
 interface Mp3WindowPlan {
@@ -265,24 +384,18 @@ export function planMp3Window(
     fromFrame: number,
     frameCount: number
 ): Mp3WindowPlan {
-    const frames: Array<{ offset: number; length: number; samples: number; at: number }> = [];
-    let cursor = 0;
-    for (const frame of iterateMp3Frames(bytes, info)) {
-        frames.push({ ...frame, at: cursor });
-        cursor += frame.samples;
-    }
-    const total = cursor;
+    const { frames, total } = mp3FrameIndex(bytes, info);
     const start = Math.max(0, Math.min(fromFrame, total));
     const count = Math.max(0, Math.min(frameCount, total - start));
     if (frames.length === 0 || count === 0) {
         return { start, count, decodeStart: start, packets: [] };
     }
 
-    let first = frames.findIndex((frame) => frame.at + frame.samples > start);
+    let first = firstFrame(frames, (frame) => frame.at + frame.samples > start);
     if (first === -1) first = frames.length - 1;
     const preroll = Math.max(0, first - MP3_PREROLL_FRAMES);
     const end = start + count;
-    let last = frames.findIndex((frame) => frame.at >= end);
+    let last = firstFrame(frames, (frame) => frame.at >= end);
     if (last === -1) last = frames.length;
 
     return {

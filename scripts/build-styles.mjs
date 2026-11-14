@@ -9,6 +9,7 @@ const root = path.dirname(fileURLToPath(import.meta.url));
 const dist = path.join(root, '..', 'dist');
 
 const entries = [
+    ['viewers/file-preview-styles.js', 'filePreviewCss', 'file-preview.css'],
     ['viewers/dicom/styles.js', 'dicomViewerCss', 'dicom.css'],
     ['viewers/openapi/styles.js', 'openApiViewerCss', 'openapi.css'],
     ['viewers/junit/styles.js', 'junitViewerCss', 'junit.css'],
@@ -79,12 +80,19 @@ await copyFile(
 // WASM audio engine (built from native/audio-engine, committed artifacts).
 const audioEngine = path.join(dist, 'assets', 'audio-engine');
 await mkdir(audioEngine, { recursive: true });
-for (const artifact of ['audio_engine.mjs', 'audio_engine.wasm', 'audio_engine_worker.mjs']) {
+for (const artifact of ['audio_engine.mjs', 'audio_engine.wasm', 'audio_engine_worker.mjs', 'spectrogram_worker.mjs']) {
     await copyFile(
         path.join(root, '..', 'assets', 'audio-engine', artifact),
         path.join(audioEngine, artifact)
     );
 }
+// The spectrogram worker imports the transform itself from here. It is the
+// compiled module, not a copy of its source, so the worker and the in-place
+// fallback run the same code. `spectrogram.ts` must stay import-free for this.
+await copyFile(
+    path.join(dist, 'viewers', 'audio', 'spectrogram.js'),
+    path.join(audioEngine, 'spectrogram_kernel.mjs')
+);
 
 const licenses = path.join(dist, 'licenses');
 await mkdir(licenses, { recursive: true });

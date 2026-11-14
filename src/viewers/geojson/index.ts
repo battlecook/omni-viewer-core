@@ -1,6 +1,6 @@
 import type { HostContext } from '../../host/index.js';
-import { utf8ByteLength } from '../../parsers/types.js';
-import { parseGeoJson, type GeoJsonGeometry, type GeoJsonParseOptions, type GeoJsonPosition } from '../../parsers/geojson/index.js';
+import { utf8ByteLength, type Diagnostic } from '../../parsers/types.js';
+import { parseGeoJson, type GeoJsonDocument, type GeoJsonGeometry, type GeoJsonParseOptions, type GeoJsonPosition } from '../../parsers/geojson/index.js';
 import { MountAbortedError, VIEWER_ROOT_CLASS, type MountOptions, type ViewerHandle, type ViewerInput } from '../types.js';
 import { geoJsonViewerCss } from './styles.js';
 
@@ -48,7 +48,15 @@ export async function mountGeoJsonViewer(
         if (result.failure.code === 'aborted') throw new MountAbortedError();
         throw new Error(ctx.i18n.t(result.failure.messageKey, result.failure.args));
     }
-    const model = result.document;
+    return mountGeoJsonDocument(result.document, result.diagnostics, input.fileName, container, ctx, options);
+}
+
+/** Mount an already normalized map, including geometry from other formats. */
+export function mountGeoJsonDocument(
+    model: GeoJsonDocument, diagnostics: readonly Diagnostic[], fileName: string,
+    container: HTMLElement, ctx: GeoJsonViewerContext, options: GeoJsonMountOptions = {}
+): ViewerHandle {
+    if (options.signal?.aborted) throw new MountAbortedError();
     const previewBudget = options.limits?.maxPreviewBytes ?? 64 * 1024;
     // Acquire the rendering host before subscribing to document/window events.
     // Unsupported shadow hosts can reject here without retaining the model in listeners.
@@ -63,7 +71,7 @@ export async function mountGeoJsonViewer(
     };
     const shell = doc.createElement('section');
     shell.className = `${VIEWER_ROOT_CLASS} omni-viewer--geojson omni-geojson`;
-    const heading = el('h2', 'title', input.fileName);
+    const heading = el('h2', 'title', fileName);
     const summary = el('p', 'summary', t('geojson.summary', { features: model.features.length, vertices: model.vertexCount }));
     const toolbar = el('div', 'toolbar');
     const button = (key: string): HTMLButtonElement => {
@@ -94,13 +102,13 @@ export async function mountGeoJsonViewer(
     const propertiesTitle = el('h3', 'properties-title', t('geojson.properties'));
     const propertiesBody = el('div', 'empty', t('geojson.noSelection'));
     properties.append(propertiesTitle, propertiesBody);
-    const warningsText = result.diagnostics.map(d => {
+    const warningsText = diagnostics.map(d => {
         const args = d.args && Object.fromEntries(Object.entries(d.args).map(([key, value]) =>
             [key, typeof value === 'string' ? previewText(value, 1024).text : value]));
         return t(d.messageKey, args);
     }).join('\n');
     const warnings = el('div', 'warning', previewText(warningsText, previewBudget).text);
-    warnings.hidden = result.diagnostics.length === 0;
+    warnings.hidden = diagnostics.length === 0;
     shell.append(heading, summary, toolbar, svg, empty, hint, properties, warnings);
 
     let initial: ViewBox | null = null;

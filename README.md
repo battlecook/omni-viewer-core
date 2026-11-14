@@ -14,23 +14,23 @@ models, viewers mount into a DOM element, and everything host-specific
 
 - **Documents** — Plain text (.txt), PDF, Word (DOCX and legacy DOC), HWP, PowerPoint (PPTX and
   legacy PPT), HTML, Markdown, Jupyter Notebook (.ipynb), EPUB e-books (2 and 3),
-  LaTeX (structure and math preview, not typesetting)
+  LaTeX (structure and math preview, not typesetting), OpenDocument (ODT/ODP)
 - **Data & spreadsheets** — Excel, CSV/TSV, JSON, JSONL/NDJSON, YAML, TOML, XML,
   Parquet, Arrow IPC / Feather V2 (.arrow/.feather), Avro, HDF5, MATLAB MAT, NumPy (NPY/NPZ), Safetensors, GGUF, ONNX, TFLite/LiteRT,
   Keras (.keras and legacy .h5), Core ML (.mlmodel and .mlpackage),
   OpenVINO IR (.xml + .bin), PyTorch Export (.pt2), ExecuTorch (.pte), Protocol
   Buffers, ReqIF, SQLite
-- **Email, web & network** — EML email messages, HAR (HTTP Archive) request logs,
+- **Email, web & network** — EML and Outlook MSG email messages, HAR (HTTP Archive) request logs,
   OpenAPI / Swagger API documents (JSON/YAML)
-- **Developer tooling** — JUnit XML test reports (Gradle, Maven Surefire,
-  pytest, vitest/Jest, Jenkins and other JUnit-format writers)
+- **Developer tooling** — JUnit XML test reports, SARIF 2.1.0, CycloneDX JSON
+  SBOMs, Chrome Trace Event JSON
 - **Medical imaging** — DICOM (.dcm/.dicom), native grayscale/RGB image preview,
   multi-frame navigation, windowing and metadata inspection
 - **Media & graphics** — audio (waveform/spectrogram), video, images,
   Photoshop PSD, fonts (TTF/OTF/WOFF), 3D meshes (GLB/glTF/STL/OBJ)
 - **Engineering & automotive** — CAN DBC, AUTOSAR ARXML, ASAM A2L, Vector
   ASC/BLF logs, ASAM MDF 4 (MF4), PCAP/PCAPNG, ROS bag, MCAP (.mcap), STEP (STP)
-- **Diagrams & GIS** — Mermaid, PlantUML, ESRI Shapefile, GeoJSON
+- **Diagrams & GIS** — Mermaid, PlantUML, draw.io, ESRI Shapefile, GeoJSON, GPX, KML and KMZ
 - **Archives** — ZIP-family listing and safe entry preview
 
 The HTML viewer handles `.html` and `.htm` files with preview and source tabs.
@@ -122,6 +122,40 @@ if (result.status !== 'failed') {
 Viewers follow the same pattern — a `mount*Viewer(input, container, ctx,
 deps)` entry per format, plus `self-loading` variants that dynamically import
 their own dependencies for hosts that don't want to wire them manually.
+
+### Read-only file previews
+
+| Viewer ID | Parser / mount | Preview |
+| --- | --- | --- |
+| `sarif` | `parseSarif` / `mountSarifViewer` | Result severity, rule, tool and source locations |
+| `gps` | `parseGps` / `mountGpsViewer` | Offline GPX/KML/KMZ map and GPX track statistics |
+| `trace` | `parseTrace` / `mountTraceViewer` | Chrome Trace Event JSON timeline with search and zoom |
+| `sbom` | `parseSbom` / `mountSbomViewer` | CycloneDX components, licenses and direct dependencies |
+| `msg` | `parseMsg` / `mountMsgViewer` | Outlook message headers, text/HTML and file attachments |
+| `drawio` | `parseDrawio` / `mountDrawioViewer` | Compressed or plain diagrams, basic shapes, connectors and layers |
+| `opendocument` | `parseOpenDocument` / `mountOpenDocumentViewer` | ODT structure and basic ODP slide layout |
+
+Import each from `omni-viewer-core/parsers/<id>` or
+`omni-viewer-core/viewers/<id>`. Register the extensions and map the viewer IDs
+to their mount functions in the host. Scoped mounts use
+`omni-viewer-core/styles/file-preview.css`; the GPS map also uses
+`omni-viewer-core/styles/geojson.css`. Deflated KMZ, OpenDocument and draw.io
+content uses the runtime’s raw deflate `DecompressionStream` or a bounded
+`inflate` function supplied by the host.
+
+When `detectViewer` receives a text sample, it also routes `.json` and
+extensionless SARIF 2.1.0, CycloneDX and Trace Event JSON to `sarif`, `sbom`
+and `trace`, and `.xml` and extensionless namespaced GPX/KML and draw.io XML to
+`gps` and `drawio`. Extensionless KMZ, ODT/ODP and Outlook MSG are recognized by
+`probeContainer`. A `.msg` file must be an OLE compound file, so plain-text
+`.msg` files (ROS messages, Tcl catalogs) keep their previous routing.
+
+The GPS map draws geometry without basemap tiles and skips KML network links
+and overlays. The trace preview supports complete, begin/end and instant events.
+The MSG preview reads ordinary attachments and displays a diagnostic for
+embedded messages or RTF-only bodies. draw.io approximates advanced styles
+with basic shapes. OpenDocument previews text structure and basic slide layout.
+Each preview reports records omitted because of resource limits.
 
 ### OpenAPI / Swagger (JSON / YAML)
 
@@ -827,7 +861,7 @@ stored `mimetype` member.
 ### XML (.xml and XML dialects)
 
 Configuration and integration documents (`pom.xml`, Android manifests,
-MSBuild projects, SOAP/WSDL, RSS/Atom, XLIFF, KML/GPX…) open as an
+MSBuild projects, SOAP/WSDL, RSS/Atom, XLIFF…) open as an
 element/attribute tree with a node inspector and the original source side by
 side:
 
@@ -851,9 +885,11 @@ comments and PIs, with next/previous and a matches-only filter. Copy gives the
 XPath (positions appear only where names repeat), the value, or the node's XML.
 Both panes are virtualized, and long single-line sources are split into
 display segments. Defaults are 64 MiB input, 500,000 nodes, and depth 1,000.
-ARXML and ReqIF keep their dedicated viewers by extension. An `.xml` whose root
-is an OpenVINO IR or a JUnit test report goes to the OpenVINO or JUnit viewer
-when a text sample is provided.
+ARXML and ReqIF keep their dedicated viewers by extension, and `.gpx`/`.kml`
+open in the GPS map. When a text sample is provided, an `.xml` whose root is an
+OpenVINO IR, a JUnit test report, a namespaced GPX/KML document or a draw.io
+`<mxfile>`/`<mxGraphModel>` goes to the OpenVINO, JUnit, GPS or draw.io viewer;
+a GPX/KML root without its namespace stays on this viewer.
 
 ### Archive host integration
 

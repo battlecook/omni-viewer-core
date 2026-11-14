@@ -6,6 +6,7 @@ import {
     paintAxis,
     paintSpectrogram,
     paintSpectrograms,
+    planColumns,
     viewportFrames
 } from './spectrogram-view.js';
 import type { AudioWindow } from './audio-window.js';
@@ -49,6 +50,37 @@ describe('viewport to frames', () => {
     it('asks for nothing when nothing is visible', () => {
         expect(viewportFrames({ scrollSeconds: 0, visibleSeconds: 0, width: 0 }, RATE, RATE).frameCount)
             .toBe(0);
+    });
+});
+
+describe('column plan', () => {
+    const FFT = 1024;
+
+    // The property the whole design rests on: the work follows the screen.
+    it('spends the same columns on a two-hour overview as on a ten-second one', () => {
+        const short = planColumns({ scrollSeconds: 0, visibleSeconds: 10, width: 1000 }, RATE, RATE * 10, FFT)!;
+        const long = planColumns({ scrollSeconds: 0, visibleSeconds: 7200, width: 1000 }, RATE, RATE * 7200, FFT)!;
+        expect(short.columns).toBe(1000);
+        expect(long.columns).toBe(1000);
+        // Zoomed out, a column stands for far more audio than one window.
+        expect(long.hop).toBeGreaterThan(FFT);
+        expect(short.hop).toBeLessThan(FFT);
+    });
+
+    it('adds columns for the overscan, at the same density as the screen', () => {
+        const plan = planColumns({ scrollSeconds: 100, visibleSeconds: 10, width: 1000 }, RATE, RATE * 600, FFT)!;
+        expect(plan.fromFrame).toBe(95 * RATE);
+        expect(plan.frameCount).toBe(20 * RATE);
+        expect(plan.columns).toBe(2000);
+    });
+
+    it('caps the columns on a very wide pane', () => {
+        const plan = planColumns({ scrollSeconds: 0, visibleSeconds: 60, width: 9000 }, RATE, RATE * 60, FFT, 1600)!;
+        expect(plan.columns).toBe(1600);
+    });
+
+    it('declines a range too short to transform', () => {
+        expect(planColumns({ scrollSeconds: 0, visibleSeconds: 0.001, width: 800 }, RATE, 500, FFT)).toBeUndefined();
     });
 });
 
@@ -116,10 +148,54 @@ describe('spectrogram view', () => {
         view.show({ scrollSeconds: 0, visibleSeconds: 2, width: 800 });
         await settle();
 
-        expect(read).toHaveBeenCalledOnce();
+        expect(read).toHaveBeenCalled();
         const canvas = container.querySelector('canvas') as HTMLCanvasElement;
         expect(canvas.height).toBe(32);
-        expect(canvas.width).toBeGreaterThan(1);
+        // One column per pixel: 800 for the screen and as many again for the
+        // overscan, all of it on the far side at the head of the track.
+        expect(canvas.width).toBe(1600);
+        view.destroy();
+    });
+
+    // Zoomed out, a column stands for seconds of audio. Reading all of it to
+    // transform one window per column is what made long tracks slow.
+    it('reads only the windows it transforms on a zoomed-out view', async () => {
+        const container = document.createElement('div');
+        const read = vi.fn(async (_from: number, count: number) => tone(count));
+        const total = RATE * 7200;
+        const view = createSpectrogramView({
+            container, read, sampleRate: RATE, totalFrames: total, bins: 32
+        });
+        view.show({ scrollSeconds: 0, visibleSeconds: 7200, width: 800 });
+        await settle();
+
+        const framesRead = read.mock.calls.reduce((sum, call) => sum + call[1]!, 0);
+        expect(framesRead).toBeLessThanOrEqual(800 * 1024);
+        expect((container.querySelector('canvas') as HTMLCanvasElement).width).toBe(800);
+        view.destroy();
+    });
+
+    // The picture has to sit over the stretch of time it was computed for, or
+    // it disagrees with the waveform above it.
+    it('places the picture over its own stretch of time and moves it with the viewport', async () => {
+        const container = document.createElement('div');
+        const read = vi.fn(async (_from: number, count: number) => tone(count));
+        const view = createSpectrogramView({
+            container, read, sampleRate: RATE, totalFrames: RATE * 600, bins: 32
+        });
+        view.show({ scrollSeconds: 100, visibleSeconds: 10, width: 800 });
+        await settle();
+        const canvas = container.querySelector('canvas') as HTMLCanvasElement;
+        // Computed for 95s..115s, shown through a 100s..110s window.
+        expect(canvas.style.left).toBe('-50%');
+        expect(canvas.style.width).toBe('200%');
+
+        // Before any recompute: a scroll moves it, a zoom stretches it.
+        view.show({ scrollSeconds: 105, visibleSeconds: 10, width: 800 });
+        expect(canvas.style.left).toBe('-100%');
+        view.show({ scrollSeconds: 100, visibleSeconds: 5, width: 800 });
+        expect(canvas.style.left).toBe('-100%');
+        expect(canvas.style.width).toBe('400%');
         view.destroy();
     });
 
@@ -134,9 +210,10 @@ describe('spectrogram view', () => {
         for (let i = 0; i < 20; i++) view.show({ scrollSeconds: i, visibleSeconds: 2, width: 800 });
         await settle();
 
-        expect(read).toHaveBeenCalledOnce();
-        // The last viewport wins.
-        expect(read.mock.calls[0]![0]).toBe(Math.floor((19 - 2) * RATE));
+        // The last viewport wins: nothing is read for the ones before it.
+        const starts = read.mock.calls.map((call) => call[0]!);
+        expect(starts.length).toBeGreaterThan(0);
+        expect(Math.min(...starts)).toBeGreaterThanOrEqual((19 - 1) * RATE - 1024);
         view.destroy();
     });
 
@@ -306,11 +383,12 @@ describe('spectrogram view settings', () => {
         });
         view.show({ scrollSeconds: 0, visibleSeconds: 2, width: 800 });
         await settle();
-        expect(read).toHaveBeenCalledOnce();
+        const once = read.mock.calls.length;
+        expect(once).toBeGreaterThan(0);
 
         view.setSettings({ frequencyMax: 4000, windowFunc: 'blackman' });
         await settle();
-        expect(read).toHaveBeenCalledTimes(2);
+        expect(read).toHaveBeenCalledTimes(once * 2);
         view.destroy();
     });
 
@@ -324,11 +402,12 @@ describe('spectrogram view settings', () => {
         });
         view.show({ scrollSeconds: 0, visibleSeconds: 2, width: 800 });
         await settle();
+        const once = read.mock.calls.length;
 
         view.setSettings({ scale: 'mel' });
         view.setScale('mel');
         await settle();
-        expect(read).toHaveBeenCalledOnce();
+        expect(read).toHaveBeenCalledTimes(once);
         view.destroy();
     });
 

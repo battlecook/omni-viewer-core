@@ -17,6 +17,6 @@ describe('EPUB detection', () => {
 
     it('leaves a ZIP with a different mimetype to the other viewers', async () => {
         const odt = buildZip([{ name: 'mimetype', data: 'application/vnd.oasis.opendocument.text' }, { name: 'content.xml', data: '<x/>' }]);
-        expect(await probeContainer(odt, 'zip')).toBeNull();
+        expect(await probeContainer(odt, 'zip')).toBe('opendocument');
     });
 });

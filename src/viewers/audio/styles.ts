@@ -99,14 +99,14 @@ export const audioViewerCss = mediaViewerCss + `
 .omni-audio__spectrogram { min-height: 0; }
 .omni-audio__spectrogram--active { min-height: 200px; }
 /* Viewport-driven spectrogram: the canvas is sized to the analysis (one pixel
-   column per window) and stretched by CSS, so the work stays proportional to
-   the transform rather than the display. */
-.omni-audio__spectrogram-canvas { display: block; width: 100%; image-rendering: pixelated; }
+   column per window) and placed by script over the stretch of time it covers,
+   so it stays aligned with the waveform while it scrolls and zooms. */
+.omni-audio__spectrogram-canvas { display: block; image-rendering: pixelated; }
 
 /* The frequency axis is drawn at its own 1:1 scale and laid over the picture:
    the spectrogram canvas is sized to the analysis and stretched by CSS, which
    would smear any text drawn into it. */
-.omni-audio__spectrogram-stack { position: relative; }
+.omni-audio__spectrogram-stack { position: relative; overflow: hidden; }
 .omni-audio__spectrogram-axis {
     position: absolute; top: 0; left: 0; pointer-events: none;
 }

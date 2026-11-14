@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+    createMp3WindowReader,
     decodeMp3Window,
     planMp3Window,
     readDecodedWindow,
@@ -198,6 +199,64 @@ function stereoWav(frames: number, left: number, right: number, rate = 8000): Ui
     for (let f = 0; f < frames; f++) { pcm[f * 2] = left; pcm[f * 2 + 1] = right; }
     return encodeWavFromFloat32(pcm, 2, rate);
 }
+
+// A zoomed-out spectrogram reads thousands of short windows; a decoder apiece
+// costs more than the frames it decodes.
+describe('mp3 window reader', () => {
+    const counting = (): { environment: WebCodecsEnvironment; built: () => number } => {
+        const base = fakeEnvironment(() => 0.5);
+        let built = 0;
+        const Decoder = base.AudioDecoder as unknown as new(init: unknown) => AudioDecoderLike;
+        class Counted extends Decoder {
+            constructor(init: unknown) { super(init); built++; }
+        }
+        return {
+            environment: { ...base, AudioDecoder: Counted as unknown as WebCodecsEnvironment['AudioDecoder'] },
+            built: () => built
+        };
+    };
+
+    it('serves many windows from one decoder', async () => {
+        const { environment, built } = counting();
+        const reader = createMp3WindowReader(mp3Stream(200), environment);
+        const first = await reader.read(20 * 1152, 1152);
+        const second = await reader.read(150 * 1152, 2 * 1152);
+        expect(first.samples).toHaveLength(1152);
+        expect(second.startFrame).toBe(150 * 1152);
+        expect(second.samples).toHaveLength(2 * 1152);
+        expect(built()).toBe(1);
+        reader.close();
+    });
+
+    it('keeps overlapping requests apart', async () => {
+        const { environment } = counting();
+        const reader = createMp3WindowReader(mp3Stream(200), environment);
+        const [a, b] = await Promise.all([reader.read(0, 1152), reader.read(100 * 1152, 3 * 1152)]);
+        expect(a.samples).toHaveLength(1152);
+        expect(b.samples).toHaveLength(3 * 1152);
+        expect(b.samples.every((value) => Math.abs(value - 0.5) < 1e-6)).toBe(true);
+        reader.close();
+    });
+
+    it('keeps working after an aborted read', async () => {
+        const { environment, built } = counting();
+        const reader = createMp3WindowReader(mp3Stream(200), environment);
+        const controller = new AbortController();
+        controller.abort();
+        await expect(reader.read(0, 100 * 1152, { signal: controller.signal })).rejects.toThrow(/aborted/);
+        await reader.read(0, 1152);
+        await reader.read(50 * 1152, 1152);
+        expect(built()).toBe(1);
+        reader.close();
+    });
+
+    it('refuses to read once closed', async () => {
+        const { environment } = counting();
+        const reader = createMp3WindowReader(mp3Stream(50), environment);
+        reader.close();
+        await expect(reader.read(0, 1152)).rejects.toThrow(/closed/);
+    });
+});
 
 describe('keeping channels', () => {
     it('leaves channels out unless asked', async () => {

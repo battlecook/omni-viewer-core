@@ -27,6 +27,10 @@ export const OFFICE_CONTAINER_BY_EXT: Readonly<Record<string, ContainerKind>> = 
     xlsx: 'zip',
     xlsm: 'zip',
     xlsb: 'zip', // binary workbook — still an OOXML-style zip with an xl/ tree
+    odt: 'zip',
+    odp: 'zip',
+    kmz: 'zip',
+    msg: 'ole',
     ods: 'zip', // OpenDocument spreadsheet — zip with a spreadsheet mimetype
     xls: 'ole',
     pptx: 'zip',

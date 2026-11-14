@@ -57,7 +57,18 @@ function makeHwpOle(includeBodyText: boolean): Uint8Array {
     out.set([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]); view.setUint16(30, 9, true); view.setUint32(44, 1, true); view.setUint32(48, 1, true); view.setUint32(76, 0, true);
     view.setUint32(512, 0xfffffffd, true); view.setUint32(516, 0xfffffffe, true);
     const entry = (offset: number, name: string, type: number): void => { const bytes = new TextEncoder().encode(`${name.split('').map((char) => `${char}\0`).join('')}\0\0`); out.set(bytes, offset); view.setUint16(offset + 64, bytes.length, true); view.setUint8(offset + 66, type); };
-    entry(1024, 'FileHeader', 2); if (includeBodyText) entry(1152, 'BodyText', 1); return out;
+    view.setUint16(32, 6, true);
+    entry(1024, 'Root Entry', 5);
+    view.setUint32(1024 + 76, 1, true);
+    entry(1152, 'FileHeader', 2);
+    view.setUint32(1152 + 68, 0xffffffff, true);
+    view.setUint32(1152 + 72, includeBodyText ? 2 : 0xffffffff, true);
+    if (includeBodyText) {
+        entry(1280, 'BodyText', 1);
+        view.setUint32(1280 + 68, 0xffffffff, true);
+        view.setUint32(1280 + 72, 0xffffffff, true);
+    }
+    return out;
 }
 
 describe('probeContainer — zip', () => {

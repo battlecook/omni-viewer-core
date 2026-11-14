@@ -2,15 +2,20 @@
 // paints it. Replaces the engine plugin, which only ever works on a whole file
 // and so costs seconds-to-forever on long audio.
 //
-// Split from the DOM on purpose: `paintSpectrogram` and `viewportFrames` are
-// pure and tested, and the controller below is the only part that needs a
-// canvas.
+// The work is bounded by the screen, not the track: one analysis window per
+// pixel column, however much audio a column stands for. Zoomed out, the
+// windows are sparse samples of the track; zoomed in, they overlap.
+//
+// Split from the DOM on purpose: `paintSpectrogram`, `viewportFrames` and
+// `planColumns` are pure and tested, and the controller below is the only part
+// that needs a canvas.
 
 import {
     computeSpectrogram,
     frequencyAtFraction,
-    hopForColumns,
     type FrequencyScale,
+    type Spectrogram,
+    type SpectrogramOptions,
     type WindowFunction
 } from './spectrogram.js';
 import type { AudioWindow } from './audio-window.js';
@@ -163,6 +168,36 @@ export function paintSpectrograms(
     return { columns, bins };
 }
 
+/**
+ * Paints a batch of columns at `x` without touching the rest of the canvas, so
+ * a viewport can fill in piece by piece instead of appearing all at once.
+ */
+export function paintColumnsAt(
+    canvas: HTMLCanvasElement,
+    layers: ReadonlyArray<{ columns: number; bins: number; data: Uint8Array }>,
+    x: number,
+    ramp: ColorRamp = RAMP
+): void {
+    const colors = ramp.length >= 2 ? ramp : RAMP;
+    const first = layers[0];
+    const columns = first?.columns ?? 0;
+    const bins = first?.bins ?? 0;
+    const context = canvas.getContext('2d');
+    if (!context || columns === 0 || bins === 0) return;
+    const height = bins * layers.length;
+    const image = context.createImageData(columns, height);
+    layers.forEach((layer, index) => {
+        const top = index * bins;
+        for (let column = 0; column < Math.min(columns, layer.columns); column++) {
+            for (let row = 0; row < bins; row++) {
+                const y = top + bins - 1 - row;
+                colorFor(layer.data[column * bins + row]!, image.data, (y * columns + column) * 4, colors);
+            }
+        }
+    });
+    context.putImageData(image, x, 0);
+}
+
 /** Frequencies to mark, chosen so the ticks stay legible at any height. */
 const LABEL_SPACING_PX = 50;
 
@@ -221,6 +256,14 @@ export function paintAxis(canvas: HTMLCanvasElement, options: AxisOptions): numb
 /** Enough for "22.1 kHz" at 10px plus its backing box. */
 const AXIS_WIDTH = 64;
 
+/** Transforms a block of back-to-back analysis windows. Injected so the FFT can
+ *  run in a worker; the default runs it in place. */
+export type SpectrogramCompute = (
+    samples: Float32Array,
+    sampleRate: number,
+    options: SpectrogramOptions
+) => Promise<Spectrogram> | Spectrogram;
+
 export interface SpectrogramViewOptions {
     container: HTMLElement;
     read: WindowReader;
@@ -229,7 +272,8 @@ export interface SpectrogramViewOptions {
     /** Rows of output; also the display height. */
     bins?: number;
     fftSize?: number;
-    /** Analysis columns to aim for across the visible width. */
+    /** Most analysis columns to spend on one screen width. The view uses one
+     *  per pixel up to this. */
     targetColumns?: number;
     scale?: FrequencyScale;
     /** Draw the frequency axis. Without it the picture cannot be read. */
@@ -247,11 +291,14 @@ export interface SpectrogramViewOptions {
     /** Colour ramp from silence to full intensity, at least two stops. The
      *  first stop must be dark: most of a spectrogram is silence. */
     colorMap?: ColorRamp;
+    /** Where the FFT runs. Defaults to the calling thread. */
+    compute?: SpectrogramCompute;
     onError?(error: Error): void;
 }
 
 export interface SpectrogramView {
-    /** Recomputes for a viewport. Calls collapse: only the last one paints. */
+    /** Moves the picture to a viewport at once and recomputes it once the
+     *  viewport settles. Calls collapse: only the last one is computed. */
     show(viewport: Viewport): void;
     setScale(scale: FrequencyScale): void;
     /** Changes analysis settings and repaints. Only the given fields change. */
@@ -274,20 +321,84 @@ export interface SpectrogramSettings {
 
 const DEFAULT_BINS = 250;
 const DEFAULT_FFT_SIZE = 1024;
-const DEFAULT_TARGET_COLUMNS = 1200;
+const DEFAULT_TARGET_COLUMNS = 1600;
+const MIN_COLUMNS_PER_SCREEN = 200;
 /** Scrolling fires continuously; recompute once it settles. */
 const SETTLE_MS = 120;
+/** Extra audio computed on each side, in screens, so a short scroll reveals
+ *  finished picture instead of a gap. */
+const OVERSCAN = 0.5;
+/** Columns transformed per batch. Small enough that one batch is a few
+ *  milliseconds of FFT, so painting is progressive and nothing blocks. */
+const BATCH_COLUMNS = 64;
+/** Gap between two windows, in windows, still read through as one span. */
+const SPAN_GAP_WINDOWS = 4;
+/** Longest the calling thread is held before yielding to the event loop. */
+const SLICE_MS = 12;
+
+export interface ColumnPlan {
+    /** Analysis columns across the planned range. */
+    columns: number;
+    /** Frames each column stands for. Above the FFT size the windows are
+     *  sparse samples of the track; below it they overlap. */
+    hop: number;
+    /** First frame of the planned range. */
+    fromFrame: number;
+    /** Frames the planned range covers. */
+    frameCount: number;
+}
+
+/**
+ * How many columns a viewport gets and where they sit.
+ *
+ * One column per pixel, whatever the track length — this is what keeps a
+ * two-hour overview as cheap as a ten-second one. Returns undefined when the
+ * range is too short to transform.
+ */
+export function planColumns(
+    viewport: Viewport,
+    sampleRate: number,
+    totalFrames: number,
+    fftSize: number,
+    targetColumns = DEFAULT_TARGET_COLUMNS
+): ColumnPlan | undefined {
+    const range = viewportFrames(viewport, sampleRate, totalFrames, OVERSCAN);
+    const visibleFrames = Math.max(0, viewport.visibleSeconds) * sampleRate;
+    if (range.frameCount < fftSize || visibleFrames <= 0) return undefined;
+    const perScreen = Math.max(
+        MIN_COLUMNS_PER_SCREEN,
+        Math.min(targetColumns, Math.round(viewport.width) || targetColumns)
+    );
+    const columns = Math.max(1, Math.round(perScreen * (range.frameCount / visibleFrames)));
+    return { columns, hop: range.frameCount / columns, fromFrame: range.fromFrame, frameCount: range.frameCount };
+}
+
+/** First frame of a column's analysis window, centred on the column. May fall
+ *  outside the track at either end; the missing samples read as silence. */
+const windowStart = (plan: ColumnPlan, column: number, fftSize: number): number =>
+    Math.round(plan.fromFrame + (column + 0.5) * plan.hop - fftSize / 2);
+
+/** A finished or in-progress picture and the stretch of time it covers. */
+interface Picture {
+    canvas: HTMLCanvasElement;
+    startSeconds: number;
+    endSeconds: number;
+}
 
 /**
  * Keeps a canvas showing the spectrogram of whatever is on screen.
  *
  * Requests overlap constantly while a user drags, so each new one cancels the
  * last: without that, a drag queues a decode per frame and the tab crawls.
+ * Until the new picture is complete the previous one stays underneath, moved
+ * and stretched to the new viewport, so the pane tracks the waveform at once.
  */
 export function createSpectrogramView(options: SpectrogramViewOptions): SpectrogramView {
     const bins = options.bins ?? DEFAULT_BINS;
     const fftSize = options.fftSize ?? DEFAULT_FFT_SIZE;
     const targetColumns = options.targetColumns ?? DEFAULT_TARGET_COLUMNS;
+    const compute: SpectrogramCompute = options.compute ?? computeSpectrogram;
+    const maxGap = fftSize * SPAN_GAP_WINDOWS;
     const settings: Required<Pick<SpectrogramSettings, 'scale' | 'splitChannels' | 'labels'>>
         & SpectrogramSettings = {
         scale: options.scale ?? 'mel',
@@ -301,21 +412,48 @@ export function createSpectrogramView(options: SpectrogramViewOptions): Spectrog
         ...(options.rangeDb !== undefined ? { rangeDb: options.rangeDb } : {})
     };
 
+    // Positioning is inline rather than left to the stylesheet: a picture in
+    // the wrong place is a wrong picture, and that must not depend on whether
+    // the host loaded the CSS.
     const stack = document.createElement('div');
     stack.className = 'omni-audio__spectrogram-stack';
-    const canvas = document.createElement('canvas');
-    canvas.className = 'omni-audio__spectrogram-canvas';
-    canvas.style.height = `${bins}px`;
+    stack.style.position = 'relative';
+    stack.style.overflow = 'hidden';
+    stack.style.height = `${bins}px`;
     const axis = document.createElement('canvas');
     axis.className = 'omni-audio__spectrogram-axis';
     axis.hidden = !settings.labels;
-    stack.append(canvas, axis);
+    stack.append(axis);
     options.container.replaceChildren(stack);
 
     let timer: ReturnType<typeof setTimeout> | undefined;
     let inFlight: AbortController | undefined;
     let pending: Viewport | undefined;
+    let last: Viewport | undefined;
     let destroyed = false;
+    /** Oldest first; the last entry is the newest picture. */
+    let pictures: Picture[] = [];
+
+    const createCanvas = (columns: number, layers: number): HTMLCanvasElement => {
+        const canvas = document.createElement('canvas');
+        canvas.className = 'omni-audio__spectrogram-canvas';
+        canvas.width = Math.max(1, columns);
+        canvas.height = Math.max(1, bins * layers);
+        canvas.style.position = 'absolute';
+        canvas.style.top = '0';
+        canvas.style.height = '100%';
+        return canvas;
+    };
+
+    /** Places a picture where its stretch of time falls in the viewport. */
+    const place = (picture: Picture, viewport: Viewport): void => {
+        const visible = viewport.visibleSeconds;
+        if (!(visible > 0)) return;
+        const left = (picture.startSeconds - viewport.scrollSeconds) / visible;
+        const width = (picture.endSeconds - picture.startSeconds) / visible;
+        picture.canvas.style.left = `${left * 100}%`;
+        picture.canvas.style.width = `${width * 100}%`;
+    };
 
     const drawAxis = (layers: number, sampleRate: number): void => {
         axis.hidden = !settings.labels;
@@ -332,46 +470,160 @@ export function createSpectrogramView(options: SpectrogramViewOptions): Spectrog
         });
     };
 
+    /**
+     * Samples for a batch of columns, as back-to-back windows per channel.
+     *
+     * Neighbouring windows that touch or nearly touch are read as one span, so
+     * a zoomed-in batch is a single read while a zoomed-out one reads only the
+     * slivers it transforms — never the long stretches in between. A short gap
+     * is read through instead: for a compressed format every separate read
+     * pays a decoder pre-roll longer than the gap it would skip.
+     */
+    const readBatch = async (
+        plan: ColumnPlan,
+        from: number,
+        to: number,
+        signal: AbortSignal
+    ): Promise<{ layers: Float32Array[] | undefined; sampleRate: number }> => {
+        const count = to - from;
+        let layers: Float32Array[] | undefined;
+        let sampleRate = options.sampleRate;
+        let column = from;
+        while (column < to) {
+            // Grow the span while the next window starts inside or near it.
+            let spanEnd = column + 1;
+            const spanStart = windowStart(plan, column, fftSize);
+            let spanStop = spanStart + fftSize;
+            while (spanEnd < to && windowStart(plan, spanEnd, fftSize) <= spanStop + maxGap) {
+                spanStop = windowStart(plan, spanEnd, fftSize) + fftSize;
+                spanEnd++;
+            }
+            const readFrom = Math.max(0, spanStart);
+            const readCount = Math.min(options.totalFrames, spanStop) - readFrom;
+            if (readCount > 0) {
+                const window = await options.read(readFrom, readCount, signal, settings.splitChannels);
+                if (signal.aborted) throw new Error('spectrogram: aborted');
+                // Nothing there (past the real end of the audio): leave silence,
+                // and leave the channel count to a read that has samples.
+                if (window.samples.length === 0) { column = spanEnd; continue; }
+                sampleRate = window.sampleRate;
+                // Falls back to the downmix when the reader could not keep channels.
+                const sources = settings.splitChannels && window.channels?.length
+                    ? window.channels
+                    : [window.samples];
+                layers ??= sources.map(() => new Float32Array(count * fftSize));
+                for (let index = 0; index < layers.length; index++) {
+                    const source = sources[index] ?? window.samples;
+                    const target = layers[index]!;
+                    for (let c = column; c < spanEnd; c++) {
+                        // Offsets into the read; anything outside it stays zero.
+                        const offset = windowStart(plan, c, fftSize) - window.startFrame;
+                        const begin = Math.max(0, offset);
+                        const end = Math.min(source.length, offset + fftSize);
+                        if (end > begin) {
+                            target.set(source.subarray(begin, end), (c - from) * fftSize + (begin - offset));
+                        }
+                    }
+                }
+            }
+            column = spanEnd;
+        }
+        return { layers, sampleRate };
+    };
+
     const run = async (viewport: Viewport): Promise<void> => {
         inFlight?.abort();
         const controller = new AbortController();
         inFlight = controller;
-        const range = viewportFrames(viewport, options.sampleRate, options.totalFrames);
-        if (range.frameCount < fftSize) return;
-        try {
-            const window = await options.read(
-                range.fromFrame, range.frameCount, controller.signal, settings.splitChannels
-            );
-            if (destroyed || controller.signal.aborted) return;
-            // Falls back to the downmix when the reader could not keep channels.
-            const sources = settings.splitChannels && window.channels?.length
-                ? window.channels
-                : [window.samples];
-            const analysis = {
-                fftSize,
-                hopSize: hopForColumns(window.samples.length, targetColumns, fftSize),
-                bins,
-                scale: settings.scale,
-                ...(settings.frequencyMin !== undefined ? { frequencyMin: settings.frequencyMin } : {}),
-                ...(settings.frequencyMax !== undefined ? { frequencyMax: settings.frequencyMax } : {}),
-                ...(settings.windowFunc !== undefined ? { windowFunc: settings.windowFunc } : {}),
-                ...(settings.alpha !== undefined ? { alpha: settings.alpha } : {}),
-                ...(settings.gainDb !== undefined ? { gainDb: settings.gainDb } : {}),
-                ...(settings.rangeDb !== undefined ? { rangeDb: settings.rangeDb } : {})
+        const { signal } = controller;
+        const plan = planColumns(viewport, options.sampleRate, options.totalFrames, fftSize, targetColumns);
+        if (!plan) return;
+
+        // Batches nearest the middle of the screen first: what the user is
+        // looking at fills in before the overscan does.
+        const centre = (viewport.scrollSeconds + viewport.visibleSeconds / 2) * options.sampleRate;
+        const batches: Array<[number, number]> = [];
+        for (let from = 0; from < plan.columns; from += BATCH_COLUMNS) {
+            batches.push([from, Math.min(plan.columns, from + BATCH_COLUMNS)]);
+        }
+        const distance = ([from, to]: [number, number]): number =>
+            Math.abs(plan.fromFrame + ((from + to) / 2) * plan.hop - centre);
+        batches.sort((a, b) => distance(a) - distance(b));
+
+        const analysis: SpectrogramOptions = {
+            fftSize,
+            // Windows arrive back to back, one per column.
+            hopSize: fftSize,
+            bins,
+            scale: settings.scale,
+            ...(settings.frequencyMin !== undefined ? { frequencyMin: settings.frequencyMin } : {}),
+            ...(settings.frequencyMax !== undefined ? { frequencyMax: settings.frequencyMax } : {}),
+            ...(settings.windowFunc !== undefined ? { windowFunc: settings.windowFunc } : {}),
+            ...(settings.alpha !== undefined ? { alpha: settings.alpha } : {}),
+            ...(settings.gainDb !== undefined ? { gainDb: settings.gainDb } : {}),
+            ...(settings.rangeDb !== undefined ? { rangeDb: settings.rangeDb } : {})
+        };
+
+        let picture: Picture | undefined;
+        let layerCount = 0;
+        let sliceStart = Date.now();
+        /** Batches with no audio behind them, painted as silence at the end —
+         *  by then the channel count is known. */
+        const silent: Array<[number, number]> = [];
+        const begin = (layers: number, sampleRate: number): Picture => {
+            layerCount = layers;
+            const created: Picture = {
+                canvas: createCanvas(plan.columns, layers),
+                startSeconds: plan.fromFrame / options.sampleRate,
+                endSeconds: (plan.fromFrame + plan.frameCount) / options.sampleRate
             };
-            const layers = sources.map((channel) =>
-                computeSpectrogram(channel, window.sampleRate, analysis));
-            if (destroyed || controller.signal.aborted) return;
-            canvas.style.height = `${bins * layers.length}px`;
-            paintSpectrograms(canvas, layers, options.colorMap ?? RAMP);
-            drawAxis(layers.length, window.sampleRate);
+            place(created, last ?? viewport);
+            stack.style.height = `${bins * layers}px`;
+            stack.insertBefore(created.canvas, axis);
+            pictures.push(created);
+            drawAxis(layers, sampleRate);
+            return created;
+        };
+        try {
+            for (const [from, to] of batches) {
+                const batch = await readBatch(plan, from, to, signal);
+                if (destroyed || signal.aborted) return;
+                if (!batch.layers) { silent.push([from, to]); continue; }
+                picture ??= begin(batch.layers.length, batch.sampleRate);
+                const computed: Spectrogram[] = [];
+                for (let index = 0; index < layerCount; index++) {
+                    const samples = batch.layers[index] ?? batch.layers[0]!;
+                    computed.push(await compute(samples, batch.sampleRate, analysis));
+                    if (destroyed || signal.aborted) return;
+                }
+                paintColumnsAt(picture.canvas, computed, from, options.colorMap ?? RAMP);
+                if (Date.now() - sliceStart >= SLICE_MS) {
+                    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+                    if (destroyed || signal.aborted) return;
+                    sliceStart = Date.now();
+                }
+            }
+            picture ??= begin(1, options.sampleRate);
+            for (const [from, to] of silent) {
+                const blank = { columns: to - from, bins, data: new Uint8Array((to - from) * bins) };
+                paintColumnsAt(picture.canvas, Array.from({ length: layerCount }, () => blank), from, options.colorMap ?? RAMP);
+            }
+            // Complete: the pictures it was drawn over are no longer needed.
+            for (const old of pictures) if (old !== picture) old.canvas.remove();
+            pictures = [picture];
         } catch (error) {
-            if (controller.signal.aborted || destroyed) return;
+            if (signal.aborted || destroyed) return;
             options.onError?.(error as Error);
+        } finally {
+            // An abandoned picture is partial; drop it rather than leave holes
+            // on top of the complete one beneath.
+            if (signal.aborted && picture && pictures.length > 1) {
+                picture.canvas.remove();
+                pictures = pictures.filter((entry) => entry !== picture);
+            }
         }
     };
 
-    let last: Viewport | undefined;
     const repaint = (): void => {
         const viewport = pending ?? last;
         if (viewport) { pending = viewport; schedule(); }
@@ -392,6 +644,7 @@ export function createSpectrogramView(options: SpectrogramViewOptions): Spectrog
             if (destroyed) return;
             pending = viewport;
             last = viewport;
+            for (const picture of pictures) place(picture, viewport);
             schedule();
         },
         setScale(next): void {

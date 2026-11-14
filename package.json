@@ -1,6 +1,6 @@
 {
   "name": "omni-viewer-core",
-  "version": "0.23.0",
+  "version": "0.24.0",
   "description": "Shared parsing + rendering core for Omni Viewer (vscode / chrome / obsidian / web)",
   "type": "module",
   "license": "MIT",
@@ -64,6 +64,62 @@
     "THIRD_PARTY_NOTICES.md"
   ],
   "exports": {
+    "./parsers/sarif": {
+      "types": "./dist/parsers/sarif/index.d.ts",
+      "default": "./dist/parsers/sarif/index.js"
+    },
+    "./viewers/sarif": {
+      "types": "./dist/viewers/sarif/index.d.ts",
+      "default": "./dist/viewers/sarif/index.js"
+    },
+    "./parsers/gps": {
+      "types": "./dist/parsers/gps/index.d.ts",
+      "default": "./dist/parsers/gps/index.js"
+    },
+    "./viewers/gps": {
+      "types": "./dist/viewers/gps/index.d.ts",
+      "default": "./dist/viewers/gps/index.js"
+    },
+    "./parsers/trace": {
+      "types": "./dist/parsers/trace/index.d.ts",
+      "default": "./dist/parsers/trace/index.js"
+    },
+    "./viewers/trace": {
+      "types": "./dist/viewers/trace/index.d.ts",
+      "default": "./dist/viewers/trace/index.js"
+    },
+    "./parsers/sbom": {
+      "types": "./dist/parsers/sbom/index.d.ts",
+      "default": "./dist/parsers/sbom/index.js"
+    },
+    "./viewers/sbom": {
+      "types": "./dist/viewers/sbom/index.d.ts",
+      "default": "./dist/viewers/sbom/index.js"
+    },
+    "./parsers/msg": {
+      "types": "./dist/parsers/msg/index.d.ts",
+      "default": "./dist/parsers/msg/index.js"
+    },
+    "./viewers/msg": {
+      "types": "./dist/viewers/msg/index.d.ts",
+      "default": "./dist/viewers/msg/index.js"
+    },
+    "./parsers/drawio": {
+      "types": "./dist/parsers/drawio/index.d.ts",
+      "default": "./dist/parsers/drawio/index.js"
+    },
+    "./viewers/drawio": {
+      "types": "./dist/viewers/drawio/index.d.ts",
+      "default": "./dist/viewers/drawio/index.js"
+    },
+    "./parsers/opendocument": {
+      "types": "./dist/parsers/opendocument/index.d.ts",
+      "default": "./dist/parsers/opendocument/index.js"
+    },
+    "./viewers/opendocument": {
+      "types": "./dist/viewers/opendocument/index.d.ts",
+      "default": "./dist/viewers/opendocument/index.js"
+    },
     "./parsers/eml": {
       "types": "./dist/parsers/eml/index.d.ts",
       "default": "./dist/parsers/eml/index.js"

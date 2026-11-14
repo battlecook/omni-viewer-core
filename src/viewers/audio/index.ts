@@ -23,7 +23,8 @@ import {
 import { encodeWavFromFloat32, isEngineSafeForFile, type AudioDecodeEngine } from './engine.js';
 import { analyzeWavSource, createBytesSource } from './wav-analyzer.js';
 import { analyzeMp3Source } from './mp3-analyzer.js';
-import { decodeMp3Window, readDecodedWindow, readWavWindow } from './audio-window.js';
+import { createMp3WindowReader, readDecodedWindow, readWavWindow, type Mp3WindowReader } from './audio-window.js';
+import { createSpectrogramComputer, type SpectrogramComputer } from './spectrogram-worker.js';
 import {
     createSpectrogramView,
     type ColorRamp,
@@ -124,6 +125,14 @@ export {
     type WebCodecsEnvironment
 } from './webcodecs-decoder.js';
 export {
+    SPECTROGRAM_KERNEL_ASSET_KEY,
+    SPECTROGRAM_WORKER_ASSET_KEY,
+    createSpectrogramComputer,
+    type SpectrogramComputer,
+    type SpectrogramComputerOptions,
+    type SpectrogramWorkerContext
+} from './spectrogram-worker.js';
+export {
     ENGINE_UNSAFE_EXTENSIONS,
     isEngineSafeForFile,
     createAssetAudioEngine,
@@ -193,6 +202,14 @@ export interface AudioWaveSurferHandle {
     getDuration(): number;
     getCurrentTime(): number;
     getDecodedData(): AudioDecodedData | null;
+    /** Optional scroll geometry. With all three the spectrogram reads the
+     *  visible range straight from the engine; without them it is derived from
+     *  the zoom level and the last reported scroll. */
+    getScroll?(): number;
+    /** Visible width in pixels. */
+    getWidth?(): number;
+    /** Element spanning the whole (scrollable) waveform. */
+    getWrapper?(): HTMLElement;
     destroy(): void;
 }
 
@@ -463,6 +480,7 @@ async function mountWaveformViewer(
      * spectrogram follow the viewport instead of transforming the whole track —
      * including in peaks mode, where no decoded buffer exists at all.
      */
+    let mp3Reader: Mp3WindowReader | undefined;
     const fileWindowReader: WindowReader | undefined = (() => {
         const extension = input.fileName.toLowerCase().split('.').pop() ?? '';
         if (extension === 'wav') {
@@ -473,8 +491,10 @@ async function mountWaveformViewer(
                 });
         }
         if (extension === 'mp3' && isWebCodecsAvailable()) {
+            // One decoder for the life of the viewer: a zoomed-out spectrogram
+            // asks for thousands of short windows.
             return (from: number, count: number, signal?: AbortSignal, keepChannels?: boolean) =>
-                decodeMp3Window(input.data, from, count, {
+                (mp3Reader ??= createMp3WindowReader(input.data)).read(from, count, {
                     ...(signal ? { signal } : {}),
                     ...(keepChannels ? { keepChannels } : {})
                 });
@@ -736,6 +756,7 @@ async function mountWaveformViewer(
     let spectrogramPlugin: AudioPluginHandle | undefined;
     let timelinePlugin: AudioPluginHandle | undefined;
     let spectrogramView: SpectrogramView | undefined;
+    let spectrogramComputer: SpectrogramComputer | undefined;
     let timelineDuration = 0;
     let selectedRegion: AudioRegionHandle | null = null;
     let ready = false;
@@ -944,10 +965,13 @@ async function mountWaveformViewer(
         }
     };
 
+    // Exactly the density that fits the track to the pane. Flooring it at one
+    // pixel per second left any track longer than the pane is wide scrolling at
+    // "fit", with a zoom label describing a view that was not on screen.
     const basePxPerSec = (): number => {
         const width = waveform.clientWidth || 800;
         const duration = surfer?.getDuration() || 0;
-        return duration > 0 ? Math.max(1, width / duration) : 1;
+        return duration > 0 ? width / duration : 1;
     };
 
     /** (Re)builds the timeline for a known duration. The plugin fixes its tick
@@ -974,16 +998,37 @@ async function mountWaveformViewer(
         spectrogram.replaceChildren();
     };
 
-    /** Current viewport in seconds, from the engine's own scroll state. */
-    let visibleRange: { start: number; end: number } | undefined;
+    /** Density last handed to the engine's zoom. */
+    let appliedPxPerSec: number | undefined;
+    /** Left edge of the viewport in seconds, as last reported by a scroll. */
+    let scrollStart = 0;
+    /**
+     * The stretch of the track on screen.
+     *
+     * Read from the engine's geometry when it exposes it. A scroll event alone
+     * is not enough: zooming changes what is visible without scrolling, and the
+     * engine reports nothing then.
+     */
+    const visibleSpan = (): { start: number; seconds: number } => {
+        const duration = surfer?.getDuration() || 0;
+        if (!surfer || duration <= 0) return { start: 0, seconds: 0 };
+        const total = surfer.getWrapper?.()?.scrollWidth ?? 0;
+        const width = surfer.getWidth?.() ?? 0;
+        const scroll = surfer.getScroll?.();
+        if (total > 0 && width > 0 && scroll !== undefined) {
+            const pxPerSec = total / duration;
+            const seconds = Math.min(duration, width / pxPerSec);
+            return { start: Math.max(0, Math.min(scroll / pxPerSec, duration - seconds)), seconds };
+        }
+        const seconds = duration / Math.max(1, controller.state.zoom);
+        return { start: Math.max(0, Math.min(scrollStart, duration - seconds)), seconds };
+    };
     const showSpectrogramWindow = (): void => {
         if (!spectrogramView || !surfer) return;
-        const duration = surfer.getDuration();
-        const start = visibleRange?.start ?? 0;
-        const end = visibleRange?.end ?? duration;
+        const span = visibleSpan();
         spectrogramView.show({
-            scrollSeconds: start,
-            visibleSeconds: Math.max(0, end - start),
+            scrollSeconds: span.start,
+            visibleSeconds: span.seconds,
             width: spectrogram.clientWidth || waveform.clientWidth || 1000
         });
     };
@@ -1038,6 +1083,7 @@ async function mountWaveformViewer(
                         ? { labelsBackground: spectrogramOptions.labelsBackground } : {}),
                     ...(spectrogramOptions.colorMap ? { colorMap: spectrogramOptions.colorMap } : {}),
                     ...(frequencyMax > 0 ? { frequencyMax } : {}),
+                    compute: (spectrogramComputer ??= createSpectrogramComputer(ctx)).compute,
                     onError: (error) => {
                         ctx.logger.log('error', `audio: spectrogram window failed (${error.message})`);
                         showWarning(t('audio.error.spectrogram'));
@@ -1094,7 +1140,14 @@ async function mountWaveformViewer(
         const duration = surfer.getDuration();
         zoomLabel.textContent = duration > 0 ? formatZoomLabel(duration / state.zoom) : '--';
         loop.checked = state.loop;
-        if (ready) surfer.zoom(basePxPerSec() * state.zoom);
+        // Only when the density actually changes: the engine redraws the whole
+        // waveform on every zoom call, which on a fully decoded 12-minute track
+        // is half a second of blocked thread for a volume or view-mode change.
+        const pxPerSec = basePxPerSec() * state.zoom;
+        if (ready && pxPerSec !== appliedPxPerSec) {
+            appliedPxPerSec = pxPerSec;
+            surfer.zoom(pxPerSec);
+        }
         applyVisualization(state.visualization, state.spectrogramScale, state.spectrogramFrequencyMax);
         for (const [mode, button] of visModeButtons) {
             const active = mode === state.visualization;
@@ -1111,7 +1164,8 @@ async function mountWaveformViewer(
         hideRegionEditor();
         for (const dispose of surferDisposers.splice(0)) { try { dispose(); } catch { /* engine own teardown */ } }
         destroySpectrogram();
-        visibleRange = undefined;
+        scrollStart = 0;
+        appliedPxPerSec = undefined;
         timelinePlugin = undefined;
         timelineDuration = 0;
         try { surfer?.destroy(); } catch { /* already torn down */ }
@@ -1222,11 +1276,13 @@ async function mountWaveformViewer(
         wsOn(surfer, 'ready', () => {
             ready = true;
             loading.remove();
-            setControlsEnabled(true);
             const decoded = surfer!.getDecodedData();
             // Peaks mode's buffer is synthetic — no samples behind it — so it
             // must not become a window source.
             decodedAudio = peaksMode ? null : decoded;
+            // After `decodedAudio`: whether the spectrogram modes are offered
+            // depends on it.
+            setControlsEnabled(true);
             // The engine draws one strip per channel, so the playhead clamp has
             // to know how many there are — a stereo file is twice as tall.
             const strips = Math.max(1, Math.min(2, decoded?.numberOfChannels ?? decodedSize?.channels ?? 1));
@@ -1263,8 +1319,8 @@ async function mountWaveformViewer(
         wsOn(surfer, 'timeupdate', refreshTime);
         // The engine reports the visible span directly, so the spectrogram can
         // follow a scroll or zoom without measuring the DOM itself.
-        wsOn(surfer, 'scroll', ((start: number, end: number) => {
-            visibleRange = { start, end };
+        wsOn(surfer, 'scroll', ((start: number) => {
+            if (Number.isFinite(start)) scrollStart = start;
             showSpectrogramWindow();
         }) as (payload?: unknown) => void);
         wsOn(surfer, 'zoom', () => showSpectrogramWindow());
@@ -1531,6 +1587,8 @@ async function mountWaveformViewer(
         if (activeKeyboardOwner === keyboardOwner) activeKeyboardOwner = undefined;
         disposers.forEach((dispose) => dispose());
         teardownSurfer();
+        spectrogramComputer?.dispose();
+        mp3Reader?.close();
         if (url) { revoke(url); url = undefined; }
         teardownShell();
     }

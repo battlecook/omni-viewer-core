@@ -185,6 +185,18 @@ function createFft(size: number): (real: Float32Array, imag: Float32Array) => vo
     };
 }
 
+/** FFT tables per size. A viewport is transformed as many small batches, and
+ *  rebuilding the trig and bit-reversal tables for each one is pure overhead. */
+const fftCache = new Map<number, (real: Float32Array, imag: Float32Array) => void>();
+function fftFor(size: number): (real: Float32Array, imag: Float32Array) => void {
+    let fft = fftCache.get(size);
+    if (!fft) {
+        fft = createFft(size);
+        fftCache.set(size, fft);
+    }
+    return fft;
+}
+
 interface Filter { lo: number; weightLo: number; weightHi: number }
 
 /** Where each output row samples the linear FFT bins, with the interpolation
@@ -235,7 +247,7 @@ export function computeSpectrogram(
     if (bins < 1) throw new Error('spectrogram: bins must be >= 1');
     if (rangeDb <= 0) throw new Error('spectrogram: rangeDb must be > 0');
 
-    const fft = createFft(fftSize);
+    const fft = fftFor(fftSize);
     const columns = samples.length >= fftSize
         ? Math.floor((samples.length - fftSize) / hopSize) + 1
         : 0;
@@ -290,15 +302,4 @@ export function computeSpectrogram(
         }
     }
     return { columns, bins, data };
-}
-
-/**
- * Hop that spreads `sampleCount` over roughly `targetColumns`, clamped so a
- * window always overlaps its neighbour and never degenerates. This is what
- * keeps the cost tied to the canvas rather than the file.
- */
-export function hopForColumns(sampleCount: number, targetColumns: number, fftSize: number): number {
-    if (targetColumns < 1) return fftSize;
-    const ideal = Math.floor(sampleCount / targetColumns);
-    return Math.max(1, Math.min(fftSize, ideal));
 }

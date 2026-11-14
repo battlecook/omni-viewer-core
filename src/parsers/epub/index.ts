@@ -250,6 +250,22 @@ const CP1252_HIGH = [
     0xfffd, 0x2018, 0x2019, 0x201c, 0x201d, 0x2022, 0x2013, 0x2014, 0x02dc, 0x2122, 0x0161, 0x203a, 0x0153, 0xfffd, 0x017e, 0x0178
 ];
 
+/** Decode Windows-1252 without relying on legacy TextDecoder support. */
+export function decodeWindows1252(bytes: Uint8Array, latin1 = false): string {
+    // Map into code units first and join in chunks: appending one character
+    // per byte builds a rope per byte (seconds and gigabytes for a large chapter).
+    const units = new Uint16Array(bytes.length);
+    for (let i = 0; i < bytes.length; i++) {
+        const byte = bytes[i]!;
+        units[i] = !latin1 && byte >= 0x80 && byte <= 0x9f ? CP1252_HIGH[byte - 0x80]! : byte;
+    }
+    const parts: string[] = [];
+    for (let at = 0; at < units.length; at += 16_384) {
+        parts.push(String.fromCharCode.apply(null, units.subarray(at, at + 16_384) as unknown as number[]));
+    }
+    return parts.join('');
+}
+
 /**
  * Decodes an XML/XHTML member. Unicode encodings follow the BOM or the XML
  * declaration; ASCII, ISO-8859-1 and Windows-1252 labels — the legacy encodings
@@ -291,18 +307,7 @@ export function decodeMarkupText(bytes: Uint8Array): DecodedText {
     // ASCII and Latin-1 labels to windows-1252 as well; books relying on that
     // (cp1252 smart quotes under an iso-8859-1 declaration) read the same here.
     if (['iso-8859-1', 'latin1', 'iso_8859-1', 'l1', 'us-ascii', 'ascii', 'windows-1252', 'cp1252'].includes(label)) {
-        // Map into code units first and join in chunks: appending one character
-        // per byte builds a rope per byte (seconds and gigabytes for a large chapter).
-        const units = new Uint16Array(bytes.length);
-        for (let i = 0; i < bytes.length; i++) {
-            const byte = bytes[i]!;
-            units[i] = byte >= 0x80 && byte <= 0x9f ? CP1252_HIGH[byte - 0x80]! : byte;
-        }
-        const parts: string[] = [];
-        for (let at = 0; at < units.length; at += 16_384) {
-            parts.push(String.fromCharCode.apply(null, units.subarray(at, at + 16_384) as unknown as number[]));
-        }
-        return { text: parts.join(''), encoding: 'windows-1252', unsupportedEncoding: '' };
+        return { text: decodeWindows1252(bytes), encoding: 'windows-1252', unsupportedEncoding: '' };
     }
     if (label === 'utf-16' || label === 'utf-16le' || label === 'utf-16be') {
         // A UTF-16 declaration is only readable as ASCII if the bytes are not

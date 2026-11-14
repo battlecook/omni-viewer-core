@@ -258,6 +258,41 @@ describe('audio viewer with waveform engine', () => {
         handle.dispose();
     });
 
+
+    // A track longer than the pane is wide (in seconds) used to be pinned to
+    // one pixel per second, so "fit" scrolled and the label lied about it.
+    it('fits a long track to the pane instead of flooring the density', async () => {
+        const surfer = fakeSurfer();
+        surfer.getDuration = () => 7200;
+        const container = document.createElement('div');
+        const handle = await mountAudioViewer(input(), container, stubCtx(), {
+            ...urlOptions,
+            deps: { loadWaveform: async () => library(surfer) }
+        });
+        surfer.emit('ready');
+        expect(surfer.zoomCalls.at(-1)).toBeCloseTo(800 / 7200);
+        handle.dispose();
+    });
+
+    // The engine redraws the whole waveform on every zoom call.
+    it('does not re-zoom the engine for a change that leaves the density alone', async () => {
+        const surfer = fakeSurfer();
+        const container = document.createElement('div');
+        const handle = await mountAudioViewer(input(), container, stubCtx(), {
+            ...urlOptions,
+            deps: { loadWaveform: async () => library(surfer) }
+        });
+        const root = shadow(container);
+        surfer.emit('ready');
+        expect(surfer.zoomCalls).toHaveLength(1);
+        const volume = root.querySelector('.omni-audio__slider') as HTMLInputElement;
+        volume.value = '40';
+        volume.dispatchEvent(new Event('input'));
+        expect(surfer.calls).toContain('setVolume:0.4');
+        expect(surfer.zoomCalls).toHaveLength(1);
+        handle.dispose();
+    });
+
     it('applies zoom multipliers over the fit density', async () => {
         const surfer = fakeSurfer();
         const container = document.createElement('div');
@@ -1418,6 +1453,46 @@ describe('audio viewer with WASM decode engine', () => {
             handle.dispose();
         });
 
+        // Zooming changes what is on screen without scrolling, and the engine
+        // reports no scroll for it — the spectrogram used to keep showing the
+        // whole track under a waveform that had moved on.
+        it('follows a zoom that does not scroll', async () => {
+            const { handle, root, mode, canvas } = await mountWav(200000);
+            mode('spectrogram').click();
+            await settle();
+            expect(canvas()!.style.left).toBe('0%');
+            expect(canvas()!.style.width).toBe('100%');
+
+            ([...root.querySelectorAll('button')].find((b) => b.title === 'Zoom in') as HTMLButtonElement).click();
+            // At once, before any recompute: the same picture now spans twice
+            // the pane, like the waveform above it.
+            expect(canvas()!.style.width).toBe('200%');
+            handle.dispose();
+        });
+
+        it('reads the visible range from the engine geometry when it has it', async () => {
+            const surfer = fakeSurfer();
+            const wrapper = document.createElement('div');
+            Object.defineProperty(wrapper, 'scrollWidth', { value: 4000 });
+            surfer.getWrapper = () => wrapper;
+            surfer.getWidth = () => 1000;
+            surfer.getScroll = () => 2000;
+            const container = document.createElement('div');
+            const handle = await mountAudioViewer(wavInput(200000), container, stubCtx(), {
+                ...urlOptions, deps: { loadWaveform: async () => library(surfer) }
+            });
+            surfer.emit('ready');
+            const root = shadow(container);
+            (root.querySelector('.omni-audio__mode[data-mode="spectrogram"]') as HTMLButtonElement).click();
+            await settle();
+            // 120 s over 4000 px: the pane shows 60 s..90 s, and the picture
+            // was computed for 45 s..105 s.
+            const canvas = root.querySelector('.omni-audio__spectrogram-canvas') as HTMLCanvasElement;
+            expect(parseFloat(canvas.style.left)).toBeCloseTo(-50, 2);
+            expect(parseFloat(canvas.style.width)).toBeCloseTo(200, 2);
+            handle.dispose();
+        });
+
         it('releases the canvas when leaving spectrogram modes', async () => {
             const { handle, mode, canvas } = await mountWav(20000);
             mode('spectrogram').click();
@@ -1450,13 +1525,15 @@ describe('audio viewer with WASM decode engine', () => {
         // would be pure waste.
         it('windows a format it cannot parse once the engine has decoded it', async () => {
             const surfer = fakeSurfer();
+            // Built once, like a real AudioBuffer: the view reads many short
+            // windows, and a real buffer hands back the same storage each time.
+            const channelData = [7, 11].map((period) =>
+                Float32Array.from({ length: 44100 * 4 }, (_, i) => Math.sin(i / period) * 0.6));
             surfer.getDecodedData = () => ({
                 numberOfChannels: 2,
                 sampleRate: 44100,
                 duration: 120,
-                getChannelData: (channel: number) =>
-                    Float32Array.from({ length: 44100 * 4 }, (_, i) =>
-                        Math.sin(i / (channel === 0 ? 7 : 11)) * 0.6)
+                getChannelData: (channel: number) => channelData[channel]!
             });
             const pluginBuilds: number[] = [];
             const lib = library(surfer, undefined, () => { pluginBuilds.push(1); return { destroy: () => undefined }; });
